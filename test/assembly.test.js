@@ -5399,7 +5399,7 @@ test("MethodPtr reordering can move unreferenced abstract methods across interfa
     invalidAssembly.methods.map((method) => method.rid));
 });
 
-test("PropertyPtr and EventPtr can move unassociated rows across owners", () => {
+test("PropertyPtr and EventPtr can move rows across owners with owner-specific validation", () => {
   const propertyAssembly = parseAssembly(withoutDebugDirectory());
   usePointerTable(propertyAssembly, {
     pointerId: 22,
@@ -5429,6 +5429,67 @@ test("PropertyPtr and EventPtr can move unassociated rows across owners", () => 
   assert.deepEqual(propertyAssembly.types[propertyOwners[1] - 1].propertyRids, [propertyRids[0]]);
   const reparsedProperties = parseAssembly(propertyAssembly.serialize());
   assert.deepEqual(reparsedProperties.types[propertyOwners[0] - 1].propertyRids, [propertyRids[1]]);
+
+  const associatedAssembly = parseAssembly(withoutDebugDirectory());
+  usePointerTable(associatedAssembly, {
+    pointerId: 22,
+    targetId: 23,
+    column: "Property",
+    listTableId: 21,
+    listColumn: "PropertyList",
+    pointerName: "PropertyPtr",
+    targetName: "Property"
+  });
+  const destinationRid = associatedAssembly.addTypeDef({
+    name: "AssociatedPropertyOwner",
+    flags: 0x00a0
+  }) & 0x00ffffff;
+  const associatedPropertyRid = associatedAssembly.addProperty({
+    owner: { table: "TypeDef", rid: destinationRid },
+    name: "AssociatedProperty",
+    signature: Uint8Array.of(0x08, 0x00, 0x08)
+  });
+  const availablePropertyRid = associatedAssembly.addProperty({
+    owner: { table: "TypeDef", rid: destinationRid },
+    name: "AvailableProperty",
+    signature: Uint8Array.of(0x08, 0x00, 0x08)
+  });
+  const getterRid = associatedAssembly.addMethod({
+    owner: { table: "TypeDef", rid: destinationRid },
+    name: "get_AssociatedProperty",
+    flags: 0x0466,
+    signature: Uint8Array.of(0x20, 0x00, 0x08)
+  }) & 0x00ffffff;
+  const semanticsRid = associatedAssembly.addMethodSemantics({
+    methodRid: getterRid,
+    association: { table: "Property", rid: associatedPropertyRid },
+    semantics: 0x02
+  });
+  const sourceRid = associatedAssembly.addTypeDef({ name: "PropertyMoveSource" }) & 0x00ffffff;
+  const movingPropertyRid = associatedAssembly.addProperty({
+    owner: { table: "TypeDef", rid: sourceRid },
+    name: "MovingProperty",
+    signature: Uint8Array.of(0x08, 0x00, 0x08)
+  });
+  const associatedOrder = associatedAssembly.tables.get(22).map((row) => row.Property.rid);
+  const availableIndex = associatedOrder.indexOf(availablePropertyRid);
+  const movingIndex = associatedOrder.indexOf(movingPropertyRid);
+  [associatedOrder[availableIndex], associatedOrder[movingIndex]] =
+    [associatedOrder[movingIndex], associatedOrder[availableIndex]];
+  associatedAssembly.reorderPointerTable("PropertyPtr", associatedOrder);
+  assert.deepEqual(
+    associatedAssembly.types[destinationRid - 1].propertyRids,
+    [associatedPropertyRid, movingPropertyRid]
+  );
+  assert.equal(associatedAssembly.tables.row(24, semanticsRid).Association.target.rid,
+    associatedPropertyRid);
+  const reparsedAssociated = parseAssembly(associatedAssembly.serialize());
+  assert.deepEqual(
+    reparsedAssociated.types[destinationRid - 1].propertyRids,
+    [associatedPropertyRid, movingPropertyRid]
+  );
+  assert.equal(reparsedAssociated.tables.row(24, semanticsRid).Association.target.rid,
+    associatedPropertyRid);
 
   const eventAssembly = parseAssembly(withoutDebugDirectory());
   usePointerTable(eventAssembly, {

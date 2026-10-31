@@ -4915,7 +4915,7 @@ export class Assembly {
         }
       }
       if (allowsCrossOwnerProperties && movesRowsAcrossOwners) {
-        for (const record of nextRecords) {
+        for (const record of movedRecords) {
           const hasSemantics = (this.tables.rows.get(24) ?? []).some((row) =>
             row.Association.target?.table === 23 && row.Association.target.rid === record.rid
           );
