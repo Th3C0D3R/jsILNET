@@ -86,15 +86,11 @@ function usePointerTable(assembly, {
   pointerName,
   targetName
 }) {
-  const optimizedTablesStream = assembly.metadataRoot.streams.get("#~");
-  const tablesStream = optimizedTablesStream ?? assembly.metadataRoot.streams.get("#-");
+  const tablesStream = assembly.metadataRoot.streams.get("#~") ??
+    assembly.metadataRoot.streams.get("#-");
   assert.ok(tablesStream);
   assembly.metadataRoot.streams.delete("#~");
   assembly.metadataRoot.streams.set("#-", tablesStream);
-  if (assembly._heapStreams) {
-    assembly._heapStreams.delete("#~");
-    assembly._heapStreams.set("#-", tablesStream.bytes.slice());
-  }
   const targets = assembly.tables.get(targetId);
   const pointers = targets.map((target, index) => ({
     table: pointerId,
@@ -5846,10 +5842,6 @@ test("property and event insertion creates missing owner maps before later owner
   for (const pointerMode of [false, true]) {
     const assembly = parseAssembly(withoutDebugDirectory());
     assembly.tables.sorted &= ~(1n << 12n);
-    const ownerRid = assembly.insertTypeDef({
-      beforeRid: 2,
-      name: "OwnerWithoutMaps"
-    }).token & 0x00ffffff;
     if (pointerMode) {
       usePointerTable(assembly, {
         pointerId: 22,
@@ -5870,11 +5862,18 @@ test("property and event insertion creates missing owner maps before later owner
         targetName: "Event"
       });
     }
+    const ownerRid = assembly.insertTypeDef({
+      beforeRid: 2,
+      name: "OwnerWithoutMaps"
+    }).token & 0x00ffffff;
 
     const eventType = assembly.typeRefs.find((type) => type.name === "IDisposable");
     assert.ok(eventType);
     assert.equal(assembly.types[ownerRid - 1].properties.length, 0);
     assert.equal(assembly.types[ownerRid - 1].events.length, 0);
+    const laterPropertyName = assembly.types[ownerRid].properties[0]?.name;
+    const laterEventName = assembly.types[ownerRid + 1].events[0]?.name;
+    assert.ok(laterPropertyName && laterEventName);
     assembly.insertProperty({
       owner: { table: "TypeDef", rid: ownerRid },
       name: "NewOwnerProperty",
@@ -5893,8 +5892,8 @@ test("property and event insertion creates missing owner maps before later owner
     const reparsed = parseAssembly(assembly.serialize());
     assert.equal(reparsed.types[ownerRid - 1].properties[0].name, "NewOwnerProperty");
     assert.equal(reparsed.types[ownerRid - 1].events[0].name, "NewOwnerEvent");
-    assert.equal(reparsed.types[ownerRid].properties[0].name, "Value");
-    assert.equal(reparsed.types[ownerRid + 1].events[0].name, "Changed");
+    assert.equal(reparsed.types[ownerRid].properties[0].name, laterPropertyName);
+    assert.equal(reparsed.types[ownerRid + 1].events[0].name, laterEventName);
   }
 });
 
