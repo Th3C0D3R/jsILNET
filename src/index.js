@@ -1030,7 +1030,9 @@ export {
   parsePermissionSet
 } from "./metadata/custom-attributes.js";
 export {
+  decodePortablePdbDocumentName,
   decodePortablePdbSequencePoints,
+  encodePortablePdbDocumentName,
   encodePortablePdbSequencePoints
 } from "./metadata/portable-pdb.js";
 export {

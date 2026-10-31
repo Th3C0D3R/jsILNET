@@ -5,6 +5,7 @@ import {
   codedIndexWidth,
   decodeCodedIndex,
   encodeCodedIndex,
+  encodePortablePdbDocumentName,
   encodePortablePdbSequencePoints,
   MetadataHeaps,
   parseMetadataRoot,
@@ -423,7 +424,14 @@ test("Portable PDB document names and sequence points decode bounded blobs", () 
       return new Map([[1, new TextEncoder().encode("src")], [2, new TextEncoder().encode("a.cs")]]).get(index);
     }
   };
-  assert.equal(decodePortablePdbDocumentName(Uint8Array.from([0x5c, 1, 2]), heaps), "src\\a.cs");
+  const documentNameBlob = encodePortablePdbDocumentName("\\", [1, 2]);
+  assert.deepEqual(documentNameBlob, Uint8Array.from([0x5c, 1, 2]));
+  assert.equal(decodePortablePdbDocumentName(documentNameBlob, heaps), "src\\a.cs");
+  assert.equal(
+    decodePortablePdbDocumentName(encodePortablePdbDocumentName("🧭", [1, 2]), heaps),
+    "src🧭a.cs"
+  );
+  assert.throws(() => encodePortablePdbDocumentName("::", [1, 2]), /separator/);
 
   const decoded = decodePortablePdbSequencePoints(
     Uint8Array.from([0, 0, 0, 5, 10, 2, 4, 1, 4, 2, 0x7f, 0, 2, 3, 0, 0]),

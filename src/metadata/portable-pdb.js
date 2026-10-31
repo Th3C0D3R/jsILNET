@@ -149,6 +149,26 @@ export function decodePortablePdbDocumentName(blob, heaps) {
   return parts.join(separator);
 }
 
+export function encodePortablePdbDocumentName(separator, partBlobIndices) {
+  if (typeof separator !== "string" ||
+      (separator !== "" && [...separator].length !== 1) ||
+      separator.includes("\0")) {
+    throw new TypeError("Portable PDB document-name separator must be empty or one Unicode character");
+  }
+  if (!Array.isArray(partBlobIndices) || partBlobIndices.length === 0) {
+    throw new TypeError("Portable PDB document names require at least one blob index");
+  }
+  const separatorBytes = new TextEncoder().encode(separator);
+  const output = [...(separatorBytes.length === 0 ? [0] : separatorBytes)];
+  for (const index of partBlobIndices) {
+    if (!Number.isInteger(index) || index < 0 || index >= 0x20000000) {
+      throw new RangeError("Portable PDB document-name blob index is out of range");
+    }
+    output.push(...appendCompressedUInt(index));
+  }
+  return Uint8Array.from(output);
+}
+
 export function decodePortablePdbSequencePoints(blob, { documentRid, documentCount, localSignatureCount }) {
   const reader = new BinaryReader(blob, { context: "Portable PDB sequence points" });
   const localSignatureRid = readCompressedUInt(reader);
