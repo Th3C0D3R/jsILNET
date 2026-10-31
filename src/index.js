@@ -10807,6 +10807,117 @@ export class Assembly {
     return 0x28000000 + rid;
   }
 
+  insertManifestResource({
+    beforeRid,
+    name,
+    flags = 0,
+    implementation = null,
+    data = null
+  }) {
+    this.#ensureEditable();
+    if (typeof name !== "string" || name.length === 0 || name.includes("\0")) {
+      throw new TypeError("Manifest resource name must be a non-empty null-free string");
+    }
+    if (!Number.isInteger(flags) || flags < 0 || flags > 0xffffffff) {
+      throw new TypeError("Manifest resource flags must be an unsigned 32-bit integer");
+    }
+    if (implementation === null) {
+      if (!(data instanceof Uint8Array)) {
+        throw new TypeError("Embedded manifest resources require a Uint8Array payload");
+      }
+    } else {
+      if (data !== null) {
+        throw new TypeError("Linked manifest resources cannot include an embedded payload");
+      }
+      const table = metadataTableId(implementation.table);
+      if (![35, 38, 39].includes(table) || !Number.isInteger(implementation.rid) ||
+          implementation.rid < 1 || implementation.rid > (this.tables.counts[table] ?? 0)) {
+        throw new RangeError("Manifest resource implementation must identify an existing File, AssemblyRef, or ExportedType row");
+      }
+      implementation = {
+        table,
+        tableName: metadataTableNames[table],
+        rid: implementation.rid
+      };
+    }
+    if (data && data.length > 0xffffffff) {
+      throw new RangeError("Manifest resource exceeds the CLI size limit");
+    }
+
+    const rows = this.tables.rows.get(40) ?? [];
+    if (rows.length !== (this.tables.counts[40] ?? 0) || rows.length !== this.resources.length) {
+      throw new FormatError("ManifestResource row count is inconsistent with parsed resource records");
+    }
+    if (!Number.isInteger(beforeRid) || beforeRid < 1 || beforeRid > rows.length + 1) {
+      throw new RangeError(`Invalid ManifestResource insertion position ${beforeRid}`);
+    }
+    if (rows.length >= 0x00ffffff) {
+      throw new RangeError("ManifestResource token row ID exceeds 24-bit range");
+    }
+
+    const { tokenMap, rowChanges, tokenUpdates, patches } =
+      this.#prepareTokenRowInsertion(40, beforeRid, rows.length, "ManifestResource");
+    const heapStreams = new Map(
+      [...(this._heapStreams ?? new Map([...this.metadataRoot.streams].map(([streamName, stream]) =>
+        [streamName, stream.bytes]
+      )))].map(([streamName, bytes]) => [streamName, bytes.slice()])
+    );
+    const stringHeap = appendStringHeap(heapStreams.get("#Strings") ?? new Uint8Array(), name);
+    heapStreams.set("#Strings", stringHeap.heap);
+    const implementationRaw = implementation
+      ? encodeCodedIndex(implementation.table, implementation.rid, "Implementation")
+      : 0;
+    const rid = beforeRid;
+    const row = {
+      table: 40,
+      tableName: metadataTableNames[40],
+      rid,
+      Offset: 0,
+      Flags: flags,
+      Name: stringHeap.index,
+      Implementation: { raw: implementationRaw, target: implementation }
+    };
+
+    for (const change of rowChanges) change.row[change.columnName] = change.value;
+    rows.splice(rid - 1, 0, row);
+    rows.forEach((resourceRow, index) => {
+      resourceRow.rid = index + 1;
+    });
+    this.tables.rows.set(40, rows);
+    this.tables.valid |= 1n << 40n;
+    this.tables.counts[40] = rows.length;
+
+    const resource = {
+      rid,
+      name,
+      flags,
+      implementation,
+      data: implementation === null ? data.slice() : null
+    };
+    this.resources.splice(rid - 1, 0, resource);
+    this.resources.forEach((item, index) => {
+      item.rid = index + 1;
+    });
+    const shiftedEdits = new Map();
+    for (const [oldRid, editedData] of this._resourceEdits) {
+      shiftedEdits.set(oldRid >= rid ? oldRid + 1 : oldRid, editedData);
+    }
+    this._resourceEdits = shiftedEdits;
+    if (implementation === null) {
+      this._resourceEdits.set(rid, data.slice());
+      this._clearResourcesDirectory = false;
+    }
+    for (const attribute of this.customAttributes) {
+      attribute.parent = this.tables.row(12, attribute.rid).Parent.target;
+    }
+    for (const update of tokenUpdates) update.instruction.operand.value = update.replacement;
+    patches.forEach((patch) => this._patches.push(patch));
+    this._heapStreams = heapStreams;
+    this.#refreshHeaps();
+    this._metadataDirty = true;
+    return { token: 0x28000000 + rid, tokenMap };
+  }
+
   replaceManifestResource(rid, data) {
     this.#ensureEditable();
     if (!Number.isInteger(rid) || rid < 1 || rid > this.resources.length) {

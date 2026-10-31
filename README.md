@@ -50,6 +50,7 @@ An `Assembly` exposes parsed PE/CLI metadata, `module`, `types`, `typeRefs`, `ty
 Sorted row insertions are available through `insertConstant`, `insertFieldMarshal`, `insertClassLayout`, `insertFieldLayout`, `insertFieldRva`, `insertImplMap`, `insertMethodSemantics`, `insertMethodImpl`, `insertNestedClass`, `insertGenericParam`, `insertDeclSecurity`, `insertInterfaceImplementation`, `insertCustomAttribute`, and the TypeRef/MemberRef/MethodSpec insertion APIs. Token-row removals for Constant, FieldMarshal, FieldRVA, ClassLayout, FieldLayout, DeclSecurity, MethodSemantics, MethodImpl, ImplMap, and NestedClass reject live references, remap surviving token references, and return a token map; edits that shift tokens are refused with debug data, opaque metadata streams, or incompatible method-body edits.
 `insertFile({ beforeRid, name, flags, hashValue })` inserts at a 1-based File row position (use `files.length + 1` to append), remaps File references, and returns `{ token, tokenMap }`.
 `insertExportedType({ beforeRid, name, namespace, flags, typeDefId, implementation })` inserts at a 1-based ExportedType row position, remaps ExportedType references, and returns `{ token, tokenMap }`.
+`insertManifestResource({ beforeRid, name, flags, implementation, data })` inserts at a 1-based resource row position, remaps ManifestResource references, preserves embedded payload edits, and returns `{ token, tokenMap }`.
 
 Invalid or unsupported structures and edits raise `FormatError` or `UnsupportedFormatError`; they are not silently skipped.
 

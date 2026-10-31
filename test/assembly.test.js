@@ -6472,6 +6472,55 @@ test("manifest resources can append embedded and linked rows", () => {
   assert.equal(reparsed.resources[1].data, null);
 });
 
+test("ManifestResource rows can be inserted before existing rows and preserve payloads", () => {
+  const assembly = parseAssembly(withoutDebugDirectory());
+  const firstPayload = Uint8Array.of(1, 2, 3);
+  const replacementPayload = Uint8Array.of(7, 8);
+  const insertedPayload = Uint8Array.of(9, 6, 5, 4);
+  const firstToken = assembly.addManifestResource({
+    name: "ExistingPayload",
+    data: firstPayload
+  });
+  const linkedToken = assembly.addManifestResource({
+    name: "ExistingLink",
+    implementation: { table: "AssemblyRef", rid: assembly.assemblyRefs[0].rid }
+  });
+  assembly.replaceManifestResource(firstToken & 0x00ffffff, replacementPayload);
+  const inserted = assembly.insertManifestResource({
+    beforeRid: 1,
+    name: "InsertedPayload",
+    data: insertedPayload
+  });
+
+  assert.equal(inserted.token, 0x28000001);
+  assert.deepEqual([...inserted.tokenMap], [
+    [firstToken, 0x28000002],
+    [linkedToken, 0x28000003]
+  ]);
+  assert.deepEqual(assembly.resources.map(({ rid, name, data }) => [rid, name, data]), [
+    [1, "InsertedPayload", insertedPayload],
+    [2, "ExistingPayload", replacementPayload],
+    [3, "ExistingLink", null]
+  ]);
+
+  const reparsed = parseAssembly(assembly.serialize());
+  assert.deepEqual(reparsed.resources[0].data, insertedPayload);
+  assert.deepEqual(reparsed.resources[1].data, replacementPayload);
+  assert.deepEqual(reparsed.resources[2].implementation, {
+    table: 35,
+    tableName: "AssemblyRef",
+    rid: assembly.assemblyRefs[0].rid
+  });
+
+  const invalidAssembly = parseAssembly(withoutDebugDirectory());
+  assert.throws(() => invalidAssembly.insertManifestResource({
+    beforeRid: 0,
+    name: "InvalidResource",
+    data: new Uint8Array()
+  }), /Invalid ManifestResource insertion position/);
+  assert.equal(invalidAssembly.modified, false);
+});
+
 test("File rows can be appended and link manifest resources", () => {
   const assembly = parseAssembly(fixture);
   const hashValue = Uint8Array.from([1, 3, 3, 7]);

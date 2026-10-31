@@ -103,7 +103,7 @@ TypeDef removal requires no fields, methods, events, properties, or generic para
 
 ExportedType rows can be appended with existing File, AssemblyRef, or parent ExportedType implementation references and replaced in place; cyclic implementation chains are rejected. Any unreferenced row can be removed with later ExportedType references remapped in supported metadata and ENC token rows; CustomAttribute sort order is revalidated. Removal is refused with debug data or unknown streams.
 
-ManifestResource metadata supports identity/flags replacement and linked implementation retargeting while preserving embedded data and refusing embedded/linked conversions.
+ManifestResource metadata supports identity/flags replacement, linked implementation retargeting, and beforeRid insertion while preserving embedded data and refusing embedded/linked conversions. Insertion remaps ManifestResource tokens in metadata, IL, and ENC records; embedded insertions rebuild the resource directory with existing edited payloads preserved.
 
 StandAloneSig method/local signatures can be appended, replaced in place without changing kind, and removed with reference checking/remapping of metadata, CIL, and fat method-header local-signature tokens.
 
