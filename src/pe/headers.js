@@ -3,6 +3,7 @@ import { BinaryReader } from "../binary/reader.js";
 import { FormatError, UnsupportedFormatError } from "../binary/errors.js";
 import { MetadataHeaps, parseMetadataRoot } from "../metadata/streams.js";
 import { parseTablesStream } from "../metadata/tables.js";
+import { parsePortablePdbTables } from "../metadata/portable-pdb.js";
 
 const maxEmbeddedPortablePdbSize = 0x10000000;
 
@@ -156,12 +157,14 @@ export function parseEmbeddedPortablePdbData(bytes, offset, size) {
   for (const [table, count] of pdb.rowCounts) externalCounts[table] = count;
   const tables = parseTablesStream(metadataRoot.streams.get("#~"), externalCounts);
   const heaps = new MetadataHeaps(metadataRoot.streams);
+  const decoded = parsePortablePdbTables(tables, heaps, externalCounts);
   return {
     uncompressedSize,
     bytes: Uint8Array.from(metadataBytes),
     metadataRoot,
     tables,
     heaps,
+    ...decoded,
     ...pdb
   };
 }

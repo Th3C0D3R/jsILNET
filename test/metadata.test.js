@@ -11,6 +11,10 @@ import {
   tableIndexWidth
 } from "../src/index.js";
 import { parseEmbeddedPortablePdbData } from "../src/pe/headers.js";
+import {
+  decodePortablePdbDocumentName,
+  decodePortablePdbSequencePoints
+} from "../src/metadata/portable-pdb.js";
 import { resolveMethodParameters, resolveTypes } from "../src/resolution/module.js";
 
 function makeMetadataRoot({
@@ -389,9 +393,32 @@ test("embedded Portable PDB data validates and exposes its metadata streams", ()
   const invalid = Uint8Array.from(container);
   invalid[0] = 0;
   assert.throws(() => parseEmbeddedPortablePdbData(invalid, 0, invalid.length), /MPDB header/);
-
   const truncated = Uint8Array.from(container);
   new DataView(truncated.buffer).setUint32(4, metadata.length + 1, true);
   assert.throws(() => parseEmbeddedPortablePdbData(truncated, 0, truncated.length),
     /decompressed size does not match/);
+});
+
+test("Portable PDB document names and sequence points decode bounded blobs", () => {
+  const heaps = {
+    getBlob(index) {
+      return new Map([[1, new TextEncoder().encode("src")], [2, new TextEncoder().encode("a.cs")]]).get(index);
+    }
+  };
+  assert.equal(decodePortablePdbDocumentName(Uint8Array.from([0x5c, 1, 2]), heaps), "src\\a.cs");
+
+  const decoded = decodePortablePdbSequencePoints(
+    Uint8Array.from([0, 0, 0, 5, 10, 2, 4, 1, 4, 2, 0x7f, 0, 2, 3, 0, 0]),
+    { documentRid: 1, documentCount: 2, localSignatureCount: 0 }
+  );
+  assert.equal(decoded.localSignatureRid, 0);
+  assert.deepEqual(decoded.points, [
+    { offset: 0, documentRid: 1, hidden: false, startLine: 10, startColumn: 2, endLine: 10, endColumn: 7 },
+    { offset: 4, documentRid: 1, hidden: false, startLine: 11, startColumn: 1, endLine: 12, endColumn: 3 },
+    { offset: 7, documentRid: 2, hidden: true, startLine: 0xfeefee, startColumn: 0, endLine: 0xfeefee, endColumn: 0 }
+  ]);
+  assert.throws(() => decodePortablePdbSequencePoints(
+    Uint8Array.from([0, 0, 1, 0x7f, 1, 0]),
+    { documentRid: 1, documentCount: 1, localSignatureCount: 0 }
+  ), /sequence-point source spans/);
 });
