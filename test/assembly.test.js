@@ -1242,6 +1242,79 @@ test("AssemblyRef additions append version and heap data and can scope TypeRefs"
   assert.deepEqual(addedType.resolutionScope, { table: 35, tableName: "AssemblyRef", rid });
 });
 
+test("AssemblyRef rows can be inserted before existing rows and remap references", () => {
+  const assembly = parseAssembly(withoutDebugDirectory());
+  const hadOriginalAssemblyRefs = assembly.assemblyRefs.length > 0;
+  const firstToken = assembly.addAssemblyRef({ name: "First.Dependency" });
+  const firstRid = firstToken & 0x00ffffff;
+  const secondToken = assembly.addAssemblyRef({ name: "Second.Dependency" });
+  const secondRid = secondToken & 0x00ffffff;
+  assembly.addTypeRef({
+    scope: { table: "AssemblyRef", rid: secondRid },
+    name: "ScopedExternalType",
+    namespace: "Dependencies"
+  });
+  assembly.addExportedType({
+    name: "ExportedFromSecond",
+    implementation: { table: "AssemblyRef", rid: secondRid }
+  });
+  assembly.addManifestResource({
+    name: "ResourceFromFirst",
+    implementation: { table: "AssemblyRef", rid: firstToken & 0x00ffffff }
+  });
+  assembly.addAssemblyRefProcessor({ processor: 0x8664, assemblyRefRid: secondRid });
+  assembly.addAssemblyRefOS({
+    platformId: 0x8664,
+    majorVersion: 10,
+    minorVersion: 0,
+    assemblyRefRid: secondRid
+  });
+  const inserted = assembly.insertAssemblyRef({
+    beforeRid: 1,
+    name: "Inserted.Dependency",
+    culture: "en-US",
+    version: [2, 1, 0, 3],
+    flags: 1,
+    publicKeyOrToken: Uint8Array.of(0xaa, 0xbb),
+    hashValue: Uint8Array.of(9, 8)
+  });
+  assert.equal(inserted.token, 0x23000001);
+  assert.equal(inserted.tokenMap.get(firstToken), firstToken + 1);
+  assert.equal(inserted.tokenMap.get(secondToken), secondToken + 1);
+  assert.equal(assembly.assemblyRefs[0].name, "Inserted.Dependency");
+  assert.equal(assembly.assemblyRefs[firstRid].name, "First.Dependency");
+  assert.equal(assembly.assemblyRefs[secondRid].name, "Second.Dependency");
+  if (hadOriginalAssemblyRefs) {
+    assert.equal(inserted.tokenMap.get(0x23000001), 0x23000002);
+  }
+  assert.equal(assembly.typeRefs.at(-1).resolutionScope.rid, secondRid + 1);
+  assert.equal(assembly.exportedTypes.at(-1).implementation.rid, secondRid + 1);
+  assert.equal(assembly.resources.at(-1).implementation.rid, firstRid + 1);
+  assert.equal(assembly.tables.row(36, 1).AssemblyRef.rid, secondRid + 1);
+  assert.equal(assembly.tables.row(37, 1).AssemblyRef.rid, secondRid + 1);
+
+  const reparsed = parseAssembly(assembly.serialize());
+  assert.deepEqual(reparsed.assemblyRefs[0], {
+    rid: 1,
+    name: "Inserted.Dependency",
+    culture: "en-US",
+    version: [2, 1, 0, 3],
+    publicKeyOrToken: Uint8Array.of(0xaa, 0xbb)
+  });
+  assert.equal(reparsed.typeRefs.at(-1).resolutionScope.rid, secondRid + 1);
+  assert.equal(reparsed.exportedTypes.at(-1).implementation.rid, secondRid + 1);
+  assert.equal(reparsed.resources.at(-1).implementation.rid, firstRid + 1);
+  assert.equal(reparsed.tables.row(36, 1).AssemblyRef.rid, secondRid + 1);
+  assert.equal(reparsed.tables.row(37, 1).AssemblyRef.rid, secondRid + 1);
+
+  const invalidAssembly = parseAssembly(withoutDebugDirectory());
+  assert.throws(() => invalidAssembly.insertAssemblyRef({
+    beforeRid: 0,
+    name: "Invalid.Dependency"
+  }), /Invalid AssemblyRef insertion position/);
+  assert.equal(invalidAssembly.modified, false);
+});
+
 test("assembly processor and OS tables support validated CRUD and round trips", () => {
   const assembly = parseAssembly(fixture);
   const processorOne = assembly.addAssemblyProcessor({ processor: 0x14c });

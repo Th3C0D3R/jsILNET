@@ -8038,6 +8038,111 @@ export class Assembly {
     return 0x23000000 + rid;
   }
 
+  insertAssemblyRef({
+    beforeRid,
+    name,
+    culture = "",
+    version = [0, 0, 0, 0],
+    flags = 0,
+    publicKeyOrToken = new Uint8Array(),
+    hashValue = new Uint8Array()
+  }) {
+    this.#ensureEditable();
+    if (typeof name !== "string" || name.length === 0 || name.includes("\0")) {
+      throw new TypeError("AssemblyRef name must be a non-empty null-free string");
+    }
+    if (typeof culture !== "string" || culture.includes("\0")) {
+      throw new TypeError("AssemblyRef culture must be a null-free string");
+    }
+    if (!Array.isArray(version) || version.length !== 4 ||
+        version.some((part) => !Number.isInteger(part) || part < 0 || part > 0xffff)) {
+      throw new TypeError("AssemblyRef version must contain four unsigned 16-bit integers");
+    }
+    if (!Number.isInteger(flags) || flags < 0 || flags > 0xffffffff) {
+      throw new TypeError("AssemblyRef flags must be an unsigned 32-bit integer");
+    }
+    if (!(publicKeyOrToken instanceof Uint8Array) || !(hashValue instanceof Uint8Array)) {
+      throw new TypeError("AssemblyRef key and hash values must be Uint8Arrays");
+    }
+    const rows = this.tables.rows.get(35) ?? [];
+    if (rows.length !== (this.tables.counts[35] ?? 0) || rows.length !== this.assemblyRefs.length) {
+      throw new FormatError("AssemblyRef row count is inconsistent with parsed AssemblyRef records");
+    }
+    if (!Number.isInteger(beforeRid) || beforeRid < 1 || beforeRid > rows.length + 1) {
+      throw new RangeError(`Invalid AssemblyRef insertion position ${beforeRid}`);
+    }
+    if (rows.length >= 0x00ffffff) {
+      throw new RangeError("AssemblyRef token row ID exceeds 24-bit range");
+    }
+    const { tokenMap, rowChanges, tokenUpdates, patches } =
+      this.#prepareTokenRowInsertion(35, beforeRid, rows.length, "AssemblyRef");
+    const heapStreams = new Map(
+      [...(this._heapStreams ?? new Map([...this.metadataRoot.streams].map(([streamName, stream]) =>
+        [streamName, stream.bytes]
+      )))].map(([streamName, bytes]) => [streamName, bytes.slice()])
+    );
+    const nameHeap = appendStringHeap(heapStreams.get("#Strings") ?? new Uint8Array(), name);
+    const cultureHeap = appendStringHeap(nameHeap.heap, culture);
+    const keyHeap = appendBlobHeap(heapStreams.get("#Blob") ?? new Uint8Array(), publicKeyOrToken);
+    const hashHeap = appendBlobHeap(keyHeap.heap, hashValue);
+    heapStreams.set("#Strings", cultureHeap.heap);
+    heapStreams.set("#Blob", hashHeap.heap);
+    const rid = beforeRid;
+    const row = {
+      table: 35,
+      tableName: metadataTableNames[35],
+      rid,
+      MajorVersion: version[0],
+      MinorVersion: version[1],
+      BuildNumber: version[2],
+      RevisionNumber: version[3],
+      Flags: flags,
+      PublicKeyOrToken: keyHeap.index,
+      Name: nameHeap.index,
+      Culture: cultureHeap.index,
+      HashValue: hashHeap.index
+    };
+
+    for (const change of rowChanges) change.row[change.columnName] = change.value;
+    rows.splice(rid - 1, 0, row);
+    rows.forEach((referenceRow, index) => {
+      referenceRow.rid = index + 1;
+    });
+    this.tables.rows.set(35, rows);
+    this.tables.valid |= 1n << 35n;
+    this.tables.counts[35] = rows.length;
+    const references = this.assemblyRefs.map((reference) => ({
+      ...reference,
+      rid: reference.rid >= rid ? reference.rid + 1 : reference.rid
+    }));
+    references.splice(rid - 1, 0, {
+      rid,
+      name,
+      culture,
+      version: [...version],
+      publicKeyOrToken: publicKeyOrToken.slice()
+    });
+    this.assemblyRefs = Object.freeze(references);
+    for (const typeRef of this.typeRefs) {
+      typeRef.resolutionScope = this.tables.row(1, typeRef.rid).ResolutionScope.target;
+    }
+    for (const exportedType of this.exportedTypes) {
+      exportedType.implementation = this.tables.row(39, exportedType.rid).Implementation.target;
+    }
+    for (const resource of this.resources) {
+      resource.implementation = this.tables.row(40, resource.rid).Implementation.target;
+    }
+    for (const attribute of this.customAttributes) {
+      attribute.parent = this.tables.row(12, attribute.rid).Parent.target;
+    }
+    for (const update of tokenUpdates) update.instruction.operand.value = update.replacement;
+    this._patches.push(...patches);
+    this._heapStreams = heapStreams;
+    this.#refreshHeaps();
+    this._metadataDirty = true;
+    return { token: 0x23000000 + rid, tokenMap };
+  }
+
   addAssemblyProcessor({ processor }) {
     this.#ensureEditable();
     this.#validateAssemblyPlatformFields(33, { Processor: processor });
