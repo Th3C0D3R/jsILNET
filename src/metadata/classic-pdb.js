@@ -318,6 +318,20 @@ function decodeCodeViewSymbol(kind, data) {
       name: readCodeViewName(data, 10, "thread-data symbol")
     };
   }
+  if (kind === 0x1102) {
+    if (data.length < 22) throw new FormatError("Classic PDB thunk symbol is truncated");
+    return {
+      kind: "thunk",
+      parent: view.getUint32(0, true),
+      end: view.getUint32(4, true),
+      next: view.getUint32(8, true),
+      offset: view.getUint32(12, true),
+      segment: view.getUint16(16, true),
+      length: view.getUint16(18, true),
+      ordinal: data[20],
+      name: readCodeViewName(data, 21, "thunk symbol")
+    };
+  }
   if ([0x110f, 0x1110, 0x1146, 0x1147].includes(kind)) {
     if (data.length < 36) throw new FormatError("Classic PDB procedure symbol record is truncated");
     return {

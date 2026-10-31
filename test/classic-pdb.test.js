@@ -127,6 +127,27 @@ test("classic PDB symbol decoding exposes public, data, and procedure names", ()
     segment: 2,
     name: "glo"
   });
+  const thunk = new Uint8Array(27);
+  const thunkView = new DataView(thunk.buffer);
+  thunkView.setUint32(0, 1, true);
+  thunkView.setUint32(4, 2, true);
+  thunkView.setUint32(8, 3, true);
+  thunkView.setUint32(12, 0x40, true);
+  thunkView.setUint16(16, 2, true);
+  thunkView.setUint16(18, 5, true);
+  thunk[20] = 4;
+  thunk.set([0x74, 0x68, 0x75, 0x6e, 0x6b, 0], 21);
+  assert.deepEqual(decodeRecord(0x1102, thunk), {
+    kind: "thunk",
+    parent: 1,
+    end: 2,
+    next: 3,
+    offset: 0x40,
+    segment: 2,
+    length: 5,
+    ordinal: 4,
+    name: "thunk"
+  });
 
   const procedure = new Uint8Array(4 + 2 + 2 + 35 + 5);
   const procedureView = new DataView(procedure.buffer);
