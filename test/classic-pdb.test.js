@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   parseClassicPdb,
+  replaceClassicPdbLineInfo,
   replaceClassicPdbStringTableName,
   replaceClassicPdbSymbolName
 } from "../src/index.js";
@@ -41,12 +42,40 @@ function makeClassicPdb() {
   return bytes;
 }
 
-function makeClassicPdbWithSymbols({ crossBlockName = false, withC13 = false } = {}) {
+function makeC13LineBytes() {
+  const c13 = new Uint8Array(60);
+  const view = new DataView(c13.buffer);
+  view.setUint32(0, 0xf2, true);
+  view.setUint32(4, 36, true);
+  view.setUint32(8, 0x20, true);
+  view.setUint16(12, 2, true);
+  view.setUint16(14, 1, true);
+  view.setUint32(16, 10, true);
+  view.setUint32(20, 0, true);
+  view.setUint32(24, 1, true);
+  view.setUint32(28, 24, true);
+  view.setUint32(32, 4, true);
+  view.setUint32(36, 0x80000005, true);
+  view.setUint16(40, 3, true);
+  view.setUint16(42, 9, true);
+  view.setUint32(44, 0xf4, true);
+  view.setUint32(48, 8, true);
+  view.setUint32(52, 1, true);
+  return c13;
+}
+
+function makeClassicPdbWithSymbols({
+  crossBlockName = false,
+  withC13 = false,
+  lineInfo = false
+} = {}) {
   const blockSize = 512;
   const symbolBytes = crossBlockName ? 516 : 24;
-  const c13Bytes = withC13
-    ? Uint8Array.from([0x77, 0x77, 0x77, 0x77, 3, 0, 0, 0, 1, 2, 3, 0])
-    : new Uint8Array();
+  const c13Bytes = lineInfo
+    ? makeC13LineBytes()
+    : withC13
+      ? Uint8Array.from([0x77, 0x77, 0x77, 0x77, 3, 0, 0, 0, 1, 2, 3, 0])
+      : new Uint8Array();
   const symbolStream = new Uint8Array(symbolBytes + c13Bytes.length);
   const symbolView = new DataView(symbolStream.buffer);
   const symbolRecordOffset = crossBlockName ? 496 : 4;
@@ -611,6 +640,62 @@ test("classic PDB C13 line subsections decode bounded line and column records", 
   });
   assert.throws(() => parseCodeViewC13Subsections(c13.subarray(0, 10)),
     /subsection exceeds its module stream/);
+});
+
+test("classic PDB C13 line records can be edited without resizing module streams", () => {
+  const original = makeClassicPdbWithSymbols({ lineInfo: true });
+  const originalPdb = parseClassicPdb(original);
+  const originalLine = originalPdb.dbi.modules[0].c13.lines[0].blocks[0].lines[0];
+  assert.deepEqual(originalLine, {
+    offset: 4,
+    startLine: 5,
+    endLineDelta: 0,
+    isStatement: true,
+    startColumn: 3,
+    endColumn: 9
+  });
+
+  const rewritten = replaceClassicPdbLineInfo(original, {
+    moduleIndex: 0,
+    lineSubsectionIndex: 0,
+    blockIndex: 0,
+    lineIndex: 0,
+    line: {
+      startLine: 42,
+      endLineDelta: 2,
+      isStatement: false,
+      startColumn: 7,
+      endColumn: 15
+    }
+  });
+  const rewrittenPdb = parseClassicPdb(rewritten);
+  assert.deepEqual(rewrittenPdb.dbi.modules[0].c13.lines[0].blocks[0].lines[0], {
+    offset: 4,
+    startLine: 42,
+    endLineDelta: 2,
+    isStatement: false,
+    startColumn: 7,
+    endColumn: 15
+  });
+  assert.equal(rewritten.length, original.length);
+  assert.deepEqual(
+    parseClassicPdb(original).dbi.modules[0].c13.lines[0].blocks[0].lines[0],
+    originalLine
+  );
+  assert.throws(() => replaceClassicPdbLineInfo(original, {
+    moduleIndex: 0,
+    lineSubsectionIndex: 0,
+    blockIndex: 0,
+    lineIndex: 0,
+    line: { startLine: 0x1000000 }
+  }), /line number fields are out of range/);
+  assert.throws(() => replaceClassicPdbLineInfo(original, {
+    moduleIndex: 0,
+    lineSubsectionIndex: 0,
+    blockIndex: 0,
+    lineIndex: 0,
+    line: { startColumn: 16, endColumn: 15 }
+  }), /line column fields are out of range/);
 });
 
 test("classic PDB string table resolves file names from checksum offsets", () => {
