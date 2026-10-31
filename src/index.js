@@ -1681,6 +1681,7 @@ export class Assembly {
     }
     if (nextName === method.name && nextFlags === method.row.Flags &&
         nextImplFlags === method.row.ImplFlags) return this;
+    this.#validateAssociatedFlags(6, rid, nextFlags);
 
     const heapStreams = new Map(
       [...(this._heapStreams ?? new Map([...this.metadataRoot.streams].map(([streamName, stream]) =>
@@ -1846,6 +1847,7 @@ export class Assembly {
       type.extends?.rid === nextBaseTarget?.rid;
     if (nextName === type.name && nextNamespace === type.namespace &&
         nextFlags === type.flags && baseUnchanged) return this;
+    this.#validateAssociatedFlags(2, rid, nextFlags);
 
     const heapStreams = new Map(
       [...(this._heapStreams ?? new Map([...this.metadataRoot.streams].map(([streamName, stream]) =>
@@ -2296,6 +2298,7 @@ export class Assembly {
       throw new FormatError("A Field with FieldRVA must remain static");
     }
     if (nextName === field.name && nextFlags === row.Flags) return this;
+    this.#validateAssociatedFlags(4, rid, nextFlags);
 
     const heapStreams = new Map(
       [...(this._heapStreams ?? new Map([...this.metadataRoot.streams].map(([streamName, stream]) =>
@@ -2363,6 +2366,7 @@ export class Assembly {
     this.tables.rows.set(29, rows);
     this.tables.counts[29] = rows.length;
     this.tables.valid |= 1n << 29n;
+    this.#updateMetadataFlags(4, fieldRid, { set: 0x0100 });
     field.rva = rva;
     for (const update of tokenUpdates) update.instruction.operand.value = update.replacement;
     this._patches.push(...patches);
@@ -2395,6 +2399,7 @@ export class Assembly {
       .find((candidate) => candidate.rid === rows[rid - 1].Field.rid);
     if (!field) throw new FormatError("FieldRVA row has no resolved Field");
     const tokenMap = this.#removeTokenRow(29, rid, "FieldRVA");
+    this.#updateMetadataFlags(4, field.rid, { clear: 0x0100 });
     field.rva = null;
     return tokenMap;
   }
@@ -2663,6 +2668,9 @@ export class Assembly {
     this.tables.rows.set(11, rows);
     this.tables.counts[11] = rows.length;
     this.tables.valid |= 1n << 11n;
+    this.#updateMetadataFlags(parentTable, parent.rid, {
+      set: parentTable === 4 ? 0x8000 : 0x1000
+    });
     this._heapStreams = heapStreams;
     this.#refreshHeaps();
     for (const update of tokenUpdates) update.instruction.operand.value = update.replacement;
@@ -2705,7 +2713,18 @@ export class Assembly {
 
   removeConstant(rid) {
     this.#ensureEditable();
-    return this.#removeTokenRow(11, rid, "Constant");
+    const row = this.tables.row(11, rid);
+    if (!row) return this.#removeTokenRow(11, rid, "Constant");
+    const parent = row.Parent.target;
+    const tokenMap = this.#removeTokenRow(11, rid, "Constant");
+    if (!(this.tables.rows.get(11) ?? []).some((candidate) =>
+      candidate.Parent.target?.table === parent.table &&
+      candidate.Parent.target.rid === parent.rid
+    )) {
+      const flag = parent.table === 4 ? 0x8000 : 0x1000;
+      this.#updateMetadataFlags(parent.table, parent.rid, { clear: flag });
+    }
+    return tokenMap;
   }
 
   addFieldMarshal({ parent, nativeType }) {
@@ -2782,6 +2801,9 @@ export class Assembly {
     this.tables.rows.set(13, rows);
     this.tables.counts[13] = rows.length;
     this.tables.valid |= 1n << 13n;
+    this.#updateMetadataFlags(parentTable, parent.rid, {
+      set: parentTable === 4 ? 0x1000 : 0x2000
+    });
     this._heapStreams = heapStreams;
     this.#refreshHeaps();
     for (const update of tokenUpdates) update.instruction.operand.value = update.replacement;
@@ -2819,7 +2841,18 @@ export class Assembly {
 
   removeFieldMarshal(rid) {
     this.#ensureEditable();
-    return this.#removeTokenRow(13, rid, "FieldMarshal");
+    const row = this.tables.row(13, rid);
+    if (!row) return this.#removeTokenRow(13, rid, "FieldMarshal");
+    const parent = row.Parent.target;
+    const tokenMap = this.#removeTokenRow(13, rid, "FieldMarshal");
+    if (!(this.tables.rows.get(13) ?? []).some((candidate) =>
+      candidate.Parent.target?.table === parent.table &&
+      candidate.Parent.target.rid === parent.rid
+    )) {
+      const flag = parent.table === 4 ? 0x1000 : 0x2000;
+      this.#updateMetadataFlags(parent.table, parent.rid, { clear: flag });
+    }
+    return tokenMap;
   }
 
   addClassLayout({ owner, packingSize = 0, classSize = 0 }) {
@@ -3484,6 +3517,11 @@ export class Assembly {
     this.tables.rows.set(14, rows);
     this.tables.counts[14] = rows.length;
     this.tables.valid |= 1n << 14n;
+    if (parentTable === 2 || parentTable === 6) {
+      this.#updateMetadataFlags(parentTable, parent.rid, {
+        set: parentTable === 2 ? 0x00040000 : 0x4000
+      });
+    }
     this._heapStreams = heapStreams;
     this.#refreshHeaps();
     for (const attribute of this.customAttributes) {
@@ -3540,7 +3578,20 @@ export class Assembly {
 
   removeDeclSecurity(rid) {
     this.#ensureEditable();
-    return this.#removeTokenRow(14, rid, "DeclSecurity");
+    const row = this.tables.row(14, rid);
+    if (!row) return this.#removeTokenRow(14, rid, "DeclSecurity");
+    const parent = row.Parent.target;
+    const tokenMap = this.#removeTokenRow(14, rid, "DeclSecurity");
+    if ((parent.table === 2 || parent.table === 6) &&
+        !(this.tables.rows.get(14) ?? []).some((candidate) =>
+          candidate.Parent.target?.table === parent.table &&
+          candidate.Parent.target.rid === parent.rid
+        )) {
+      this.#updateMetadataFlags(parent.table, parent.rid, {
+        clear: parent.table === 2 ? 0x00040000 : 0x4000
+      });
+    }
+    return tokenMap;
   }
 
   addMethod({ owner, name, flags, implFlags = 0, signature, body: bodyBytes }) {
@@ -4549,6 +4600,7 @@ export class Assembly {
       throw new RangeError("Param flags must be an unsigned 16-bit integer");
     }
     if (nextName === parameter.name && nextFlags === row.Flags) return this;
+    this.#validateAssociatedFlags(8, rid, nextFlags);
 
     const heapStreams = new Map(
       [...(this._heapStreams ?? new Map([...this.metadataRoot.streams].map(([streamName, stream]) =>
@@ -5252,6 +5304,7 @@ export class Assembly {
       throw new FormatError("A Property with a Constant row must retain the HasDefault flag");
     }
     if (nextName === property.name && nextFlags === row.Flags) return this;
+    this.#validateAssociatedFlags(23, rid, nextFlags);
 
     const heapStreams = new Map(
       [...(this._heapStreams ?? new Map([...this.metadataRoot.streams].map(([streamName, stream]) =>
@@ -8946,6 +8999,68 @@ export class Assembly {
       }
     }
     return { tokenMap, rowChanges, tokenUpdates, patches };
+  }
+
+  #updateMetadataFlags(tableId, rid, { set = 0, clear = 0 } = {}) {
+    const row = this.tables.row(tableId, rid);
+    let record;
+    if (tableId === 2) {
+      record = this.types[rid - 1];
+    } else if (tableId === 4) {
+      record = this.types.flatMap((type) => type.fields)
+        .find((field) => field.rid === rid);
+    } else if (tableId === 6) {
+      record = this.methods[rid - 1];
+    } else if (tableId === 8) {
+      record = this.methods.flatMap((method) => method.parameters)
+        .find((parameter) => parameter.rid === rid);
+    } else if (tableId === 23) {
+      record = this.types.flatMap((type) => type.properties)
+        .find((property) => property.rid === rid);
+    }
+    if (!row || !record) {
+      throw new FormatError(
+        `${metadataTableNames[tableId]} row ${rid} has no resolved semantic record`
+      );
+    }
+    row.Flags = (row.Flags | set) & ~clear;
+    record.flags = row.Flags;
+  }
+
+  #validateAssociatedFlags(tableId, rid, flags) {
+    const relations = new Map([
+      [2, [{ tableId: 14, column: "Parent", flag: 0x00040000, name: "HasSecurity", row: "DeclSecurity" }]],
+      [4, [
+        { tableId: 11, column: "Parent", flag: 0x8000, name: "HasDefault", row: "Constant" },
+        { tableId: 13, column: "Parent", flag: 0x1000, name: "HasFieldMarshal", row: "FieldMarshal" },
+        { tableId: 29, column: "Field", flag: 0x0100, name: "HasFieldRVA", row: "FieldRVA" },
+        { tableId: 28, column: "MemberForwarded", flag: 0x2000, name: "PInvokeImpl", row: "ImplMap" }
+      ]],
+      [6, [
+        { tableId: 14, column: "Parent", flag: 0x4000, name: "HasSecurity", row: "DeclSecurity" },
+        { tableId: 28, column: "MemberForwarded", flag: 0x2000, name: "PInvokeImpl", row: "ImplMap" }
+      ]],
+      [8, [
+        { tableId: 11, column: "Parent", flag: 0x1000, name: "HasDefault", row: "Constant" },
+        { tableId: 13, column: "Parent", flag: 0x2000, name: "HasFieldMarshal", row: "FieldMarshal" }
+      ]],
+      [23, [{ tableId: 11, column: "Parent", flag: 0x1000, name: "HasDefault", row: "Constant" }]]
+    ]);
+    for (const relation of relations.get(tableId) ?? []) {
+      if ((flags & relation.flag) !== 0) continue;
+      const referenced = (this.tables.rows.get(relation.tableId) ?? []).some((candidate) => {
+        const reference = candidate[relation.column];
+        const target = relation.column === "Field"
+          ? { table: 4, rid: reference?.rid }
+          : reference?.target;
+        return target?.table === tableId && target.rid === rid;
+      });
+      if (referenced) {
+        throw new FormatError(
+          `A ${metadataTableNames[tableId]} with a ${relation.row} row must retain the ${relation.name} flag`
+        );
+      }
+    }
   }
 
   #removeTokenRow(tableId, rid, tableName) {

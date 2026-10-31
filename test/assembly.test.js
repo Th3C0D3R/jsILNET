@@ -3816,6 +3816,148 @@ test("FieldRVA rows validate static primitive fields and round-trip add/replace/
   assert.equal(parseAssembly(reparsed.serialize()).tables.counts[29], 0);
 });
 
+test("metadata association edits synchronize presence flags and protect live rows", () => {
+  const assembly = parseAssembly(withoutDebugDirectory());
+  assembly.tables.sorted &= ~((1n << 11n) | (1n << 13n) | (1n << 14n) | (1n << 29n));
+  const ownerRid = assembly.types.at(-1).rid;
+  const fieldRid = assembly.addField({
+    owner: { table: "TypeDef", rid: ownerRid },
+    name: "AssociationFlagsField",
+    flags: 0x10,
+    signature: Uint8Array.of(0x06, 0x08)
+  }) & 0x00ffffff;
+  const methodWithParam = assembly.methods.find((method) => method.parameters.length > 0);
+  assert.ok(methodWithParam);
+  const methodRid = methodWithParam.rid;
+  const paramRid = methodWithParam.parameters[0].rid;
+  const propertyRid = assembly.addProperty({
+    owner: { table: "TypeDef", rid: ownerRid },
+    name: "AssociationFlagsProperty",
+    signature: Uint8Array.of(0x08, 0x00, 0x08)
+  });
+
+  assembly.addConstant({
+    parent: { table: "Field", rid: fieldRid },
+    type: 0x08,
+    value: Uint8Array.of(42, 0, 0, 0)
+  });
+  assembly.addConstant({
+    parent: { table: "Param", rid: paramRid },
+    type: 0x08,
+    value: Uint8Array.of(42, 0, 0, 0)
+  });
+  assembly.addConstant({
+    parent: { table: "Property", rid: propertyRid },
+    type: 0x08,
+    value: Uint8Array.of(42, 0, 0, 0)
+  });
+  assert.ok(assembly.tables.row(4, fieldRid).Flags & 0x8000);
+  assert.ok(assembly.tables.row(8, paramRid).Flags & 0x1000);
+  assert.ok(assembly.tables.row(23, propertyRid).Flags & 0x1000);
+  assert.throws(() => assembly.replaceField(fieldRid, {
+    flags: assembly.tables.row(4, fieldRid).Flags & ~0x8000
+  }), /HasDefault flag/);
+  assert.throws(() => assembly.replaceParam(paramRid, {
+    flags: assembly.tables.row(8, paramRid).Flags & ~0x1000
+  }), /HasDefault flag/);
+  assert.throws(() => assembly.replaceProperty(propertyRid, {
+    flags: assembly.tables.row(23, propertyRid).Flags & ~0x1000
+  }), /HasDefault flag/);
+
+  assembly.addFieldMarshal({
+    parent: { table: "Field", rid: fieldRid },
+    nativeType: Uint8Array.of(0x20)
+  });
+  assembly.addFieldMarshal({
+    parent: { table: "Param", rid: paramRid },
+    nativeType: Uint8Array.of(0x07)
+  });
+  assert.ok(assembly.tables.row(4, fieldRid).Flags & 0x1000);
+  assert.ok(assembly.tables.row(8, paramRid).Flags & 0x2000);
+  assert.throws(() => assembly.replaceField(fieldRid, {
+    flags: assembly.tables.row(4, fieldRid).Flags & ~0x1000
+  }), /HasFieldMarshal flag/);
+  assert.throws(() => assembly.replaceParam(paramRid, {
+    flags: assembly.tables.row(8, paramRid).Flags & ~0x2000
+  }), /HasFieldMarshal flag/);
+
+  const dataSection = assembly.pe.sections.find((section) => section.rawSize >= 4);
+  assert.ok(dataSection);
+  const fieldRvaRid = assembly.addFieldRva(fieldRid, dataSection.virtualAddress);
+  assert.ok(assembly.tables.row(4, fieldRid).Flags & 0x0100);
+  assert.throws(() => assembly.replaceField(fieldRid, {
+    flags: assembly.tables.row(4, fieldRid).Flags & ~0x0100
+  }), /HasFieldRVA flag/);
+
+  assembly.addDeclSecurity({
+    parent: { table: "TypeDef", rid: ownerRid },
+    action: 2,
+    permissionSet: Uint8Array.of(0x2e, 0)
+  });
+  assembly.addDeclSecurity({
+    parent: { table: "TypeDef", rid: ownerRid },
+    action: 3,
+    permissionSet: Uint8Array.of(0x2e, 0)
+  });
+  assembly.addDeclSecurity({
+    parent: { table: "MethodDef", rid: methodRid },
+    action: 2,
+    permissionSet: Uint8Array.of(0x2e, 0)
+  });
+  assert.ok(assembly.types[ownerRid - 1].flags & 0x00040000);
+  assert.ok(assembly.methods[methodRid - 1].flags & 0x4000);
+  assert.throws(() => assembly.replaceTypeDef(ownerRid, {
+    flags: assembly.types[ownerRid - 1].flags & ~0x00040000
+  }), /HasSecurity flag/);
+  assert.throws(() => assembly.replaceMethod(methodRid, {
+    flags: assembly.methods[methodRid - 1].flags & ~0x4000
+  }), /HasSecurity flag/);
+
+  assembly.removeConstant(assembly.tables.get(11).find((row) =>
+    row.Parent.target.table === 4 && row.Parent.target.rid === fieldRid
+  ).rid);
+  assembly.removeConstant(assembly.tables.get(11).find((row) =>
+    row.Parent.target.table === 8 && row.Parent.target.rid === paramRid
+  ).rid);
+  assembly.removeConstant(assembly.tables.get(11).find((row) =>
+    row.Parent.target.table === 23 && row.Parent.target.rid === propertyRid
+  ).rid);
+  assert.equal(assembly.tables.row(4, fieldRid).Flags & 0x8000, 0);
+  assert.equal(assembly.tables.row(8, paramRid).Flags & 0x1000, 0);
+  assert.equal(assembly.tables.row(23, propertyRid).Flags & 0x1000, 0);
+
+  const fieldMarshalFieldRid = assembly.tables.get(13).find((row) =>
+    row.Parent.target.table === 4 && row.Parent.target.rid === fieldRid
+  ).rid;
+  assembly.removeFieldMarshal(fieldMarshalFieldRid);
+  const fieldMarshalParamRid = assembly.tables.get(13).find((row) =>
+    row.Parent.target.table === 8 && row.Parent.target.rid === paramRid
+  ).rid;
+  assembly.removeFieldMarshal(fieldMarshalParamRid);
+  assembly.removeFieldRva(fieldRvaRid);
+  assert.equal(assembly.tables.row(4, fieldRid).Flags & (0x1000 | 0x0100), 0);
+  assert.equal(assembly.tables.row(8, paramRid).Flags & 0x2000, 0);
+
+  const typeSecurityRid = (action) => assembly.tables.get(14).find((row) =>
+    row.Action === action && row.Parent.target.table === 2 &&
+    row.Parent.target.rid === ownerRid
+  ).rid;
+  assembly.removeDeclSecurity(typeSecurityRid(2));
+  assert.ok(assembly.types[ownerRid - 1].flags & 0x00040000);
+  assembly.removeDeclSecurity(typeSecurityRid(3));
+  const methodSecurityRid = assembly.tables.get(14).find((row) =>
+    row.Parent.target.table === 6 && row.Parent.target.rid === methodRid
+  ).rid;
+  assembly.removeDeclSecurity(methodSecurityRid);
+  assert.equal(assembly.types[ownerRid - 1].flags & 0x00040000, 0);
+  assert.equal(assembly.methods[methodRid - 1].flags & 0x4000, 0);
+
+  const reparsed = parseAssembly(assembly.serialize());
+  assert.equal(reparsed.tables.row(4, fieldRid).Flags & (0x8000 | 0x1000 | 0x0100), 0);
+  assert.equal(reparsed.tables.row(8, paramRid).Flags & (0x1000 | 0x2000), 0);
+  assert.equal(reparsed.tables.row(23, propertyRid).Flags & 0x1000, 0);
+});
+
 test("sorted FieldRVA insertion remaps later ENC tokens", () => {
   const assembly = parseAssembly(withoutDebugDirectory());
   const owner = assembly.types.at(-1);
