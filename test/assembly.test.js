@@ -2500,6 +2500,11 @@ test("abstract methods append to the last TypeDef in optimized and pointer-table
       const ownerStart = assembly.tables.row(2, assembly.types.at(-1).rid).MethodList.rid - 1;
       [methodPointers[ownerStart].Method, methodPointers[ownerStart + 1].Method] =
         [methodPointers[ownerStart + 1].Method, methodPointers[ownerStart].Method];
+      const pointerOwner = assembly.types.at(-1);
+      [pointerOwner.methodRids[0], pointerOwner.methodRids[1]] =
+        [pointerOwner.methodRids[1], pointerOwner.methodRids[0]];
+      [pointerOwner.methods[0], pointerOwner.methods[1]] =
+        [pointerOwner.methods[1], pointerOwner.methods[0]];
 
       const paramRows = assembly.tables.get(8);
       const paramPointers = paramRows.map((param, index) => ({
@@ -2556,6 +2561,33 @@ test("abstract methods append to the last TypeDef in optimized and pointer-table
       assert.equal(reparsed.tables.get(7).at(-1).Param.rid, parameterRid);
     }
   }
+});
+
+test("methods append before later empty TypeDef ownership ranges", () => {
+  const assembly = parseAssembly(withoutDebugDirectory());
+  const owner = assembly.types.at(-2);
+  const laterOwner = assembly.types.at(-1);
+  const laterRow = assembly.tables.row(2, laterOwner.rid);
+  assert.ok(owner && laterOwner && laterRow);
+  owner.methodRids.push(...laterOwner.methodRids);
+  owner.methods.push(...laterOwner.methods);
+  laterOwner.methodRids = [];
+  laterOwner.methods = [];
+  laterRow.MethodList.rid = assembly.tables.counts[6] + 1;
+  laterRow.MethodList.raw = laterRow.MethodList.rid;
+
+  const token = assembly.addMethod({
+    owner: { table: "TypeDef", rid: owner.rid },
+    name: "EarlierOwnerMethod",
+    flags: 0x0096,
+    signature: Uint8Array.from([0x00, 0x00, 0x01]),
+    body: Uint8Array.of(0x06, 0x2a)
+  });
+  const rid = token & 0x00ffffff;
+  assert.equal(laterRow.MethodList.rid, rid + 1);
+  const reparsed = parseAssembly(assembly.serialize());
+  assert.equal(reparsed.types[owner.rid - 1].methods.at(-1).name, "EarlierOwnerMethod");
+  assert.equal(reparsed.types[laterOwner.rid - 1].methods.length, 0);
 });
 
 test("method append supports validated IL bodies and generic signatures", () => {

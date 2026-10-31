@@ -3550,9 +3550,6 @@ export class Assembly {
     if (!Number.isInteger(ownerRid) || ownerRid < 1 || !ownerType) {
       throw new RangeError("Method owner must identify an existing TypeDef");
     }
-    if (ownerType.rid !== this.types.at(-1)?.rid) {
-      throw new UnsupportedFormatError("Methods can only be appended to the last TypeDef row");
-    }
     if (typeof name !== "string" || name.length === 0 || name.includes("\0")) {
       throw new TypeError("Method name must be a non-empty null-free string");
     }
@@ -3602,6 +3599,28 @@ export class Assembly {
       throw new RangeError("MethodDef row count is inconsistent or exceeds the metadata token range");
     }
     const pointerRows = getBijectivePointerRows(this, 5, 6, "Method");
+    const typeRows = this.tables.rows.get(2) ?? [];
+    if (typeRows.length !== (this.tables.counts[2] ?? 0)) {
+      throw new FormatError("TypeDef row count is inconsistent with the metadata table header");
+    }
+    const ownerRow = typeRows[ownerRid - 1];
+    if (ownerRow?.rid !== ownerRid || !Number.isInteger(ownerRow.MethodList?.rid)) {
+      throw new FormatError(`TypeDef row ${ownerRid} has an inconsistent MethodList`);
+    }
+    const methodListRows = pointerRows ?? methodRows;
+    const endRid = typeRows[ownerRid]?.MethodList.rid ?? methodListRows.length + 1;
+    const ownedRids = pointerRows
+      ? pointerRows.slice(ownerRow.MethodList.rid - 1, endRid - 1)
+        .map((pointer) => pointer.Method.rid)
+      : Array.from(
+        { length: Math.max(0, endRid - ownerRow.MethodList.rid) },
+        (_, index) => ownerRow.MethodList.rid + index
+      );
+    if (endRid !== methodListRows.length + 1 ||
+        ownedRids.length !== ownerType.methodRids.length ||
+        ownedRids.some((methodRid, index) => methodRid !== ownerType.methodRids[index])) {
+      throw new UnsupportedFormatError("Method append requires the owner's methods to be contiguous at the end");
+    }
     const parameterRows = this.tables.rows.get(8) ?? [];
     if (parameterRows.length !== this.tables.counts[8]) {
       throw new FormatError("Param row count is inconsistent with the metadata table header");
@@ -3668,6 +3687,10 @@ export class Assembly {
       });
       this.tables.rows.set(5, pointerRows);
       this.tables.counts[5] = pointerRid;
+    }
+    for (let index = ownerRid; index < typeRows.length; index++) {
+      typeRows[index].MethodList.rid++;
+      typeRows[index].MethodList.raw++;
     }
     this.methods.push(method);
     if (parsedBody) {
