@@ -4387,6 +4387,11 @@ export class Assembly {
 
   #writeMethod({ owner, name, flags, implFlags = 0, signature, body: bodyBytes }, insertIntoOwner) {
     this.#ensureEditable();
+    if (this.pe.debugDirectoryEntries.some((entry) => entry.embeddedPortablePdb)) {
+      throw new UnsupportedFormatError(
+        "MethodDef rows cannot be added while an embedded Portable PDB is present because its method rows are not updated"
+      );
+    }
     const ownerRid = metadataTableId(owner?.table) === 2 ? owner.rid : 0;
     const ownerType = this.types[ownerRid - 1];
     if (!Number.isInteger(ownerRid) || ownerRid < 1 || !ownerType) {

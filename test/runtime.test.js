@@ -349,6 +349,15 @@ test("strong-name signed PE32+ assemblies load and execute in .NET", {
       entry.type === 17
     )?.embeddedPortablePdb;
     assert.ok(embeddedPdb);
+    const beforeMethodAdd = assembly.serialize();
+    assert.throws(() => assembly.addMethod({
+      owner: { table: "TypeDef", rid: assembly.types[0].rid },
+      name: "DebugInfoUnsafe",
+      flags: 0x0096,
+      signature: Uint8Array.of(0x00, 0x00, 0x01),
+      body: Uint8Array.of(0x06, 0x2a)
+    }), /MethodDef rows cannot be added while an embedded Portable PDB is present/);
+    assert.deepEqual(assembly.serialize(), beforeMethodAdd);
     const refreshedOriginalPdb = refreshEmbeddedPortablePdbId(embeddedPdb);
     const reparsedRefreshedPdb = parseEmbeddedPortablePdbData(
       refreshedOriginalPdb.bytes,
