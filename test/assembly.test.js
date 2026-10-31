@@ -1819,6 +1819,52 @@ test("TypeSpec generic contexts validate local arity and MemberRef variables", (
   assert.deepEqual(assembly.typeSpecs[typeSpecRid - 1]?.signature, typeSpecSignature);
 });
 
+test("TypeSpec generic instances validate generic TypeRef arity", () => {
+  const assembly = parseAssembly(withoutDebugDirectory());
+  assembly.tables.sorted &= ~(1n << 1n);
+  const genericTypeToken = assembly.addTypeRef({ name: "External.Generic`2" });
+  const genericTypeRid = genericTypeToken & 0x00ffffff;
+  const reparsed = parseAssembly(assembly.serialize());
+  const originalTypeSpecCount = reparsed.typeSpecs.length;
+  const signatureFor = (argumentCount) => Uint8Array.from([
+    0x15,
+    0x12,
+    ...appendCompressedUInt(encodeCodedIndex(1, genericTypeRid, "TypeDefOrRef")),
+    ...appendCompressedUInt(argumentCount),
+    ...new Array(argumentCount).fill(0x08)
+  ]);
+
+  assert.throws(() => reparsed.addTypeSpec({
+    signature: signatureFor(1)
+  }), /1 arguments for TypeRef arity 2/);
+  assert.equal(reparsed.modified, false);
+  assert.equal(reparsed.typeSpecs.length, originalTypeSpecCount);
+
+  const token = reparsed.addTypeSpec({ signature: signatureFor(2) });
+  assert.equal(token >>> 24, 27);
+  assert.equal(parseAssembly(reparsed.serialize()).typeSpecs.length, originalTypeSpecCount + 1);
+});
+
+test("TypeRef rename revalidates generic TypeSpec arity before mutation", () => {
+  const assembly = parseAssembly(withoutDebugDirectory());
+  assembly.tables.sorted &= ~(1n << 1n);
+  const typeRefRid = assembly.addTypeRef({ name: "External.Generic`2" }) & 0x00ffffff;
+  const typeRefToken = encodeCodedIndex(1, typeRefRid, "TypeDefOrRef");
+  assembly.addTypeSpec({
+    signature: Uint8Array.from([
+      0x15, 0x12, ...appendCompressedUInt(typeRefToken),
+      0x02, 0x08, 0x08
+    ])
+  });
+  const reparsed = parseAssembly(assembly.serialize());
+
+  assert.throws(() => reparsed.replaceTypeRef(typeRefRid, {
+    name: "External.Generic`1"
+  }), /2 arguments for TypeRef arity 1/);
+  assert.equal(reparsed.typeRefs[typeRefRid - 1].name, "External.Generic`2");
+  assert.equal(reparsed.modified, false);
+});
+
 test("TypeSpec generic variables are checked in TypeDef base-type context", () => {
   function serializedWithBaseTypeArgument(typeVariableIndex) {
     const assembly = parseAssembly(fixture);

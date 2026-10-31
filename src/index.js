@@ -159,9 +159,23 @@ function getGenericParameterArity(parameters, ownerTable, ownerRid) {
   );
 }
 
-function validateTypeSpecDefinitions(assembly, type) {
+function getTypeRefGenericArity(assembly, rid, typeRefOverride = null) {
+  const typeRef = typeRefOverride?.rid === rid
+    ? typeRefOverride
+    : assembly.typeRefs[rid - 1];
+  if (!typeRef) throw new FormatError(`Generic instance references missing TypeRef row ${rid}`);
+  const aritySuffix = /`([0-9]+)$/.exec(typeRef.name);
+  if (!aritySuffix) return null;
+  const arity = Number(aritySuffix[1]);
+  if (!Number.isSafeInteger(arity)) {
+    throw new FormatError(`TypeRef row ${rid} has an unsupported generic arity suffix`);
+  }
+  return arity;
+}
+
+function validateTypeSpecDefinitions(assembly, type, typeRefOverride = null) {
   if (type.kind === "modified") {
-    validateTypeSpecDefinitions(assembly, type.type);
+    validateTypeSpecDefinitions(assembly, type.type, typeRefOverride);
   } else if (type.kind === "genericInstance") {
     if (type.genericType.table === 2) {
       const expectedArity = getGenericParameterArity(assembly.genericParams, 2, type.genericType.rid);
@@ -170,14 +184,25 @@ function validateTypeSpecDefinitions(assembly, type) {
           `TypeSpec generic instance has ${type.arguments.length} arguments for TypeDef arity ${expectedArity}`
         );
       }
+    } else if (type.genericType.table === 1) {
+      const expectedArity = getTypeRefGenericArity(
+        assembly, type.genericType.rid, typeRefOverride
+      );
+      if (expectedArity !== null && type.arguments.length !== expectedArity) {
+        throw new FormatError(
+          `TypeSpec generic instance has ${type.arguments.length} arguments for TypeRef arity ${expectedArity}`
+        );
+      }
     }
-    for (const argument of type.arguments) validateTypeSpecDefinitions(assembly, argument);
+    for (const argument of type.arguments) {
+      validateTypeSpecDefinitions(assembly, argument, typeRefOverride);
+    }
   } else if (["array", "szArray", "pointer", "byRef", "pinned"].includes(type.kind)) {
-    validateTypeSpecDefinitions(assembly, type.type);
+    validateTypeSpecDefinitions(assembly, type.type, typeRefOverride);
   } else if (type.kind === "functionPointer") {
-    validateTypeSpecDefinitions(assembly, type.signature.returnType);
+    validateTypeSpecDefinitions(assembly, type.signature.returnType, typeRefOverride);
     for (const parameter of type.signature.parameters) {
-      validateTypeSpecDefinitions(assembly, parameter);
+      validateTypeSpecDefinitions(assembly, parameter, typeRefOverride);
     }
   }
 }
@@ -264,11 +289,7 @@ function validateMemberRefGenericContext(
       ? typeRefOverride
       : assembly.typeRefs[parent.rid - 1];
     if (!typeRef) throw new FormatError(`MemberRef parent references a missing TypeRef row ${parent.rid}`);
-    const aritySuffix = /`([0-9]+)$/.exec(typeRef.name);
-    const typeArity = aritySuffix ? Number(aritySuffix[1]) : 0;
-    if (!Number.isSafeInteger(typeArity)) {
-      throw new FormatError(`TypeRef row ${parent.rid} has an unsupported generic arity suffix`);
-    }
+    const typeArity = getTypeRefGenericArity(assembly, parent.rid, typeRefOverride) ?? 0;
     validateGenericVariableReferences(signature, typeArity, assembly, typeSpecOverride);
   } else if (parentTable === 27) {
     const typeSpec = typeSpecOverride?.rid === parent.rid
@@ -7750,6 +7771,9 @@ export class Assembly {
     }
     if (nextName !== typeRef.name) {
       const typeRefOverride = { rid, name: nextName };
+      for (const typeSpec of this.typeSpecs) {
+        validateTypeSpecDefinitions(this, typeSpec.parsedSignature, typeRefOverride);
+      }
       for (const memberRef of this.memberRefs) {
         if (memberRef.parent.table !== 1 || memberRef.parent.rid !== rid) continue;
         validateMemberRefGenericContext(
