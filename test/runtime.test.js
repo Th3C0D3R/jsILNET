@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseAssembly } from "../src/index.js";
+import { parseAssembly, parsePE } from "../src/index.js";
 
 const dotnetVersion = spawnSync("dotnet", ["--version"], { encoding: "utf8" });
 const dotnetAvailable = dotnetVersion.status === 0;
@@ -17,9 +17,25 @@ test("rewritten IL assemblies load and execute in the installed .NET runtime", {
 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), "jsilnet-runtime-"));
   try {
-    const assembly = parseAssembly(
+    const bytes = Uint8Array.from(
       await readFile(new URL("./fixtures/Fixture.dll", import.meta.url))
     );
+    const pe = parsePE(bytes);
+    const debugDirectoryOffset = pe.optionalHeaderOffset +
+      (pe.optionalHeaderMagic === 0x10b ? 96 : 112) + 6 * 8;
+    const view = new DataView(bytes.buffer);
+    view.setUint32(debugDirectoryOffset, 0, true);
+    view.setUint32(debugDirectoryOffset + 4, 0, true);
+    const assembly = parseAssembly(bytes);
+    assembly.tables.sorted &= ~(1n << 12n);
+    const insertedMethodToken = assembly.insertMethod({
+      owner: { table: "TypeDef", rid: assembly.types[1].rid },
+      name: "RuntimeInserted",
+      flags: 0x0096,
+      signature: Uint8Array.of(0x00, 0x00, 0x08),
+      body: Uint8Array.of(0x0e, 0x1f, 43, 0x2a)
+    }).token;
+    assert.equal(insertedMethodToken >>> 24, 6);
     const objectType = assembly.typeRefs.find((type) =>
       type.namespace === "System" && type.name === "Object"
     );
@@ -64,13 +80,15 @@ test("rewritten IL assemblies load and execute in the installed .NET runtime", {
       "using System.Reflection;",
       "var assembly = Assembly.LoadFile(Path.GetFullPath(args[0]));",
       "var flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static;",
+      "var inserted = assembly.GetTypes().SelectMany(candidate => candidate.GetMethods(flags))",
+      "    .Single(method => method.Name == \"RuntimeInserted\");",
       "var type = assembly.GetTypes().Single(candidate =>",
       "    candidate.GetMethods(flags).Any(method => method.Name == \"RuntimeSmoke\"));",
       "var smoke = type.GetMethod(\"RuntimeSmoke\", flags)",
       "    ?? throw new InvalidOperationException(\"RuntimeSmoke was not found\");",
       "var field = type.GetField(\"RuntimeAnswer\", flags)",
       "    ?? throw new InvalidOperationException(\"RuntimeAnswer was not found\");",
-      "Console.WriteLine($\"{smoke.Invoke(null, null)}:{field.GetRawConstantValue()}\");"
+      "Console.WriteLine($\"{smoke.Invoke(null, null)}:{field.GetRawConstantValue()}:{inserted.Invoke(null, null)}\");"
     ].join("\n"));
 
     const result = spawnSync(
@@ -79,7 +97,7 @@ test("rewritten IL assemblies load and execute in the installed .NET runtime", {
       { encoding: "utf8", timeout: 120_000 }
     );
     assert.equal(result.status, 0, result.stderr || result.stdout || result.error?.message);
-    assert.equal(result.stdout.trim().split(/\r?\n/).at(-1), "42:42");
+    assert.equal(result.stdout.trim().split(/\r?\n/).at(-1), "42:42:43");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
