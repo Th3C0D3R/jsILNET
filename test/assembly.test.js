@@ -1316,7 +1316,7 @@ test("AssemblyRef rows can be inserted before existing rows and remap references
 });
 
 test("assembly processor and OS tables support validated CRUD and round trips", () => {
-  const assembly = parseAssembly(fixture);
+  const assembly = parseAssembly(withoutDebugDirectory());
   const processorOne = assembly.addAssemblyProcessor({ processor: 0x14c });
   const processorTwo = assembly.addAssemblyProcessor({ processor: 0x8664 });
   assembly.replaceAssemblyProcessor(processorTwo, { processor: 0xaa64 });
@@ -1389,6 +1389,125 @@ test("assembly processor and OS tables support validated CRUD and round trips", 
   const remapped = parseAssembly(remapAssembly.serialize());
   assert.equal(remapped.tables.get(36).at(-1).AssemblyRef.rid, secondRefRid - 1);
   assert.equal(remapped.tables.get(37).at(-1).AssemblyRef.rid, secondRefRid - 1);
+});
+
+test("platform metadata insertion and removal remap ENC token RIDs", () => {
+  const assembly = parseAssembly(withoutDebugDirectory());
+  const assemblyRefRid = assembly.assemblyRefs[0].rid;
+  for (const [tableId, firstValue, secondValue] of [
+    [33, { Processor: 0x14c }, { Processor: 0x8664 }],
+    [34, { OSPlatformId: 1, OSMajorVersion: 10, OSMinorVersion: 0 },
+      { OSPlatformId: 2, OSMajorVersion: 11, OSMinorVersion: 0 }],
+    [36, { Processor: 0x14c, AssemblyRef: assemblyRefRid },
+      { Processor: 0x8664, AssemblyRef: assemblyRefRid }],
+    [37, { OSPlatformId: 1, OSMajorVersion: 10, OSMinorVersion: 0, AssemblyRef: assemblyRefRid },
+      { OSPlatformId: 2, OSMajorVersion: 11, OSMinorVersion: 0, AssemblyRef: assemblyRefRid }]
+  ]) {
+    if (tableId === 33) {
+      assembly.addAssemblyProcessor({ processor: firstValue.Processor });
+      assembly.addAssemblyProcessor({ processor: secondValue.Processor });
+    } else if (tableId === 34) {
+      assembly.addAssemblyOS({
+        platformId: firstValue.OSPlatformId,
+        majorVersion: firstValue.OSMajorVersion,
+        minorVersion: firstValue.OSMinorVersion
+      });
+      assembly.addAssemblyOS({
+        platformId: secondValue.OSPlatformId,
+        majorVersion: secondValue.OSMajorVersion,
+        minorVersion: secondValue.OSMinorVersion
+      });
+    } else if (tableId === 36) {
+      assembly.addAssemblyRefProcessor({
+        processor: firstValue.Processor,
+        assemblyRefRid: firstValue.AssemblyRef
+      });
+      assembly.addAssemblyRefProcessor({
+        processor: secondValue.Processor,
+        assemblyRefRid: secondValue.AssemblyRef
+      });
+    } else {
+      assembly.addAssemblyRefOS({
+        platformId: firstValue.OSPlatformId,
+        majorVersion: firstValue.OSMajorVersion,
+        minorVersion: firstValue.OSMinorVersion,
+        assemblyRefRid: firstValue.AssemblyRef
+      });
+      assembly.addAssemblyRefOS({
+        platformId: secondValue.OSPlatformId,
+        majorVersion: secondValue.OSMajorVersion,
+        minorVersion: secondValue.OSMinorVersion,
+        assemblyRefRid: secondValue.AssemblyRef
+      });
+    }
+  }
+  const tableIds = [33, 34, 36, 37];
+  assembly.tables.rows.set(31, tableIds.map((tableId, index) => ({
+    table: 31,
+    tableName: "ENCMap",
+    rid: index + 1,
+    Token: (tableId << 24) + 2
+  })));
+  assembly.tables.counts[31] = tableIds.length;
+  assembly.tables.valid |= 1n << 31n;
+
+  const insertions = [
+    assembly.insertAssemblyProcessor({ beforeRid: 1, processor: 0xaa64 }),
+    assembly.insertAssemblyOS({ beforeRid: 1, platformId: 3, majorVersion: 12, minorVersion: 0 }),
+    assembly.insertAssemblyRefProcessor({
+      beforeRid: 1,
+      processor: 0xaa64,
+      assemblyRefRid
+    }),
+    assembly.insertAssemblyRefOS({
+      beforeRid: 1,
+      platformId: 3,
+      majorVersion: 12,
+      minorVersion: 0,
+      assemblyRefRid
+    })
+  ];
+  for (let index = 0; index < tableIds.length; index++) {
+    const tableId = tableIds[index];
+    assert.equal(insertions[index].rid, 1);
+    assert.equal(insertions[index].tokenMap.get((tableId << 24) + 2), (tableId << 24) + 3);
+    assert.equal(assembly.tables.row(tableId, 1).rid, 1);
+    assert.equal(assembly.tables.row(31, index + 1).Token, (tableId << 24) + 3);
+  }
+  assert.equal(assembly.tables.row(36, 1).AssemblyRef.rid, assemblyRefRid);
+  assert.equal(assembly.tables.row(37, 1).AssemblyRef.rid, assemblyRefRid);
+  const insertedOutput = parseAssembly(assembly.serialize());
+  assert.deepEqual(insertedOutput.tables.get(31).map(({ Token }) => Token),
+    tableIds.map((tableId) => (tableId << 24) + 3));
+
+  const removals = [
+    assembly.removeAssemblyProcessor(1),
+    assembly.removeAssemblyOS(1),
+    assembly.removeAssemblyRefProcessor(1),
+    assembly.removeAssemblyRefOS(1)
+  ];
+  for (let index = 0; index < tableIds.length; index++) {
+    const tableId = tableIds[index];
+    assert.equal(removals[index].get((tableId << 24) + 3), (tableId << 24) + 2);
+    assert.equal(assembly.tables.row(31, index + 1).Token, (tableId << 24) + 2);
+  }
+  const reparsed = parseAssembly(assembly.serialize());
+  assert.deepEqual(reparsed.tables.get(31).map(({ Token }) => Token),
+    tableIds.map((tableId) => (tableId << 24) + 2));
+
+  const referencedAssembly = parseAssembly(withoutDebugDirectory());
+  referencedAssembly.addAssemblyProcessor({ processor: 0x8664 });
+  referencedAssembly.tables.rows.set(31, [{
+    table: 31,
+    tableName: "ENCMap",
+    rid: 1,
+    Token: 0x21000001
+  }]);
+  referencedAssembly.tables.counts[31] = 1;
+  referencedAssembly.tables.valid |= 1n << 31n;
+  assert.throws(() => referencedAssembly.removeAssemblyProcessor(1), /referenced by ENCMap/);
+  assert.equal(referencedAssembly.tables.counts[33], 1);
+  assert.equal(referencedAssembly.tables.row(31, 1).Token, 0x21000001);
 });
 
 test("AssemblyRef replacement updates manifest binding fields in place", () => {

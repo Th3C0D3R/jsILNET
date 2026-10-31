@@ -8149,6 +8149,12 @@ export class Assembly {
     return this.#appendMetadataRow(33, { Processor: processor });
   }
 
+  insertAssemblyProcessor({ beforeRid, processor }) {
+    this.#ensureEditable();
+    this.#validateAssemblyPlatformFields(33, { Processor: processor });
+    return this.#insertAssemblyPlatformRow(33, beforeRid, { Processor: processor });
+  }
+
   replaceAssemblyProcessor(rid, { processor } = {}) {
     this.#ensureEditable();
     const row = this.tables.row(33, rid);
@@ -8161,8 +8167,7 @@ export class Assembly {
 
   removeAssemblyProcessor(rid) {
     this.#ensureEditable();
-    this.#removeMetadataRow(33, rid);
-    return this;
+    return this.#removeMetadataRow(33, rid);
   }
 
   addAssemblyOS({ platformId, majorVersion, minorVersion }) {
@@ -8174,6 +8179,17 @@ export class Assembly {
     };
     this.#validateAssemblyPlatformFields(34, values);
     return this.#appendMetadataRow(34, values);
+  }
+
+  insertAssemblyOS({ beforeRid, platformId, majorVersion, minorVersion }) {
+    this.#ensureEditable();
+    const values = {
+      OSPlatformId: platformId,
+      OSMajorVersion: majorVersion,
+      OSMinorVersion: minorVersion
+    };
+    this.#validateAssemblyPlatformFields(34, values);
+    return this.#insertAssemblyPlatformRow(34, beforeRid, values);
   }
 
   replaceAssemblyOS(rid, { platformId, majorVersion, minorVersion } = {}) {
@@ -8192,8 +8208,7 @@ export class Assembly {
 
   removeAssemblyOS(rid) {
     this.#ensureEditable();
-    this.#removeMetadataRow(34, rid);
-    return this;
+    return this.#removeMetadataRow(34, rid);
   }
 
   addAssemblyRefProcessor({ processor, assemblyRefRid }) {
@@ -8203,6 +8218,21 @@ export class Assembly {
     return this.#appendMetadataRow(36, {
       Processor: processor,
       AssemblyRef: { raw: assemblyRefRid, rid: assemblyRefRid, table: 35, tableName: metadataTableNames[35] }
+    });
+  }
+
+  insertAssemblyRefProcessor({ beforeRid, processor, assemblyRefRid }) {
+    this.#ensureEditable();
+    this.#validateAssemblyPlatformFields(36, { Processor: processor });
+    this.#validateAssemblyRefRid(assemblyRefRid);
+    return this.#insertAssemblyPlatformRow(36, beforeRid, {
+      Processor: processor,
+      AssemblyRef: {
+        raw: assemblyRefRid,
+        rid: assemblyRefRid,
+        table: 35,
+        tableName: metadataTableNames[35]
+      }
     });
   }
 
@@ -8227,8 +8257,7 @@ export class Assembly {
 
   removeAssemblyRefProcessor(rid) {
     this.#ensureEditable();
-    this.#removeMetadataRow(36, rid);
-    return this;
+    return this.#removeMetadataRow(36, rid);
   }
 
   addAssemblyRefOS({ platformId, majorVersion, minorVersion, assemblyRefRid }) {
@@ -8243,6 +8272,26 @@ export class Assembly {
     return this.#appendMetadataRow(37, {
       ...values,
       AssemblyRef: { raw: assemblyRefRid, rid: assemblyRefRid, table: 35, tableName: metadataTableNames[35] }
+    });
+  }
+
+  insertAssemblyRefOS({ beforeRid, platformId, majorVersion, minorVersion, assemblyRefRid }) {
+    this.#ensureEditable();
+    const values = {
+      OSPlatformId: platformId,
+      OSMajorVersion: majorVersion,
+      OSMinorVersion: minorVersion
+    };
+    this.#validateAssemblyPlatformFields(37, values);
+    this.#validateAssemblyRefRid(assemblyRefRid);
+    return this.#insertAssemblyPlatformRow(37, beforeRid, {
+      ...values,
+      AssemblyRef: {
+        raw: assemblyRefRid,
+        rid: assemblyRefRid,
+        table: 35,
+        tableName: metadataTableNames[35]
+      }
     });
   }
 
@@ -8271,8 +8320,7 @@ export class Assembly {
 
   removeAssemblyRefOS(rid) {
     this.#ensureEditable();
-    this.#removeMetadataRow(37, rid);
-    return this;
+    return this.#removeMetadataRow(37, rid);
   }
 
   replaceAssemblyRef(rid, {
@@ -11958,6 +12006,39 @@ export class Assembly {
     return rid;
   }
 
+  #insertAssemblyPlatformRow(tableId, beforeRid, values) {
+    const rows = this.tables.rows.get(tableId) ?? [];
+    if (rows.length !== (this.tables.counts[tableId] ?? 0)) {
+      throw new FormatError(`${metadataTableNames[tableId]} row count is inconsistent with the metadata table header`);
+    }
+    if (!Number.isInteger(beforeRid) || beforeRid < 1 || beforeRid > rows.length + 1) {
+      throw new RangeError(`Invalid ${metadataTableNames[tableId]} insertion position ${beforeRid}`);
+    }
+    if (rows.length >= 0x00ffffff) {
+      throw new RangeError(`${metadataTableNames[tableId]} token row ID exceeds 24-bit range`);
+    }
+    const { tokenMap, rowChanges, tokenUpdates, patches } =
+      this.#prepareTokenRowInsertion(tableId, beforeRid, rows.length, metadataTableNames[tableId]);
+    const row = {
+      table: tableId,
+      tableName: metadataTableNames[tableId],
+      rid: beforeRid,
+      ...values
+    };
+    for (const change of rowChanges) change.row[change.columnName] = change.value;
+    rows.splice(beforeRid - 1, 0, row);
+    rows.forEach((currentRow, index) => {
+      currentRow.rid = index + 1;
+    });
+    this.tables.rows.set(tableId, rows);
+    this.tables.counts[tableId] = rows.length;
+    this.tables.valid |= 1n << BigInt(tableId);
+    for (const update of tokenUpdates) update.instruction.operand.value = update.replacement;
+    this._patches.push(...patches);
+    this._metadataDirty = true;
+    return { rid: beforeRid, tokenMap };
+  }
+
   #replaceMetadataRow(tableId, rid, values) {
     const row = this.tables.row(tableId, rid);
     if (!row) throw new RangeError(`Invalid ${metadataTableNames[tableId]} row ID ${rid}`);
@@ -11969,14 +12050,6 @@ export class Assembly {
     if (![33, 34, 36, 37].includes(tableId)) {
       throw new RangeError(`Unsupported metadata row removal for table ${tableId}`);
     }
-    const supportedStreams = new Set(["#~", "#-", "#Strings", "#US", "#GUID", "#Blob"]);
-    for (const streamName of this.metadataRoot.streams.keys()) {
-      if (!supportedStreams.has(streamName)) {
-        throw new UnsupportedFormatError(
-          `Cannot remove ${metadataTableNames[tableId]} rows with unrecognized metadata stream ${streamName}`
-        );
-      }
-    }
     const rows = this.tables.rows.get(tableId) ?? [];
     if (rows.length !== (this.tables.counts[tableId] ?? 0)) {
       throw new FormatError(`${metadataTableNames[tableId]} row count is inconsistent with the metadata table header`);
@@ -11984,14 +12057,20 @@ export class Assembly {
     if (!Number.isInteger(rid) || rid < 1 || rid > rows.length) {
       throw new RangeError(`Invalid ${metadataTableNames[tableId]} row ID ${rid}`);
     }
-    rows.splice(rid - 1, 1);
-    rows.forEach((row, index) => {
+    const { tokenMap, rowChanges, tokenUpdates, patches } =
+      this.#prepareTokenRowRemoval(tableId, rid, rows.length, metadataTableNames[tableId]);
+    const remainingRows = rows.filter((row) => row.rid !== rid);
+    for (const change of rowChanges) change.row[change.columnName] = change.value;
+    remainingRows.forEach((row, index) => {
       row.rid = index + 1;
     });
-    this.tables.rows.set(tableId, rows);
-    this.tables.counts[tableId] = rows.length;
-    if (rows.length === 0) this.tables.valid &= ~(1n << BigInt(tableId));
+    this.tables.rows.set(tableId, remainingRows);
+    this.tables.counts[tableId] = remainingRows.length;
+    if (remainingRows.length === 0) this.tables.valid &= ~(1n << BigInt(tableId));
+    for (const update of tokenUpdates) update.instruction.operand.value = update.replacement;
+    this._patches.push(...patches);
     this._metadataDirty = true;
+    return tokenMap;
   }
 
   #ensureTokenRemappingSafe(tableName) {

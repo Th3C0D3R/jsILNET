@@ -52,6 +52,7 @@ Sorted row insertions are available through `insertConstant`, `insertFieldMarsha
 `insertExportedType({ beforeRid, name, namespace, flags, typeDefId, implementation })` inserts at a 1-based ExportedType row position, remaps ExportedType references, and returns `{ token, tokenMap }`.
 `insertManifestResource({ beforeRid, name, flags, implementation, data })` inserts at a 1-based resource row position, remaps ManifestResource references, preserves embedded payload edits, and returns `{ token, tokenMap }`.
 `insertAssemblyRef({ beforeRid, name, culture, version, flags, publicKeyOrToken, hashValue })` inserts at a 1-based AssemblyRef row position, remaps scopes and linked File/ExportedType/resource references plus AssemblyRef platform rows, and returns `{ token, tokenMap }`.
+`insertAssemblyProcessor({ beforeRid, processor })`, `insertAssemblyOS({ beforeRid, platformId, majorVersion, minorVersion })`, `insertAssemblyRefProcessor({ beforeRid, processor, assemblyRefRid })`, and `insertAssemblyRefOS({ beforeRid, platformId, majorVersion, minorVersion, assemblyRefRid })` insert platform rows at 1-based positions and return `{ rid, tokenMap }`. Removing these rows remaps surviving ENC tokens and returns a token map; RID-changing edits refuse debug data, opaque streams, or incompatible method-body edits.
 
 Invalid or unsupported structures and edits raise `FormatError` or `UnsupportedFormatError`; they are not silently skipped.
 
