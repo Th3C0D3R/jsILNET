@@ -21,16 +21,21 @@ function readSerString(reader) {
   }
 }
 
+function encodeUtf8(value, context) {
+  if (typeof value !== "string") throw new TypeError(`${context} must be a string`);
+  const bytes = new TextEncoder().encode(value);
+  if (new TextDecoder("utf-8", { fatal: true }).decode(bytes) !== value) {
+    throw new TypeError(`${context} must contain valid Unicode`);
+  }
+  return bytes;
+}
+
 function writeSerString(output, value) {
   if (value === null) {
     output.push(0xff);
     return;
   }
-  if (typeof value !== "string") throw new TypeError("Custom-attribute SerString values must be strings or null");
-  const bytes = new TextEncoder().encode(value);
-  if (new TextDecoder("utf-8", { fatal: true }).decode(bytes) !== value) {
-    throw new TypeError("Custom-attribute SerString values must contain valid Unicode");
-  }
+  const bytes = encodeUtf8(value, "Custom-attribute SerString values");
   for (const byte of appendCompressedUInt(bytes.length)) output.push(byte);
   for (const byte of bytes) output.push(byte);
 }
@@ -250,6 +255,28 @@ function readNamedArguments(reader, resolveEnum) {
   return namedArguments;
 }
 
+function writeNamedArguments(output, namedArguments) {
+  if (!Array.isArray(namedArguments)) {
+    throw new TypeError("Custom-attribute namedArguments must be an array");
+  }
+  if (namedArguments.length > 0xffff) throw new RangeError("Too many custom-attribute named arguments");
+  output.push(namedArguments.length & 0xff, namedArguments.length >>> 8);
+  for (const argument of namedArguments) {
+    if (!argument || typeof argument !== "object") {
+      throw new TypeError("Custom-attribute named arguments must be objects");
+    }
+    const kind = argument.kind === "field" ? 0x53 : argument.kind === "property" ? 0x54 : 0;
+    if (kind === 0) throw new TypeError("Custom-attribute named argument kind must be field or property");
+    if (typeof argument.name !== "string") {
+      throw new TypeError("Custom-attribute named arguments require a name");
+    }
+    output.push(kind);
+    writeFieldOrPropertyType(output, argument.type);
+    writeSerString(output, argument.name);
+    writeValue(output, argument.type, argument.value);
+  }
+}
+
 export function parseCustomAttribute(bytes, fixedTypes, resolveEnum = () => {
   throw new UnsupportedFormatError("Custom-attribute enum type is not resolvable");
 }) {
@@ -303,6 +330,35 @@ export function parsePermissionSet(bytes, resolveEnum = () => {
   return { format: "binary", attributes };
 }
 
+export function encodePermissionSet(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("PermissionSet value must be an object");
+  }
+  if (value.format === "xml") {
+    const bytes = encodeUtf8(value.xml, "XML PermissionSet");
+    const xml = value.xml.trim();
+    if (value.xml.includes("\0") || !xml.startsWith("<") || !xml.endsWith(">")) {
+      throw new FormatError("XML PermissionSet payload is not UTF-8 XML text");
+    }
+    return bytes;
+  }
+  if (value.format !== "binary" || !Array.isArray(value.attributes)) {
+    throw new TypeError("Binary PermissionSet values require an attributes array");
+  }
+  const output = [0x2e, ...appendCompressedUInt(value.attributes.length)];
+  for (const attribute of value.attributes) {
+    if (!attribute || typeof attribute !== "object" || typeof attribute.typeName !== "string") {
+      throw new TypeError("PermissionSet attributes require a typeName");
+    }
+    const attributeData = [];
+    writeNamedArguments(attributeData, attribute.namedArguments);
+    writeSerString(output, attribute.typeName);
+    for (const byte of appendCompressedUInt(attributeData.length)) output.push(byte);
+    for (const byte of attributeData) output.push(byte);
+  }
+  return Uint8Array.from(output);
+}
+
 export function encodeCustomAttribute(value, fixedTypes) {
   if (!value || !Array.isArray(value.fixedArguments) || !Array.isArray(value.namedArguments)) {
     throw new TypeError("Custom-attribute value requires fixedArguments and namedArguments arrays");
@@ -315,20 +371,6 @@ export function encodeCustomAttribute(value, fixedTypes) {
   for (let index = 0; index < fixedTypes.length; index++) {
     writeValue(output, fixedTypes[index], value.fixedArguments[index]);
   }
-  output.push(value.namedArguments.length & 0xff, value.namedArguments.length >>> 8);
-  for (const argument of value.namedArguments) {
-    if (!argument || typeof argument !== "object") {
-      throw new TypeError("Custom-attribute named arguments must be objects");
-    }
-    const kind = argument.kind === "field" ? 0x53 : argument.kind === "property" ? 0x54 : 0;
-    if (kind === 0) throw new TypeError("Custom-attribute named argument kind must be field or property");
-    if (typeof argument.name !== "string") {
-      throw new TypeError("Custom-attribute named arguments require a name");
-    }
-    output.push(kind);
-    writeFieldOrPropertyType(output, argument.type);
-    writeSerString(output, argument.name);
-    writeValue(output, argument.type, argument.value);
-  }
+  writeNamedArguments(output, value.namedArguments);
   return Uint8Array.from(output);
 }

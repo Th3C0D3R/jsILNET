@@ -1024,6 +1024,7 @@ export {
 };
 export {
   encodeCustomAttribute,
+  encodePermissionSet,
   parseCustomAttribute,
   parsePermissionSet
 } from "./metadata/custom-attributes.js";

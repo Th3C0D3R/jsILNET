@@ -5,11 +5,13 @@ import { createHash, generateKeyPairSync } from "node:crypto";
 import {
   encodeCodedIndex,
   encodeCustomAttribute,
+  encodePermissionSet,
   encodeSignature,
   metadataTableNames,
   parseCliHeader,
   parseAssembly,
   parsePE,
+  parsePermissionSet,
   parseSignature,
   remapTypeReferences
 } from "../src/index.js";
@@ -7756,6 +7758,45 @@ test("custom-attribute encoding rejects invalid Unicode and enum encodings", () 
       value: true
     }]
   }, []), /enum underlying type/);
+});
+
+test("binary and XML PermissionSets encode and parse round-trip", () => {
+  const permissionSet = {
+    format: "binary",
+    attributes: [{
+      typeName: "Example.Permission, Example",
+      namedArguments: [
+        {
+          kind: "property",
+          type: { kind: "string" },
+          name: "Label",
+          value: "read-only"
+        },
+        {
+          kind: "field",
+          type: { kind: "primitive", elementType: 0x08 },
+          name: "Retries",
+          value: 3
+        }
+      ]
+    }]
+  };
+  assert.deepEqual(parsePermissionSet(encodePermissionSet(permissionSet)), permissionSet);
+
+  const xmlPermissionSet = { format: "xml", xml: "<PermissionSet />" };
+  assert.deepEqual(parsePermissionSet(encodePermissionSet(xmlPermissionSet)), xmlPermissionSet);
+  assert.throws(() => encodePermissionSet({
+    format: "binary",
+    attributes: [{
+      typeName: "Example.InvalidPermission, Example",
+      namedArguments: [{
+        kind: "field",
+        type: { kind: "enum", name: "Example.InvalidEnum", elementType: 0x02 },
+        name: "Value",
+        value: true
+      }]
+    }]
+  }), /enum underlying type/);
 });
 
 test("custom attributes can append when their parent preserves table ordering", () => {
