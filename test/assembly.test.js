@@ -2786,7 +2786,7 @@ test("TypeDef append initializes #- pointer-table ownership boundaries", () => {
     reparsed.tables.counts[4]);
 });
 
-test("TypeDef removal allows only an unreferenced trailing empty type", () => {
+test("TypeDef removal supports unreferenced empty types and protects owned rows", () => {
   const assembly = parseAssembly(withoutDebugDirectory());
   const token = assembly.addTypeDef({
     name: "DisposableType",
@@ -2811,6 +2811,179 @@ test("TypeDef removal allows only an unreferenced trailing empty type", () => {
   });
   assert.throws(() => owned.removeTypeDef(ownedRid), /no fields, methods, events/);
   assert.equal(owned.tables.counts[2], ownedRid);
+
+  const referenced = parseAssembly(withoutDebugDirectory());
+  const referencedRid = referenced.addTypeDef({
+    name: "ReferencedType",
+    extends: { table: "TypeDef", rid: 2 }
+  }) & 0x00ffffff;
+  referenced.addTypeDef({
+    name: "DerivedType",
+    extends: { table: "TypeDef", rid: referencedRid }
+  });
+  assert.throws(() => referenced.removeTypeDef(referencedRid), /referenced by TypeDef.Extends/);
+  assert.equal(referenced.tables.counts[2], referencedRid + 1);
+
+  const withAddedBody = parseAssembly(withoutDebugDirectory());
+  const bodyVictimRid = withAddedBody.addTypeDef({
+    name: "BodyVictim",
+    extends: { table: "TypeDef", rid: 2 }
+  }) & 0x00ffffff;
+  const bodyOwnerRid = withAddedBody.addTypeDef({
+    name: "BodyOwner",
+    extends: { table: "TypeDef", rid: 2 }
+  }) & 0x00ffffff;
+  withAddedBody.addMethod({
+    owner: { table: "TypeDef", rid: bodyOwnerRid },
+    name: "Body",
+    flags: 0x0006,
+    signature: Uint8Array.of(0x00, 0x00, 0x01),
+    body: Uint8Array.of(0x0a, 0x14, 0x2a)
+  });
+  assert.throws(() => withAddedBody.removeTypeDef(bodyVictimRid), /added method bodies/);
+  assert.equal(withAddedBody.tables.counts[2], bodyOwnerRid);
+});
+
+test("non-trailing TypeDef removal remaps metadata, signatures, and CIL tokens", () => {
+  const assembly = parseAssembly(withoutDebugDirectory());
+  const removedToken = assembly.addTypeDef({
+    name: "DisposableBeforeSurvivor",
+    extends: { table: "TypeDef", rid: 2 }
+  });
+  const removedRid = removedToken & 0x00ffffff;
+  const survivorToken = assembly.addTypeDef({
+    name: "Survivor`1",
+    extends: { table: "TypeDef", rid: 2 }
+  });
+  const survivorRid = survivorToken & 0x00ffffff;
+  const interfaceType = assembly.typeRefs.find((type) => type.name === "IDisposable");
+  assembly.addInterfaceImplementation({
+    owner: { table: "TypeDef", rid: survivorRid },
+    interfaceType: { table: "TypeRef", rid: interfaceType.rid }
+  });
+  const signature = Uint8Array.from([
+    0x12,
+    ...appendCompressedUInt(encodeCodedIndex(2, survivorRid, "TypeDefOrRef"))
+  ]);
+  assembly.addField({
+    owner: { table: "TypeDef", rid: survivorRid },
+    name: "Self",
+    signature: Uint8Array.from([0x06, ...signature])
+  });
+  const typeSpec = assembly.addTypeSpec({ signature });
+  const genericParamToken = assembly.addGenericParam({
+    owner: { table: "TypeDef", rid: survivorRid },
+    name: "T",
+    number: 0
+  });
+  const castSite = assembly.methods.flatMap((method) =>
+    assembly.getInstructions(method.rid).map((instruction) => ({ method, instruction }))
+  ).find(({ instruction }) => instruction.opcode.name === "castclass");
+  assert.ok(castSite);
+  assembly.setInstructionOperand(
+    castSite.method.rid,
+    castSite.instruction.offset,
+    survivorToken
+  );
+  const finallyMethod = assembly.methods.find((method) => method.name === "Finally");
+  const finallyBody = assembly.getMethodBody(finallyMethod.rid);
+  const exceptionSection = finallyBody.sections[0];
+  const catchClause = exceptionSection.clauses[0];
+  const exceptionView = new DataView(
+    assembly.bytes.buffer,
+    assembly.bytes.byteOffset,
+    assembly.bytes.byteLength
+  );
+  if (exceptionSection.fat) {
+    exceptionView.setUint32(exceptionSection.offset + 4, 0, true);
+  } else {
+    exceptionView.setUint16(exceptionSection.offset + 4, 0, true);
+  }
+  const exceptionTokenOffset = exceptionSection.offset + 4 +
+    (exceptionSection.fat ? 20 : 8);
+  exceptionView.setUint32(exceptionTokenOffset, survivorToken, true);
+  catchClause.flags = 0;
+  catchClause.classTokenOrFilterOffset = survivorToken;
+
+  const tokenMap = assembly.removeTypeDef(removedRid);
+  assert.equal(tokenMap.get(survivorToken), survivorToken - 1);
+  const reparsed = parseAssembly(assembly.serialize());
+  const nextSurvivorRid = survivorRid - 1;
+  assert.equal(reparsed.types[nextSurvivorRid - 1].name, "Survivor`1");
+  assert.equal(reparsed.tables.get(9).at(-1).Class.rid, nextSurvivorRid);
+  const parsedField = parseSignature(
+    reparsed.heaps.getBlob(reparsed.tables.row(4, reparsed.types[nextSurvivorRid - 1].fieldRids[0]).Signature)
+  );
+  assert.deepEqual(parsedField.type.type, {
+    table: 2,
+    tableName: "TypeDef",
+    rid: nextSurvivorRid
+  });
+  assert.deepEqual(reparsed.typeSpecs.find((entry) => entry.rid === (typeSpec & 0x00ffffff))
+    .parsedSignature.type, {
+    table: 2,
+    tableName: "TypeDef",
+    rid: nextSurvivorRid
+  });
+  assert.equal(reparsed.genericParams.find((parameter) =>
+    parameter.rid === (genericParamToken & 0x00ffffff)
+  )
+    .owner.rid, nextSurvivorRid);
+  assert.equal(reparsed.getInstructions(castSite.method.rid).find((instruction) =>
+    instruction.offset === castSite.instruction.offset
+  ).operand.value, tokenMap.get(survivorToken));
+  const reparsedFinally = reparsed.getMethodBody(finallyMethod.rid);
+  assert.equal(reparsedFinally.sections[0].clauses[0].classTokenOrFilterOffset,
+    tokenMap.get(survivorToken));
+});
+
+test("TypeDef removal refuses sorted-key reordering without mutation", () => {
+  const assembly = parseAssembly(withoutDebugDirectory());
+  const removableRid = assembly.addTypeDef({
+    name: "RemovableType",
+    extends: { table: "TypeDef", rid: 2 }
+  }) & 0x00ffffff;
+  const survivorRid = assembly.addTypeDef({
+    name: "SortedOwner",
+    extends: { table: "TypeDef", rid: 2 }
+  }) & 0x00ffffff;
+  const genericRows = assembly.tables.get(42);
+  const methodOwnerRid = survivorRid - 1;
+  genericRows.push({
+    table: 42,
+    tableName: "GenericParam",
+    rid: genericRows.length + 1,
+    Number: 0,
+    Flags: 0,
+    Owner: {
+      raw: encodeCodedIndex(6, methodOwnerRid, "TypeOrMethodDef"),
+      target: { table: 6, tableName: "MethodDef", rid: methodOwnerRid }
+    },
+    Name: 0
+  });
+  genericRows.push({
+    table: 42,
+    tableName: "GenericParam",
+    rid: genericRows.length + 1,
+    Number: 0,
+    Flags: 0,
+    Owner: {
+      raw: encodeCodedIndex(2, survivorRid, "TypeOrMethodDef"),
+      target: { table: 2, tableName: "TypeDef", rid: survivorRid }
+    },
+    Name: 0
+  });
+  assembly.tables.rows.set(42, genericRows);
+  assembly.tables.counts[42] = genericRows.length;
+  assembly.tables.valid |= 1n << 42n;
+  assembly.tables.sorted |= 1n << 42n;
+  const beforeCount = assembly.tables.counts[2];
+  const beforeOwner = genericRows.at(-1).Owner.raw;
+
+  assert.throws(() => assembly.removeTypeDef(removableRid), /would violate sorted GenericParam order/);
+  assert.equal(assembly.tables.counts[2], beforeCount);
+  assert.equal(assembly.tables.row(42, genericRows.length).Owner.raw, beforeOwner);
+  assert.equal(assembly.types[survivorRid - 1].rid, survivorRid);
 });
 
 test("FieldMarshal rows append, replace, and remove with parent ordering preserved", () => {
