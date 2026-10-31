@@ -5115,10 +5115,8 @@ export class Assembly {
     this.#ensureEditable();
     const ownerRid = metadataTableId(owner?.table) === 2 ? owner.rid : 0;
     if (!Number.isInteger(ownerRid) || ownerRid < 1 ||
-        ownerRid !== this.types.at(-1)?.rid) {
-      throw new UnsupportedFormatError(
-        "Interface implementations can only be appended to the last TypeDef row"
-      );
+        ownerRid > (this.tables.counts[2] ?? 0)) {
+      throw new RangeError("InterfaceImpl owner must identify an existing TypeDef row");
     }
     const interfaceTable = metadataTableId(interfaceType?.table);
     const interfaceRid = interfaceType?.rid;

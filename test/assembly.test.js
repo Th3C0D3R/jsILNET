@@ -4227,6 +4227,24 @@ test("properties and events append to the last TypeDef and rebuild ownership map
   });
 });
 
+test("InterfaceImpl rows can append to any TypeDef when the table is unsorted", () => {
+  const assembly = parseAssembly(withoutDebugDirectory());
+  const owner = assembly.types[1];
+  const interfaceType = assembly.typeRefs.find((type) => type.name === "EventArgs");
+  assert.ok(owner && owner.rid < assembly.types.at(-1).rid);
+  assert.ok(interfaceType);
+  assembly.tables.sorted &= ~(1n << 9n);
+
+  const rid = assembly.addInterfaceImplementation({
+    owner: { table: "TypeDef", rid: owner.rid },
+    interfaceType: { table: "TypeRef", rid: interfaceType.rid }
+  });
+  assert.equal(assembly.tables.row(9, rid).Class.rid, owner.rid);
+
+  const reparsed = parseAssembly(assembly.serialize());
+  assert.equal(reparsed.tables.row(9, rid).Class.rid, owner.rid);
+});
+
 test("InterfaceImpl rows append and remove with validation and reference remapping", () => {
   const assembly = parseAssembly(withoutDebugDirectory());
   const owner = assembly.types.at(-1);

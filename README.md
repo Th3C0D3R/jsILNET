@@ -49,7 +49,7 @@ An `Assembly` exposes parsed PE/CLI metadata, `module`, `types`, `typeRefs`, `ty
 
 Invalid or unsupported structures and edits raise `FormatError` or `UnsupportedFormatError`; they are not silently skipped.
 
-`addInterfaceImplementation` appends an InterfaceImpl row to the last TypeDef after duplicate, sort-order, and TypeSpec-context checks. `replaceInterfaceImplementation` changes the interface type without changing its row ID and rejects duplicates or invalid TypeSpec contexts. `removeInterfaceImplementation` rejects live CustomAttribute references, compacts later row references, and returns a row-RID map.
+`addInterfaceImplementation` appends an InterfaceImpl row to any existing TypeDef when table ordering permits, with duplicate, sort-order, and TypeSpec-context checks. `replaceInterfaceImplementation` changes the interface type without changing its row ID and rejects duplicates or invalid TypeSpec contexts. `removeInterfaceImplementation` rejects live CustomAttribute references, compacts later row references, and returns a row-RID map.
 
 `replaceTypeRef` updates a TypeRef name, namespace, or resolution scope without changing its token; `removeTypeRef` rejects live references and remaps surviving metadata, signature, and CIL references.
 
