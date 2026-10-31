@@ -3671,6 +3671,45 @@ test("DeclSecurity rows preserve parent/action uniqueness and allow safe removal
   assert.equal(withoutMethodSecurity.tables.row(14, 1).Parent.target.table, 2);
 });
 
+test("sorted DeclSecurity insertion remaps CustomAttribute and ENC references", () => {
+  const assembly = parseAssembly(withoutDebugDirectory());
+  assembly.tables.sorted |= 1n << 14n;
+  assembly.addDeclSecurity({
+    parent: { table: "TypeDef", rid: 1 },
+    action: 2,
+    permissionSet: Uint8Array.of(0x2e, 0)
+  });
+  const laterRid = assembly.addDeclSecurity({
+    parent: { table: "MethodDef", rid: 1 },
+    action: 2,
+    permissionSet: Uint8Array.of(0x2e, 1)
+  });
+  assembly.tables.sorted &= ~(1n << 12n);
+  const attributeTemplate = assembly.customAttributes[1];
+  assembly.addCustomAttribute({
+    parent: { table: "DeclSecurity", rid: laterRid },
+    constructor: attributeTemplate.constructor,
+    value: assembly.parseCustomAttribute(attributeTemplate.rid)
+  });
+  addEncToken(assembly, 31, 0x0e000000 + laterRid);
+
+  const { rid, tokenMap } = assembly.insertDeclSecurity({
+    parent: { table: "TypeDef", rid: 1 },
+    action: 3,
+    permissionSet: Uint8Array.of(0x2e, 2)
+  });
+  assert.equal(rid, laterRid);
+  assert.equal(tokenMap.get(0x0e000000 + laterRid), 0x0e000000 + laterRid + 1);
+  assert.equal(assembly.tables.row(14, rid).Action, 3);
+  assert.equal(assembly.tables.row(14, rid + 1).Parent.target.table, 6);
+  assert.equal(assembly.customAttributes.at(-1).parent.rid, laterRid + 1);
+  assert.equal(assembly.tables.get(31).at(-1).Token, 0x0e000000 + laterRid + 1);
+
+  const reparsed = parseAssembly(assembly.serialize());
+  assert.equal(reparsed.tables.row(14, rid + 1).Parent.target.table, 6);
+  assert.equal(reparsed.customAttributes.at(-1).parent.rid, laterRid + 1);
+});
+
 test("MethodImpl rows validate method references and round-trip replacement/removal", () => {
   const assembly = parseAssembly(fixture);
   assembly.tables.sorted |= 1n << 25n;

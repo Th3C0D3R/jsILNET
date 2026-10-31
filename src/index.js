@@ -3187,6 +3187,14 @@ export class Assembly {
   }
 
   addDeclSecurity({ parent, action, permissionSet }) {
+    return this.#writeDeclSecurity({ parent, action, permissionSet }, false).rid;
+  }
+
+  insertDeclSecurity({ parent, action, permissionSet }) {
+    return this.#writeDeclSecurity({ parent, action, permissionSet }, true);
+  }
+
+  #writeDeclSecurity({ parent, action, permissionSet }, insertSorted) {
     this.#ensureEditable();
     const parentTable = metadataTableId(parent?.table);
     if (![2, 6, 32].includes(parentTable) || !Number.isInteger(parent.rid) ||
@@ -3207,12 +3215,29 @@ export class Assembly {
     if (rows.some((row) => row.Parent.raw === encodedParent && row.Action === action)) {
       throw new FormatError("Duplicate DeclSecurity action for parent");
     }
-    if ((this.tables.sorted & (1n << 14n)) !== 0n &&
+    let insertionIndex = rows.length;
+    if (insertSorted) {
+      for (let index = 1; index < rows.length; index++) {
+        if (rows[index - 1].Parent.raw > rows[index].Parent.raw) {
+          throw new UnsupportedFormatError(
+            "Sorted DeclSecurity insertion requires rows already ordered by Parent"
+          );
+        }
+      }
+      const laterParent = rows.findIndex((row) => row.Parent.raw > encodedParent);
+      if (laterParent !== -1) insertionIndex = laterParent;
+    } else if ((this.tables.sorted & (1n << 14n)) !== 0n &&
         rows.at(-1)?.Parent.raw > encodedParent) {
       throw new UnsupportedFormatError(
         "DeclSecurity append would violate declared Parent ordering"
       );
     }
+    const rid = insertionIndex + 1;
+    if (rid > 0x00ffffff) {
+      throw new RangeError("DeclSecurity token row ID exceeds 24-bit range");
+    }
+    const { tokenMap, rowChanges, tokenUpdates, patches } =
+      this.#prepareTokenRowInsertion(14, rid, rows.length, "DeclSecurity");
 
     const heapStreams = new Map(
       [...(this._heapStreams ?? new Map([...this.metadataRoot.streams].map(([streamName, stream]) =>
@@ -3221,8 +3246,7 @@ export class Assembly {
     );
     const blob = appendBlobHeap(heapStreams.get("#Blob") ?? new Uint8Array(), permissionSet);
     heapStreams.set("#Blob", blob.heap);
-    const rid = rows.length + 1;
-    rows.push({
+    const newRow = {
       table: 14,
       tableName: metadataTableNames[14],
       rid,
@@ -3232,14 +3256,26 @@ export class Assembly {
         target: { table: parentTable, tableName: metadataTableNames[parentTable], rid: parent.rid }
       },
       PermissionSet: blob.index
-    });
+    };
+    for (const change of rowChanges) change.row[change.columnName] = change.value;
+    for (const row of rows) {
+      if (row.rid >= rid) row.rid++;
+    }
+    rows.splice(insertionIndex, 0, newRow);
     this.tables.rows.set(14, rows);
-    this.tables.counts[14] = rid;
+    this.tables.counts[14] = rows.length;
     this.tables.valid |= 1n << 14n;
     this._heapStreams = heapStreams;
     this.#refreshHeaps();
+    for (const attribute of this.customAttributes) {
+      const row = this.tables.row(12, attribute.rid);
+      attribute.parent = row.Parent.target;
+      attribute.constructor = row.Type.target;
+    }
+    for (const update of tokenUpdates) update.instruction.operand.value = update.replacement;
+    this._patches.push(...patches);
     this._metadataDirty = true;
-    return rid;
+    return { rid, tokenMap };
   }
 
   replaceDeclSecurity(rid, { action, permissionSet } = {}) {

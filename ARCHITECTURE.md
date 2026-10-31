@@ -63,6 +63,7 @@ MethodDef removal is supported when no live metadata or CIL references remain. O
 GenericParamConstraint rows owned by a removed method's GenericParam rows are removed with them when no metadata, CIL, or ENC references target those constraints; surviving constraint owners and tokens are remapped.
 `insertGenericParamConstraint` inserts by Owner into an already Owner-ordered table, remapping later constraint references in metadata, custom attributes, CIL operands, and ENC tokens; it returns the inserted RID and token map.
 `insertCustomAttribute` inserts by Parent into an already Parent-ordered table and remaps shifted CustomAttribute tokens in CIL operands and ENC records.
+`insertDeclSecurity` inserts by Parent into an already Parent-ordered table and remaps shifted DeclSecurity references in metadata, custom attributes, CIL operands, and ENC records.
 
 MethodDef names, flags, and implementation flags can be replaced without changing row identity.
 
