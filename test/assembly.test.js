@@ -76,6 +76,46 @@ function addEncToken(assembly, tableId, token) {
   assembly._metadataDirty = true;
 }
 
+function usePointerTable(assembly, {
+  pointerId,
+  targetId,
+  column,
+  listTableId,
+  listColumn,
+  pointerName,
+  targetName
+}) {
+  const tablesStream = assembly.metadataRoot.streams.get("#~");
+  assert.ok(tablesStream);
+  assembly.metadataRoot.streams.delete("#~");
+  assembly.metadataRoot.streams.set("#-", tablesStream);
+  const targets = assembly.tables.get(targetId);
+  const pointers = targets.map((target, index) => ({
+    table: pointerId,
+    tableName: pointerName,
+    rid: index + 1,
+    [column]: {
+      raw: target.rid,
+      table: targetId,
+      tableName: targetName,
+      rid: target.rid
+    }
+  }));
+  assembly.tables.rows.set(pointerId, pointers);
+  assembly.tables.counts[pointerId] = pointers.length;
+  assembly.tables.valid |= 1n << BigInt(pointerId);
+  for (const row of assembly.tables.get(listTableId)) {
+    const rid = row[listColumn].rid;
+    row[listColumn] = {
+      raw: rid,
+      table: pointerId,
+      tableName: pointerName,
+      rid
+    };
+  }
+  assembly._metadataDirty = true;
+}
+
 function addExtraPEDataDirectory(input) {
   const pe = parsePE(input);
   const delta = 8;
@@ -3959,16 +3999,33 @@ test("property and event append support bijective pointer-table layouts", () => 
     signature: Uint8Array.from([0x08, 0x00, 0x08])
   });
   const initialPropertyPointerRows = propertyAssembly.tables.get(22);
-  const propertyPointerA = initialPropertyPointerRows.find((row) => row.Property.rid === propertyBeforeA);
-  const propertyPointerB = initialPropertyPointerRows.find((row) => row.Property.rid === propertyBeforeB);
-  [propertyPointerA.Property, propertyPointerB.Property] =
-    [propertyPointerB.Property, propertyPointerA.Property];
-  const propertyIndexA = propertyOwner.propertyRids.indexOf(propertyBeforeA);
-  const propertyIndexB = propertyOwner.propertyRids.indexOf(propertyBeforeB);
-  [propertyOwner.propertyRids[propertyIndexA], propertyOwner.propertyRids[propertyIndexB]] =
-    [propertyOwner.propertyRids[propertyIndexB], propertyOwner.propertyRids[propertyIndexA]];
-  [propertyOwner.properties[propertyIndexA], propertyOwner.properties[propertyIndexB]] =
-    [propertyOwner.properties[propertyIndexB], propertyOwner.properties[propertyIndexA]];
+  const propertyOrder = initialPropertyPointerRows.map((row) => row.Property.rid);
+  const propertyIndexA = propertyOrder.indexOf(propertyBeforeA);
+  const propertyIndexB = propertyOrder.indexOf(propertyBeforeB);
+  const duplicatePropertyOrder = [...propertyOrder];
+  duplicatePropertyOrder[0] = duplicatePropertyOrder[1];
+  assert.throws(
+    () => propertyAssembly.reorderPointerTable("PropertyPtr", duplicatePropertyOrder),
+    /every target row exactly once/
+  );
+  const otherPropertyOwner = propertyAssembly.types.find((type) =>
+    type.rid !== propertyOwner.rid && type.propertyRids.length > 0
+  );
+  assert.ok(otherPropertyOwner);
+  const crossOwnerPropertyOrder = [...propertyOrder];
+  const firstOwnedProperty = propertyOwner.propertyRids[0];
+  const otherOwnedProperty = otherPropertyOwner.propertyRids[0];
+  const firstOwnedIndex = crossOwnerPropertyOrder.indexOf(firstOwnedProperty);
+  const otherOwnedIndex = crossOwnerPropertyOrder.indexOf(otherOwnedProperty);
+  [crossOwnerPropertyOrder[firstOwnedIndex], crossOwnerPropertyOrder[otherOwnedIndex]] =
+    [crossOwnerPropertyOrder[otherOwnedIndex], crossOwnerPropertyOrder[firstOwnedIndex]];
+  assert.throws(
+    () => propertyAssembly.reorderPointerTable("PropertyPtr", crossOwnerPropertyOrder),
+    /cannot change row ownership/
+  );
+  [propertyOrder[propertyIndexA], propertyOrder[propertyIndexB]] =
+    [propertyOrder[propertyIndexB], propertyOrder[propertyIndexA]];
+  propertyAssembly.reorderPointerTable("PropertyPtr", propertyOrder);
   const propertyCount = propertyAssembly.tables.counts[23];
   const propertyRid = propertyAssembly.addProperty({
     owner: { table: "TypeDef", rid: propertyAssembly.types.at(-1).rid },
@@ -4003,16 +4060,12 @@ test("property and event append support bijective pointer-table layouts", () => 
     eventType: { table: "TypeRef", rid: eventType.rid }
   });
   const eventPointers = eventAssembly.tables.get(19);
-  const eventPointerA = eventPointers.find((row) => row.Event.rid === eventBeforeA);
-  const eventPointerB = eventPointers.find((row) => row.Event.rid === eventBeforeB);
-  [eventPointerA.Event, eventPointerB.Event] =
-    [eventPointerB.Event, eventPointerA.Event];
-  const eventIndexA = eventOwner.eventRids.indexOf(eventBeforeA);
-  const eventIndexB = eventOwner.eventRids.indexOf(eventBeforeB);
-  [eventOwner.eventRids[eventIndexA], eventOwner.eventRids[eventIndexB]] =
-    [eventOwner.eventRids[eventIndexB], eventOwner.eventRids[eventIndexA]];
-  [eventOwner.events[eventIndexA], eventOwner.events[eventIndexB]] =
-    [eventOwner.events[eventIndexB], eventOwner.events[eventIndexA]];
+  const eventOrder = eventPointers.map((row) => row.Event.rid);
+  const eventIndexA = eventOrder.indexOf(eventBeforeA);
+  const eventIndexB = eventOrder.indexOf(eventBeforeB);
+  [eventOrder[eventIndexA], eventOrder[eventIndexB]] =
+    [eventOrder[eventIndexB], eventOrder[eventIndexA]];
+  eventAssembly.reorderPointerTable("EventPtr", eventOrder);
   const eventCount = eventAssembly.tables.counts[20];
   const eventRid = eventAssembly.addEvent({
     owner: { table: "TypeDef", rid: eventAssembly.types.at(-1).rid },
@@ -4043,6 +4096,78 @@ test("property and event append support bijective pointer-table layouts", () => 
     signature: Uint8Array.from([0x08, 0x00, 0x08])
   }), /one-to-one mapping/);
   assert.equal(invalidAssembly.tables.counts[23], invalidPropertyCount);
+});
+
+test("reorderPointerTable supports FieldPtr, MethodPtr, and ParamPtr", () => {
+  for (const definition of [
+    {
+      pointerId: 3,
+      targetId: 4,
+      column: "Field",
+      listTableId: 2,
+      listColumn: "FieldList",
+      pointerName: "FieldPtr",
+      targetName: "Field",
+      ownerList: "fieldRids",
+      records: "fields"
+    },
+    {
+      pointerId: 5,
+      targetId: 6,
+      column: "Method",
+      listTableId: 2,
+      listColumn: "MethodList",
+      pointerName: "MethodPtr",
+      targetName: "MethodDef",
+      ownerList: "methodRids",
+      records: "methods"
+    },
+    {
+      pointerId: 7,
+      targetId: 8,
+      column: "Param",
+      listTableId: 6,
+      listColumn: "ParamList",
+      pointerName: "ParamPtr",
+      targetName: "Param",
+      ownerList: "parameterRids",
+      records: "parameters"
+    }
+  ]) {
+    const assembly = parseAssembly(withoutDebugDirectory());
+    usePointerTable(assembly, definition);
+    if (definition.pointerId === 7) {
+      const methodToken = assembly.addMethod({
+        owner: { table: "TypeDef", rid: assembly.types.at(-1).rid },
+        name: "TwoParameters",
+        flags: 0x0096,
+        signature: Uint8Array.of(0x00, 0x02, 0x01, 0x08, 0x08),
+        body: Uint8Array.of(0x06, 0x2a)
+      });
+      assembly.addParam({ owner: { table: "MethodDef", rid: methodToken & 0x00ffffff }, sequence: 1 });
+      assembly.addParam({ owner: { table: "MethodDef", rid: methodToken & 0x00ffffff }, sequence: 2 });
+    }
+    const owners = definition.pointerId === 7 ? assembly.methods : assembly.types;
+    const owner = owners.find((candidate) => candidate[definition.ownerList].length > 1);
+    assert.ok(owner);
+    const ownerIndex = owners.indexOf(owner);
+    const offset = owners.slice(0, ownerIndex).reduce(
+      (total, candidate) => total + candidate[definition.ownerList].length,
+      0
+    );
+    const order = assembly.tables.get(definition.pointerId).map((row) =>
+      row[definition.column].rid
+    );
+    const nextGroup = order.slice(offset, offset + owner[definition.ownerList].length).reverse();
+    order.splice(offset, nextGroup.length, ...nextGroup);
+
+    assert.equal(assembly.reorderPointerTable(definition.pointerName, order), assembly);
+    assert.deepEqual(owner[definition.ownerList], nextGroup);
+    assert.deepEqual(owner[definition.records].map((record) => record.rid), nextGroup);
+    const reparsed = parseAssembly(assembly.serialize());
+    const reparsedOwner = (definition.pointerId === 7 ? reparsed.methods : reparsed.types)[ownerIndex];
+    assert.deepEqual(reparsedOwner[definition.ownerList], nextGroup);
+  }
 });
 
 test("Property and Event removal rejects live references and remaps surviving rows", () => {

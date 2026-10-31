@@ -3924,6 +3924,108 @@ export class Assembly {
     );
   }
 
+  reorderPointerTable(pointerTable, targetRids) {
+    this.#ensureEditable();
+    const pointerTableId = metadataTableId(pointerTable);
+    const definitions = new Map([
+      [3, { targetTableId: 4, column: "Field", owners: this.types, list: "fieldRids", records: "fields" }],
+      [5, { targetTableId: 6, column: "Method", owners: this.types, list: "methodRids", records: "methods" }],
+      [7, {
+        targetTableId: 8,
+        column: "Param",
+        owners: this.methods,
+        list: "parameterRids",
+        records: "parameters"
+      }],
+      [19, { targetTableId: 20, column: "Event", owners: this.types, list: "eventRids", records: "events" }],
+      [22, {
+        targetTableId: 23,
+        column: "Property",
+        owners: this.types,
+        list: "propertyRids",
+        records: "properties"
+      }]
+    ]);
+    const definition = definitions.get(pointerTableId);
+    if (!definition) {
+      throw new TypeError("Pointer table must be FieldPtr, MethodPtr, ParamPtr, EventPtr, or PropertyPtr");
+    }
+    if ((this.tables.valid & (1n << BigInt(pointerTableId))) === 0n) {
+      throw new UnsupportedFormatError(`${metadataTableNames[pointerTableId]} is not present`);
+    }
+    const pointerRows = getBijectivePointerRows(
+      this,
+      pointerTableId,
+      definition.targetTableId,
+      definition.column
+    );
+    if (!pointerRows) {
+      throw new FormatError(
+        `${metadataTableNames[pointerTableId]} must be a one-to-one mapping to ${metadataTableNames[definition.targetTableId]}`
+      );
+    }
+    const targetCount = this.tables.counts[definition.targetTableId] ?? 0;
+    if (!Array.isArray(targetRids) || targetRids.length !== targetCount) {
+      throw new RangeError("Pointer table order must contain every target row exactly once");
+    }
+    const newRids = [...targetRids];
+    const uniqueRids = new Set(newRids);
+    if (uniqueRids.size !== targetCount ||
+        newRids.some((rid) => !Number.isInteger(rid) || rid < 1 || rid > targetCount)) {
+      throw new RangeError("Pointer table order must contain every target row exactly once");
+    }
+
+    const ownerGroups = definition.owners.map((owner) => owner[definition.list]);
+    const currentOwnerRids = ownerGroups.flat();
+    if (currentOwnerRids.length !== targetCount ||
+        new Set(currentOwnerRids).size !== targetCount) {
+      throw new FormatError(
+        `${metadataTableNames[definition.targetTableId]} ownership does not cover every row exactly once`
+      );
+    }
+    const assignments = [];
+    let offset = 0;
+    for (let index = 0; index < definition.owners.length; index++) {
+      const owner = definition.owners[index];
+      const oldGroup = ownerGroups[index];
+      const nextGroup = newRids.slice(offset, offset + oldGroup.length);
+      offset += oldGroup.length;
+      const oldSet = new Set(oldGroup);
+      if (nextGroup.some((rid) => !oldSet.has(rid))) {
+        throw new UnsupportedFormatError("Pointer reordering cannot change row ownership");
+      }
+      const recordsByRid = new Map(owner[definition.records].map((record) => [record.rid, record]));
+      const nextRecords = nextGroup.map((rid) => recordsByRid.get(rid));
+      if (nextRecords.some((record) => !record)) {
+        throw new FormatError(`${metadataTableNames[definition.targetTableId]} ownership has no semantic record`);
+      }
+      assignments.push({ owner, nextGroup, nextRecords });
+    }
+    if (offset !== targetCount) {
+      throw new FormatError(
+        `${metadataTableNames[definition.targetTableId]} ownership does not cover every row exactly once`
+      );
+    }
+
+    const nextPointerRows = newRids.map((rid, index) => ({
+      ...pointerRows[index],
+      rid: index + 1,
+      [definition.column]: {
+        raw: rid,
+        table: definition.targetTableId,
+        tableName: metadataTableNames[definition.targetTableId],
+        rid
+      }
+    }));
+    this.tables.rows.set(pointerTableId, nextPointerRows);
+    for (const assignment of assignments) {
+      assignment.owner[definition.list] = assignment.nextGroup;
+      assignment.owner[definition.records] = assignment.nextRecords;
+    }
+    this._metadataDirty = true;
+    return this;
+  }
+
   addField({ owner, name, flags = 0, signature }) {
     this.#ensureEditable();
     const ownerRid = metadataTableId(owner?.table) === 2 ? owner.rid : 0;
