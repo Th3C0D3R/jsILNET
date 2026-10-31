@@ -4422,6 +4422,48 @@ export class Assembly {
     return this;
   }
 
+  replaceProperty(rid, { name, flags } = {}) {
+    this.#ensureEditable();
+    const row = this.tables.row(23, rid);
+    const property = this.types.flatMap((type) => type.properties)
+      .find((item) => item.rid === rid);
+    if (!Number.isInteger(rid) || rid < 1 || !row || !property) {
+      throw new RangeError(`Invalid Property row ID ${rid}`);
+    }
+    const nextName = name === undefined ? property.name : name;
+    const nextFlags = flags === undefined ? row.Flags : flags;
+    if (typeof nextName !== "string" || nextName.length === 0 || nextName.includes("\0")) {
+      throw new TypeError("Property name must be a non-empty null-free string");
+    }
+    if (!Number.isInteger(nextFlags) || nextFlags < 0 || nextFlags > 0xffff) {
+      throw new RangeError("Property flags must be an unsigned 16-bit integer");
+    }
+    if ((this.tables.rows.get(11) ?? []).some((constant) =>
+      constant.Parent.target?.table === 23 && constant.Parent.target.rid === rid
+    ) && (nextFlags & 0x1000) === 0) {
+      throw new FormatError("A Property with a Constant row must retain the HasDefault flag");
+    }
+    if (nextName === property.name && nextFlags === row.Flags) return this;
+
+    const heapStreams = new Map(
+      [...(this._heapStreams ?? new Map([...this.metadataRoot.streams].map(([streamName, stream]) =>
+        [streamName, stream.bytes]
+      )))].map(([streamName, bytes]) => [streamName, bytes.slice()])
+    );
+    if (nextName !== property.name) {
+      const stringHeap = appendStringHeap(heapStreams.get("#Strings") ?? new Uint8Array(), nextName);
+      heapStreams.set("#Strings", stringHeap.heap);
+      row.Name = stringHeap.index;
+    }
+    row.Flags = nextFlags;
+    property.name = nextName;
+    property.flags = nextFlags;
+    this._heapStreams = heapStreams;
+    this.#refreshHeaps();
+    this._metadataDirty = true;
+    return this;
+  }
+
   removeProperty(rid) {
     return this.#removeOwnedRow(23, 21, 22, rid);
   }

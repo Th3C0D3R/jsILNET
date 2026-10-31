@@ -101,6 +101,8 @@ P/Invoke mappings can be added, updated, and removed with `addImplMap`, `replace
 
 `replacePropertySignature` validates generic variable bounds and requires associated getter/setter signatures to remain compatible; update accessors with `replaceMethodSignature` before changing the property signature.
 
+`replaceProperty` updates a property's name and flags without changing its row identity; a property with a Constant row must retain `HasDefault`.
+
 `replaceEvent` updates event names, flags, and types in place; a changed event type must remain compatible with associated add/remove accessors.
 
 The PE reader accepts power-of-two section/file alignments, enforces the PE low-alignment and standard file-alignment rules, and rejects misaligned header/section ranges, overlapping ranges, and ranges outside file/RVA bounds.

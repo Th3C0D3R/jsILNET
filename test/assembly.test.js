@@ -3949,6 +3949,43 @@ test("property signature replacement validates generic variables and accessors",
   assert.deepEqual(parseSignature(reparsedProperty.signature).returnType, stringType);
 });
 
+test("Property names and flags can be replaced without changing row identity", () => {
+  const assembly = parseAssembly(fixture);
+  const owner = assembly.types.find((type) => type.properties.length > 0);
+  assert.ok(owner);
+  const property = owner.properties[0];
+  const originalRid = property.rid;
+  const nextName = `${property.name}Renamed`;
+  const nextFlags = property.flags | 1;
+  assert.equal(assembly.replaceProperty(originalRid, { name: nextName, flags: nextFlags }), assembly);
+  assert.equal(property.name, nextName);
+  assert.equal(property.flags, nextFlags);
+  assert.equal(assembly.tables.row(23, originalRid).Flags, nextFlags);
+  assert.throws(() => assembly.replaceProperty(originalRid, { name: "" }),
+    /Property name must be a non-empty null-free string/);
+  assert.equal(property.name, nextName);
+  const reparsed = parseAssembly(assembly.serialize());
+  const reparsedProperty = reparsed.types.flatMap((type) => type.properties)
+    .find((item) => item.rid === originalRid);
+  assert.equal(reparsedProperty.name, nextName);
+  assert.equal(reparsedProperty.flags, nextFlags);
+
+  const constantAssembly = parseAssembly(fixture);
+  const constantProperty = constantAssembly.types.flatMap((type) => type.properties)
+    .find((item) => parseSignature(item.signature).returnType.elementType === 0x08);
+  assert.ok(constantProperty);
+  constantAssembly.addConstant({
+    parent: { table: "Property", rid: constantProperty.rid },
+    type: 0x08,
+    value: Uint8Array.of(42, 0, 0, 0)
+  });
+  const originalFlags = constantProperty.flags;
+  assert.throws(() => constantAssembly.replaceProperty(constantProperty.rid, {
+    flags: originalFlags & ~0x1000
+  }), /must retain the HasDefault flag/);
+  assert.equal(constantProperty.flags, originalFlags);
+});
+
 test("event replacement preserves identity and validates add/remove accessors", () => {
   const assembly = parseAssembly(fixture);
   const owner = assembly.types.find((type) => type.events.length > 0);
