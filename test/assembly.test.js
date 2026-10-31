@@ -3622,6 +3622,30 @@ test("sorted ClassLayout insertion remaps later ENC tokens", () => {
   assert.equal(reparsed.tables.row(15, 1).Parent.rid, lowerType.rid);
 });
 
+test("sorted FieldLayout insertion remaps later ENC tokens", () => {
+  const assembly = parseAssembly(withoutDebugDirectory());
+  const fields = assembly.types.flatMap((type) => type.fields);
+  const lowerField = fields[0];
+  const higherField = fields.at(-1);
+  assert.ok(lowerField);
+  assert.ok(higherField);
+  assert.ok(lowerField.rid < higherField.rid);
+  assembly.tables.rows.set(16, []);
+  assembly.tables.counts[16] = 0;
+  assembly.tables.valid &= ~(1n << 16n);
+  assembly.tables.sorted |= 1n << 16n;
+  const later = assembly.insertFieldLayout({ fieldRid: higherField.rid, offset: 8 });
+  addEncToken(assembly, 31, 0x10000000 + later.rid);
+  const earlier = assembly.insertFieldLayout({ fieldRid: lowerField.rid, offset: 0 });
+
+  assert.equal(earlier.rid, 1);
+  assert.equal(earlier.tokenMap.get(0x10000000 + later.rid), 0x10000000 + later.rid + 1);
+  assert.equal(assembly.tables.get(31).at(-1).Token, 0x10000000 + later.rid + 1);
+  const reparsed = parseAssembly(assembly.serialize());
+  assert.equal(reparsed.tables.get(31).at(-1).Token, 0x10000000 + later.rid + 1);
+  assert.equal(reparsed.tables.row(16, 1).Field.rid, lowerField.rid);
+});
+
 test("FieldRVA rows validate static primitive fields and round-trip add/replace/remove", () => {
   const assembly = parseAssembly(fixture);
   const owner = assembly.types.at(-1);

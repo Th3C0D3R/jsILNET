@@ -59,6 +59,7 @@ Invalid or unsupported structures and edits raise `FormatError` or `UnsupportedF
 `insertFieldMarshal` inserts by Parent into an already Parent-ordered table and returns `{ rid, tokenMap }`, remapping shifted FieldMarshal tokens in ENC records.
 `insertMethodSemantics` inserts by Association into an already Association-ordered table and returns `{ rid, tokenMap }`, remapping shifted MethodSemantics tokens in ENC records.
 `insertClassLayout` inserts by Parent into an already Parent-ordered table and returns `{ rid, tokenMap }`, remapping shifted ClassLayout tokens in ENC records.
+`insertFieldLayout` inserts by Field into an already Field-ordered table and returns `{ rid, tokenMap }`, remapping shifted FieldLayout tokens in ENC records.
 
 `replaceTypeRef` updates a TypeRef name, namespace, or resolution scope without changing its token; `removeTypeRef` rejects live references and remaps surviving metadata, signature, and CIL references.
 
