@@ -3987,6 +3987,41 @@ test("ImplMap rows bind PInvoke fields to ModuleRefs and clear flags on removal"
   assert.equal(withoutMap.tables.row(4, field.rid).Flags & 0x2000, 0);
 });
 
+test("sorted ImplMap insertion remaps later ENC tokens", () => {
+  const assembly = parseAssembly(withoutDebugDirectory());
+  const fields = assembly.types.flatMap((type) => type.fields);
+  const lowerField = fields[0];
+  const higherField = fields.at(-1);
+  assert.ok(lowerField);
+  assert.ok(higherField);
+  assert.ok(lowerField.rid < higherField.rid);
+  assembly.replaceField(lowerField.rid, { flags: lowerField.flags | 0x2000 });
+  assembly.replaceField(higherField.rid, { flags: higherField.flags | 0x2000 });
+  assembly.tables.rows.set(28, []);
+  assembly.tables.counts[28] = 0;
+  assembly.tables.valid &= ~(1n << 28n);
+  assembly.tables.sorted |= 1n << 28n;
+  const moduleRefToken = assembly.addModuleRef({ name: "native.dll" });
+  const later = assembly.insertImplMap({
+    member: { table: "Field", rid: higherField.rid },
+    moduleRefRid: moduleRefToken & 0x00ffffff,
+    importName: "LaterEntry"
+  });
+  addEncToken(assembly, 31, 0x1c000000 + later.rid);
+  const earlier = assembly.insertImplMap({
+    member: { table: "Field", rid: lowerField.rid },
+    moduleRefRid: moduleRefToken & 0x00ffffff,
+    importName: "EarlierEntry"
+  });
+
+  assert.equal(earlier.rid, 1);
+  assert.equal(earlier.tokenMap.get(0x1c000000 + later.rid), 0x1c000000 + later.rid + 1);
+  assert.equal(assembly.tables.get(31).at(-1).Token, 0x1c000000 + later.rid + 1);
+  const reparsed = parseAssembly(assembly.serialize());
+  assert.equal(reparsed.tables.get(31).at(-1).Token, 0x1c000000 + later.rid + 1);
+  assert.equal(reparsed.tables.row(28, 1).MemberForwarded.target.rid, lowerField.rid);
+});
+
 test("Param removal rejects live references and remaps surviving rows in #~ and #-", () => {
   for (const usePointerTable of [false, true]) {
     const assembly = parseAssembly(fixture);

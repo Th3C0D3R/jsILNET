@@ -3157,6 +3157,20 @@ export class Assembly {
   }
 
   addImplMap({ member, moduleRefRid, importName, mappingFlags = 0 }) {
+    return this.#writeImplMap(
+      { member, moduleRefRid, importName, mappingFlags },
+      false
+    ).rid;
+  }
+
+  insertImplMap({ member, moduleRefRid, importName, mappingFlags = 0 }) {
+    return this.#writeImplMap(
+      { member, moduleRefRid, importName, mappingFlags },
+      true
+    );
+  }
+
+  #writeImplMap({ member, moduleRefRid, importName, mappingFlags }, insertSorted) {
     this.#ensureEditable();
     const forwarded = getForwardedMember(this, member);
     if (!Number.isInteger(moduleRefRid) || moduleRefRid < 1 ||
@@ -3170,18 +3184,31 @@ export class Assembly {
       throw new RangeError("ImplMap flags must be an unsigned 16-bit integer");
     }
     const rows = this.tables.rows.get(28) ?? [];
-    if (rows.length !== this.tables.counts[28] || rows.length >= 0xffffffff) {
+    if (rows.length !== this.tables.counts[28] || rows.length >= 0x00ffffff) {
       throw new RangeError("ImplMap row count is inconsistent or exceeds the metadata table limit");
     }
     if (rows.some((row) => row.MemberForwarded.raw === forwarded.raw)) {
       throw new FormatError("The ImplMap table already has a mapping for this member");
     }
-    if ((this.tables.sorted & (1n << 28n)) !== 0n &&
+    let insertionIndex = rows.length;
+    if (insertSorted) {
+      for (let index = 1; index < rows.length; index++) {
+        if (rows[index - 1].MemberForwarded.raw > rows[index].MemberForwarded.raw) {
+          throw new UnsupportedFormatError(
+            "Sorted ImplMap insertion requires rows already ordered by MemberForwarded"
+          );
+        }
+      }
+      const laterMember = rows.findIndex((row) => row.MemberForwarded.raw > forwarded.raw);
+      if (laterMember !== -1) insertionIndex = laterMember;
+    } else if ((this.tables.sorted & (1n << 28n)) !== 0n &&
         rows.at(-1)?.MemberForwarded.raw > forwarded.raw) {
-      throw new UnsupportedFormatError(
-        "ImplMap append would violate declared MemberForwarded ordering"
-      );
+      throw new UnsupportedFormatError("ImplMap append would violate declared MemberForwarded ordering");
     }
+    const rid = insertionIndex + 1;
+    const { tokenMap, rowChanges, tokenUpdates, patches } = insertSorted
+      ? this.#prepareTokenRowInsertion(28, rid, rows.length, "ImplMap")
+      : { tokenMap: new Map(), rowChanges: [], tokenUpdates: [], patches: [] };
     const heapStreams = new Map(
       [...(this._heapStreams ?? new Map([...this.metadataRoot.streams].map(([streamName, stream]) =>
         [streamName, stream.bytes]
@@ -3189,8 +3216,7 @@ export class Assembly {
     );
     const stringHeap = appendStringHeap(heapStreams.get("#Strings") ?? new Uint8Array(), importName);
     heapStreams.set("#Strings", stringHeap.heap);
-    const rid = rows.length + 1;
-    rows.push({
+    const candidate = {
       table: 28,
       tableName: metadataTableNames[28],
       rid,
@@ -3198,14 +3224,21 @@ export class Assembly {
       MemberForwarded: forwarded,
       ImportName: stringHeap.index,
       ImportScope: { raw: moduleRefRid, table: 26, tableName: metadataTableNames[26], rid: moduleRefRid }
-    });
+    };
+    for (const change of rowChanges) change.row[change.columnName] = change.value;
+    for (const row of rows) {
+      if (row.rid >= rid) row.rid++;
+    }
+    rows.splice(insertionIndex, 0, candidate);
     this.tables.rows.set(28, rows);
-    this.tables.counts[28] = rid;
+    this.tables.counts[28] = rows.length;
     this.tables.valid |= 1n << 28n;
     this._heapStreams = heapStreams;
     this.#refreshHeaps();
+    for (const update of tokenUpdates) update.instruction.operand.value = update.replacement;
+    this._patches.push(...patches);
     this._metadataDirty = true;
-    return rid;
+    return { rid, tokenMap };
   }
 
   replaceImplMap(rid, { moduleRefRid, importName, mappingFlags } = {}) {
