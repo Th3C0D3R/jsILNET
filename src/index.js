@@ -8352,9 +8352,6 @@ export class Assembly {
         rows[rid - 1]?.rid !== rid || !this.exportedTypes[rid - 1]) {
       throw new RangeError(`Invalid ExportedType row ID ${rid}`);
     }
-    if (rid !== rows.length) {
-      throw new UnsupportedFormatError("Only a trailing ExportedType row can be removed safely");
-    }
     if (this._structuralBodies.size > 0) {
       throw new UnsupportedFormatError("ExportedType removal cannot be combined with structural method edits");
     }
@@ -8367,37 +8364,90 @@ export class Assembly {
         );
       }
     }
+    const rowChanges = [];
     for (const [tableId, tableRows] of this.tables.rows) {
       for (const [kind, value, columnName] of metadataTableSchemas[tableId]) {
         const name = columnName ?? value;
         for (const other of tableRows) {
           const column = other[name];
+          if (kind === "u4" && [30, 31].includes(tableId)) {
+            const token = column ?? 0;
+            if ((token >>> 24) === 0x27) {
+              const targetRid = token & 0x00ffffff;
+              if (targetRid === rid) {
+                throw new FormatError(
+                  `ExportedType row ${rid} is referenced by ${metadataTableNames[tableId]}.${name}`
+                );
+              }
+              if (targetRid > rid) {
+                rowChanges.push({ row: other, columnName: name, value: token - 1 });
+              }
+            }
+            continue;
+          }
           const target = kind === "coded"
             ? column?.target
             : kind === "table" ? { table: value, rid: column?.rid } : null;
-          if (target?.table === 39 && target.rid === rid) {
-            throw new FormatError(
-              `ExportedType row ${rid} is referenced by ${metadataTableNames[tableId]}.${name}`
-            );
-          }
-          if (kind === "u4" && [30, 31].includes(tableId)) {
-            const token = column ?? 0;
-            if ((token >>> 24) === 0x27 && (token & 0x00ffffff) === rid) {
+          if (target?.table === 39) {
+            if (target.rid === rid) {
               throw new FormatError(
                 `ExportedType row ${rid} is referenced by ${metadataTableNames[tableId]}.${name}`
               );
+            }
+            if (target.rid > rid) {
+              const remappedTarget = { ...target, rid: target.rid - 1 };
+              rowChanges.push({
+                row: other,
+                columnName: name,
+                value: kind === "coded"
+                  ? {
+                    raw: encodeCodedIndex(39, remappedTarget.rid, value),
+                    target: remappedTarget
+                  }
+                  : { ...column, raw: remappedTarget.rid, rid: remappedTarget.rid }
+              });
             }
           }
         }
       }
     }
-    rows.pop();
-    this.exportedTypes.pop();
+    const changesByRow = new Map();
+    for (const change of rowChanges) {
+      if (!changesByRow.has(change.row)) changesByRow.set(change.row, new Map());
+      changesByRow.get(change.row).set(change.columnName, change.value);
+    }
+    if ((this.tables.sorted & (1n << 12n)) !== 0n) {
+      let previous = -1;
+      for (const row of this.tables.get(12)) {
+        const parent = changesByRow.get(row)?.get("Parent") ?? row.Parent;
+        if (parent.raw < previous) {
+          throw new FormatError("ExportedType token remapping would violate sorted CustomAttribute order");
+        }
+        previous = parent.raw;
+      }
+    }
+    const tokenMap = new Map();
+    for (let oldRid = rid + 1; oldRid <= rows.length; oldRid++) {
+      tokenMap.set(0x27000000 + oldRid, 0x27000000 + oldRid - 1);
+    }
+    for (const change of rowChanges) change.row[change.columnName] = change.value;
+    rows.splice(rid - 1, 1);
+    this.exportedTypes.splice(rid - 1, 1);
+    rows.forEach((row, index) => {
+      row.rid = index + 1;
+      this.exportedTypes[index].rid = index + 1;
+    });
+    for (const exportedType of this.exportedTypes) {
+      exportedType.implementation = rows[exportedType.rid - 1].Implementation.target;
+    }
+    for (const attribute of this.customAttributes) {
+      attribute.parent = this.tables.row(12, attribute.rid).Parent.target;
+    }
     this.tables.rows.set(39, rows);
     this.tables.counts[39] = rows.length;
     if (rows.length === 0) this.tables.valid &= ~(1n << 39n);
     this._metadataDirty = true;
-    return this;
+    return tokenMap.size > 0 ? tokenMap : this;
   }
 
   replaceFile(rid, { name, flags, hashValue } = {}) {

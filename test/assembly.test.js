@@ -4671,6 +4671,56 @@ test("ExportedType rows can append File or AssemblyRef implementations", () => {
   assert.equal(referencedAssembly.tables.counts[39], 1);
 });
 
+test("non-trailing ExportedType removal remaps surviving metadata references", () => {
+  const assembly = parseAssembly(withoutDebugDirectory());
+  const implementation = { table: "AssemblyRef", rid: assembly.assemblyRefs[0].rid };
+  const removedToken = assembly.addExportedType({ name: "RemoveExported", implementation });
+  const survivingToken = assembly.addExportedType({ name: "KeepExported", implementation });
+  const nestedToken = assembly.addExportedType({
+    name: "NestedExported",
+    implementation: { table: "ExportedType", rid: survivingToken & 0x00ffffff }
+  });
+  const attributeParent = assembly.tables.row(12, 1).Parent;
+  attributeParent.raw = encodeCodedIndex(
+    39,
+    nestedToken & 0x00ffffff,
+    "HasCustomAttribute"
+  );
+  attributeParent.target = {
+    table: 39,
+    tableName: "ExportedType",
+    rid: nestedToken & 0x00ffffff
+  };
+  assembly.customAttributes[0].parent = attributeParent.target;
+
+  assert.throws(
+    () => assembly.removeExportedType(removedToken & 0x00ffffff),
+    /sorted CustomAttribute order/
+  );
+  assert.equal(assembly.tables.counts[39], 3);
+  assembly.tables.sorted &= ~(1n << 12n);
+  const tokenMap = assembly.removeExportedType(removedToken & 0x00ffffff);
+  assert.equal(tokenMap.get(survivingToken), removedToken);
+  assert.equal(assembly.customAttributes[0].parent.rid, tokenMap.get(nestedToken) & 0x00ffffff);
+  assert.equal(
+    assembly.exportedTypes.at(-1).implementation.rid,
+    tokenMap.get(survivingToken) & 0x00ffffff
+  );
+  const reparsed = parseAssembly(assembly.serialize());
+  assert.deepEqual(reparsed.exportedTypes.slice(-2).map((type) => type.name), [
+    "KeepExported",
+    "NestedExported"
+  ]);
+  assert.equal(
+    reparsed.exportedTypes.at(-1).implementation.rid,
+    tokenMap.get(survivingToken) & 0x00ffffff
+  );
+  assert.equal(
+    reparsed.customAttributes[0].parent.rid,
+    tokenMap.get(nestedToken) & 0x00ffffff
+  );
+});
+
 test("File replacement updates module identity and hash without changing its token", () => {
   const assembly = parseAssembly(fixture);
   const fileToken = assembly.addFile({ name: "Original.netmodule" });

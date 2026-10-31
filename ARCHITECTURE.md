@@ -85,7 +85,7 @@ TypeDef rows can be appended with validated optional base references and compute
 
 TypeDef removal requires no fields, methods, events, properties, or generic parameters on the removed owner; references to that TypeDef are rejected rather than removed implicitly.
 
-ExportedType rows can be appended with existing File, AssemblyRef, or parent ExportedType implementation references and replaced in place; cyclic implementation chains are rejected. Removal is restricted to a trailing unreferenced row and refused with debug data or unknown streams.
+ExportedType rows can be appended with existing File, AssemblyRef, or parent ExportedType implementation references and replaced in place; cyclic implementation chains are rejected. Any unreferenced row can be removed with later ExportedType references remapped in supported metadata and ENC token rows; CustomAttribute sort order is revalidated. Removal is refused with debug data or unknown streams.
 
 ManifestResource metadata supports identity/flags replacement and linked implementation retargeting while preserving embedded data and refusing embedded/linked conversions.
 
