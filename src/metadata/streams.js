@@ -1,7 +1,7 @@
 import { BinaryReader, readCompressedUInt } from "../binary/reader.js";
 import { FormatError } from "../binary/errors.js";
 
-const utf8Decoder = new TextDecoder("utf-8", { fatal: true });
+const utf8Decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 function validateStringsHeap(bytes) {
   let start = 1;

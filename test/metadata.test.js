@@ -299,6 +299,9 @@ test("metadata heap readers resolve strings, blobs, GUIDs and user strings", () 
   assert.equal(new MetadataHeaps(new Map([
     ["#US", { bytes: Uint8Array.from([0, 3, 0x00, 0xd8, 0]) }]
   ])).getUserString(1), "\ud800");
+  assert.equal(new MetadataHeaps(new Map([
+    ["#Strings", { bytes: Uint8Array.from([0, 0xef, 0xbb, 0xbf, 0]) }]
+  ])).getString(1), "\ufeff");
 });
 
 test("metadata heap readers validate required zero entries and GUID width", () => {
