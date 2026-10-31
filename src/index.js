@@ -454,6 +454,36 @@ function validateNewMethodBody(assembly, bodyBytes, ownerType, methodRid, method
   return body;
 }
 
+function collectCatchTokenRemaps(body, tableId, rowCount, remapRid, tableName, removedRid = null) {
+  const patches = [];
+  const updates = [];
+  for (const section of body.sections) {
+    const clauseSize = section.fat ? 24 : 12;
+    for (let index = 0; index < section.clauses.length; index++) {
+      const clause = section.clauses[index];
+      if (clause.flags !== 0) continue;
+      const token = clause.classTokenOrFilterOffset;
+      if ((token >>> 24) !== tableId) continue;
+      const rid = token & 0x00ffffff;
+      if (rid === 0 || rid > rowCount) {
+        throw new FormatError(`Catch clause references missing ${tableName} row ${rid}`);
+      }
+      if (rid === removedRid) {
+        throw new FormatError(`${tableName} row ${rid} is referenced by a catch clause`);
+      }
+      const remappedRid = remapRid(rid);
+      if (remappedRid === rid) continue;
+      const replacement = (tableId << 24) | remappedRid;
+      const tokenOffset = section.offset + 4 + index * clauseSize + (section.fat ? 20 : 8);
+      const bytes = new Uint8Array(4);
+      new DataView(bytes.buffer).setUint32(0, replacement, true);
+      patches.push({ offset: tokenOffset, bytes });
+      updates.push({ clause, replacement });
+    }
+  }
+  return { patches, updates };
+}
+
 function getBijectivePointerRows(assembly, pointerTableId, targetTableId, columnName) {
   if ((assembly.tables.valid & (1n << BigInt(pointerTableId))) === 0n) return null;
   const pointers = assembly.tables.rows.get(pointerTableId) ?? [];
@@ -2009,30 +2039,16 @@ export class Assembly {
           tokenUpdates.push({ instruction, replacement });
         }
       }
-      for (const section of body.sections) {
-        const clauseSize = section.fat ? 24 : 12;
-        for (let index = 0; index < section.clauses.length; index++) {
-          const clause = section.clauses[index];
-          if (clause.flags !== 0) continue;
-          const token = clause.classTokenOrFilterOffset;
-          if ((token >>> 24) !== 0x02) continue;
-          const targetRid = token & 0x00ffffff;
-          if (targetRid === rid) {
-            throw new FormatError(`TypeDef row ${rid} is referenced by a catch clause`);
-          }
-          if (targetRid > rows.length) {
-            throw new FormatError(`Catch clause references missing TypeDef row ${targetRid}`);
-          }
-          if (!shiftsTypeRids || targetRid < rid) continue;
-          const replacement = token - 1;
-          const tokenOffset = section.offset + 4 + index * clauseSize +
-            (section.fat ? 20 : 8);
-          const bytes = new Uint8Array(4);
-          new DataView(bytes.buffer).setUint32(0, replacement, true);
-          patches.push({ offset: tokenOffset, bytes });
-          exceptionTokenUpdates.push({ clause, replacement });
-        }
-      }
+      const catchRemaps = collectCatchTokenRemaps(
+        body,
+        2,
+        rows.length,
+        (oldRid) => shiftsTypeRids && oldRid > rid ? oldRid - 1 : oldRid,
+        "TypeDef",
+        rid
+      );
+      patches.push(...catchRemaps.patches);
+      exceptionTokenUpdates.push(...catchRemaps.updates);
     }
 
     const remainingRows = rows.filter((row) => row.rid !== rid);
@@ -5574,7 +5590,12 @@ export class Assembly {
     const tokenMap = new Map([...remappedRids].flatMap(([oldRid, newRid]) =>
       oldRid === newRid ? [] : [[0x01000000 + oldRid, 0x01000000 + newRid]]
     ));
-    if (tokenMap.size > 0) this.#ensureTokenRemappingSafe("TypeRef");
+    if (tokenMap.size > 0) {
+      if (this._addedMethodBodies.size > 0) {
+        throw new UnsupportedFormatError("TypeRef remapping cannot be combined with added method bodies");
+      }
+      this.#ensureTokenRemappingSafe("TypeRef");
+    }
     if (scopeTarget?.table === 1 && remappedRid(scopeTarget.rid) !== scopeTarget.rid) {
       scopeTarget = { ...scopeTarget, rid: remappedRid(scopeTarget.rid) };
       newRow.ResolutionScope = {
@@ -5685,6 +5706,7 @@ export class Assembly {
     }
 
     const tokenUpdates = [];
+    const catchTokenUpdates = [];
     const patches = [];
     for (const method of this.methods) {
       const body = this.getMethodBody(method.rid);
@@ -5702,6 +5724,15 @@ export class Assembly {
         patches.push(...createOperandPatches(instruction, replacement));
         tokenUpdates.push({ instruction, replacement });
       }
+      const catchRemaps = collectCatchTokenRemaps(
+        body,
+        1,
+        typeRows.length,
+        remappedRid,
+        "TypeRef"
+      );
+      patches.push(...catchRemaps.patches);
+      catchTokenUpdates.push(...catchRemaps.updates);
     }
 
     const previousTypesByRid = new Map(this.typeRefs.map((type) => [type.rid, type]));
@@ -5772,6 +5803,9 @@ export class Assembly {
       attribute.constructor = row.Type.target;
     }
     for (const update of tokenUpdates) update.instruction.operand.value = update.replacement;
+    for (const update of catchTokenUpdates) {
+      update.clause.classTokenOrFilterOffset = update.replacement;
+    }
     this._patches.push(...patches);
     this._heapStreams = heapStreams;
     this.tables.sorted |= 1n << 1n;
@@ -5863,6 +5897,9 @@ export class Assembly {
     this.#ensureEditable();
     if (this._structuralBodies.size > 0) {
       throw new UnsupportedFormatError("TypeRef removal cannot be combined with structural method edits");
+    }
+    if (this._addedMethodBodies.size > 0) {
+      throw new UnsupportedFormatError("TypeRef removal cannot be combined with added method bodies");
     }
     this.#ensureTokenRemappingSafe("TypeRef");
     const rows = this.tables.rows.get(1) ?? [];
@@ -5988,6 +6025,7 @@ export class Assembly {
     }
 
     const tokenUpdates = [];
+    const catchTokenUpdates = [];
     const patches = [];
     for (const method of this.methods) {
       const body = this.getMethodBody(method.rid);
@@ -6006,6 +6044,16 @@ export class Assembly {
           tokenUpdates.push({ instruction, replacement });
         }
       }
+      const catchRemaps = collectCatchTokenRemaps(
+        body,
+        1,
+        rows.length,
+        remappedRid,
+        "TypeRef",
+        rid
+      );
+      patches.push(...catchRemaps.patches);
+      catchTokenUpdates.push(...catchRemaps.updates);
     }
     const remainingRows = rows.filter((row) => row.rid !== rid);
     const remainingTypes = this.typeRefs.filter((type) => type.rid !== rid);
@@ -6069,6 +6117,9 @@ export class Assembly {
       attribute.constructor = row.Type.target;
     }
     for (const update of tokenUpdates) update.instruction.operand.value = update.replacement;
+    for (const update of catchTokenUpdates) {
+      update.clause.classTokenOrFilterOffset = update.replacement;
+    }
     this._patches.push(...patches);
     this._heapStreams = heapStreams;
     this._metadataDirty = true;
@@ -6578,6 +6629,9 @@ export class Assembly {
     if (this._structuralBodies.size > 0) {
       throw new UnsupportedFormatError("TypeSpec removal cannot be combined with structural method edits");
     }
+    if (this._addedMethodBodies.size > 0) {
+      throw new UnsupportedFormatError("TypeSpec removal cannot be combined with added method bodies");
+    }
     this.#ensureTokenRemappingSafe("TypeSpec");
     const rows = this.tables.rows.get(27) ?? [];
     if (!Number.isInteger(rid) || rid < 1 || rid > rows.length) {
@@ -6658,6 +6712,7 @@ export class Assembly {
 
     const tokenMap = new Map();
     const tokenUpdates = [];
+    const catchTokenUpdates = [];
     const patches = [];
     for (const method of this.methods) {
       const body = this.getMethodBody(method.rid);
@@ -6677,6 +6732,16 @@ export class Assembly {
           tokenUpdates.push({ instruction, replacement });
         }
       }
+      const catchRemaps = collectCatchTokenRemaps(
+        body,
+        27,
+        rows.length,
+        (oldRid) => oldRid > rid ? oldRid - 1 : oldRid,
+        "TypeSpec",
+        rid
+      );
+      patches.push(...catchRemaps.patches);
+      catchTokenUpdates.push(...catchRemaps.updates);
     }
     for (let oldRid = rid + 1; oldRid <= rows.length; oldRid++) {
       tokenMap.set(0x1b000000 + oldRid, 0x1b000000 + oldRid - 1);
@@ -6769,6 +6834,9 @@ export class Assembly {
       attribute.constructor = row.Type.target;
     }
     for (const update of tokenUpdates) update.instruction.operand.value = update.replacement;
+    for (const update of catchTokenUpdates) {
+      update.clause.classTokenOrFilterOffset = update.replacement;
+    }
     this._patches.push(...patches);
     this._heapStreams = heapStreams;
     this._metadataDirty = true;

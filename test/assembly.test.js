@@ -41,6 +41,29 @@ function withoutLocalSignatureTokens(input = fixture) {
   return bytes;
 }
 
+function setCatchClauseToken(assembly, token) {
+  const method = assembly.methods.find((candidate) => candidate.name === "Finally");
+  assert.ok(method);
+  const body = assembly.getMethodBody(method.rid);
+  const section = body.sections.find((candidate) => candidate.clauses.length > 0);
+  assert.ok(section);
+  const clause = section.clauses[0];
+  const view = new DataView(
+    assembly.bytes.buffer,
+    assembly.bytes.byteOffset,
+    assembly.bytes.byteLength
+  );
+  if (section.fat) {
+    view.setUint32(section.offset + 4, 0, true);
+  } else {
+    view.setUint16(section.offset + 4, 0, true);
+  }
+  const tokenOffset = section.offset + 4 + (section.fat ? 20 : 8);
+  view.setUint32(tokenOffset, token, true);
+  clause.flags = 0;
+  clause.classTokenOrFilterOffset = token;
+}
+
 function addExtraPEDataDirectory(input) {
   const pe = parsePE(input);
   const delta = 8;
@@ -1572,6 +1595,26 @@ test("TypeSpec removal rejects live references and remaps signatures and CIL tok
   assert.equal(reparsed.getInstructions(castSite.method.rid).find((instruction) =>
     instruction.offset === castSite.instruction.offset
   ).operand.value, tokenMap.get(survivingToken));
+});
+
+test("TypeSpec removal rejects and remaps catch-clause tokens", () => {
+  const assembly = parseAssembly(withoutDebugDirectory());
+  const removedToken = assembly.addTypeSpec({ signature: Uint8Array.from([0x08]) });
+  const survivingToken = assembly.addTypeSpec({ signature: Uint8Array.from([0x09]) });
+  setCatchClauseToken(assembly, removedToken);
+  assert.throws(
+    () => assembly.removeTypeSpec(removedToken & 0x00ffffff),
+    /referenced by a catch clause/
+  );
+
+  setCatchClauseToken(assembly, survivingToken);
+  const tokenMap = assembly.removeTypeSpec(removedToken & 0x00ffffff);
+  const reparsed = parseAssembly(assembly.serialize());
+  const method = reparsed.methods.find((candidate) => candidate.name === "Finally");
+  assert.equal(
+    reparsed.getMethodBody(method.rid).sections[0].clauses[0].classTokenOrFilterOffset,
+    tokenMap.get(survivingToken)
+  );
 });
 
 test("generic MemberRefs can receive MethodSpec instantiations and IL tokens", () => {
@@ -4218,6 +4261,7 @@ test("sorted TypeRef insertion remaps metadata references and signature blobs", 
     }
   }
   const customAttributeRow = assembly.tables.row(12, 1);
+  setCatchClauseToken(assembly, 0x01000005);
   customAttributeRow.Parent.raw = encodeCodedIndex(1, 5, "HasCustomAttribute");
   customAttributeRow.Parent.target = { table: 1, tableName: "TypeRef", rid: 5 };
   assembly.customAttributes[0].parent = customAttributeRow.Parent.target;
@@ -4237,6 +4281,11 @@ test("sorted TypeRef insertion remaps metadata references and signature blobs", 
   assert.equal(
     reparsed.customAttributes[0].parent.rid,
     result.tokenMap.get(0x01000005) & 0x00ffffff
+  );
+  const finallyMethod = reparsed.methods.find((method) => method.name === "Finally");
+  assert.equal(
+    reparsed.getMethodBody(finallyMethod.rid).sections[0].clauses[0].classTokenOrFilterOffset,
+    result.tokenMap.get(0x01000005)
   );
   assert.equal(reparsed.typeRefs[(result.token & 0x00ffffff) - 1].name, "InsertedTypeRef");
   assert.equal(
@@ -4321,6 +4370,27 @@ test("TypeRef removal rejects live references and remaps surviving tokens", () =
     reparsed.getInstructions(castSite.method.rid).find((instruction) =>
       instruction.offset === castSite.instruction.offset
     ).operand.value,
+    tokenMap.get(survivingToken)
+  );
+});
+
+test("TypeRef removal rejects and remaps catch-clause tokens", () => {
+  const assembly = parseAssembly(withoutDebugDirectory());
+  const scope = assembly.typeRefs.at(-1).resolutionScope;
+  const removedToken = assembly.addTypeRef({ scope, name: "RemoveCatch", namespace: "JsILNET.Test" });
+  const survivingToken = assembly.addTypeRef({ scope, name: "KeepCatch", namespace: "JsILNET.Test" });
+  setCatchClauseToken(assembly, removedToken);
+  assert.throws(
+    () => assembly.removeTypeRef(removedToken & 0x00ffffff),
+    /referenced by a catch clause/
+  );
+
+  setCatchClauseToken(assembly, survivingToken);
+  const tokenMap = assembly.removeTypeRef(removedToken & 0x00ffffff);
+  const reparsed = parseAssembly(assembly.serialize());
+  const method = reparsed.methods.find((candidate) => candidate.name === "Finally");
+  assert.equal(
+    reparsed.getMethodBody(method.rid).sections[0].clauses[0].classTokenOrFilterOffset,
     tokenMap.get(survivingToken)
   );
 });
