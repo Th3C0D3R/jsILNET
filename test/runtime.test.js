@@ -20,9 +20,28 @@ test("rewritten IL assemblies load and execute in the installed .NET runtime", {
     const assembly = parseAssembly(
       await readFile(new URL("./fixtures/Fixture.dll", import.meta.url))
     );
-    const owner = assembly.types.at(-1);
+    const objectType = assembly.typeRefs.find((type) =>
+      type.namespace === "System" && type.name === "Object"
+    );
+    assert.ok(objectType);
+    const ownerRid = assembly.addTypeDef({
+      name: "RuntimeSmokeHolder",
+      extends: { table: "TypeRef", rid: objectType.rid }
+    }) & 0x00ffffff;
+    assembly.tables.sorted &= ~(1n << 11n);
+    const fieldRid = assembly.addField({
+      owner: { table: "TypeDef", rid: ownerRid },
+      name: "RuntimeAnswer",
+      flags: 0x0056,
+      signature: Uint8Array.of(0x06, 0x08)
+    }) & 0x00ffffff;
+    assembly.addConstant({
+      parent: { table: "Field", rid: fieldRid },
+      type: 0x08,
+      value: Uint8Array.of(42, 0, 0, 0)
+    });
     assembly.addMethod({
-      owner: { table: "TypeDef", rid: owner.rid },
+      owner: { table: "TypeDef", rid: ownerRid },
       name: "RuntimeSmoke",
       flags: 0x0096,
       signature: Uint8Array.of(0x00, 0x00, 0x08),
@@ -47,11 +66,11 @@ test("rewritten IL assemblies load and execute in the installed .NET runtime", {
       "var flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static;",
       "var type = assembly.GetTypes().Single(candidate =>",
       "    candidate.GetMethods(flags).Any(method => method.Name == \"RuntimeSmoke\"));",
-      "if (type.IsGenericTypeDefinition)",
-      "    type = type.MakeGenericType(Enumerable.Repeat(typeof(object), type.GetGenericArguments().Length).ToArray());",
       "var smoke = type.GetMethod(\"RuntimeSmoke\", flags)",
       "    ?? throw new InvalidOperationException(\"RuntimeSmoke was not found\");",
-      "Console.WriteLine(smoke.Invoke(null, null));"
+      "var field = type.GetField(\"RuntimeAnswer\", flags)",
+      "    ?? throw new InvalidOperationException(\"RuntimeAnswer was not found\");",
+      "Console.WriteLine($\"{smoke.Invoke(null, null)}:{field.GetRawConstantValue()}\");"
     ].join("\n"));
 
     const result = spawnSync(
@@ -60,7 +79,7 @@ test("rewritten IL assemblies load and execute in the installed .NET runtime", {
       { encoding: "utf8", timeout: 120_000 }
     );
     assert.equal(result.status, 0, result.stderr || result.stdout || result.error?.message);
-    assert.equal(result.stdout.trim().split(/\r?\n/).at(-1), "42");
+    assert.equal(result.stdout.trim().split(/\r?\n/).at(-1), "42:42");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
