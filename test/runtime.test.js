@@ -364,7 +364,7 @@ test("strong-name signed PE32+ assemblies load and execute in .NET", {
         embeddedPdbDebugIndex,
         new Uint8Array(embeddedPdbEntry.sizeOfData + 1)
       ),
-      /must fit within its existing data slot/
+      /MPDB header/
     );
     assembly.replaceEmbeddedPortablePdb(embeddedPdbDebugIndex, originalEmbeddedPdb);
     const rewrittenPdbBytes = serializeEmbeddedPortablePdb(embeddedPdb);
@@ -514,24 +514,12 @@ test("strong-name signed PE32+ assemblies load and execute in .NET", {
       ).embeddedSource,
       changedSource
     );
-    let expectedCustomDebugInformation = embeddedPdb.customDebugInformation;
-    if (changedSourcePdbBytes.length <= embeddedPdbEntry.sizeOfData) {
-      assembly.replaceEmbeddedPortablePdbSource(
-        embeddedPdbDebugIndex,
-        embeddedSourceRecord.Parent.target.rid,
-        changedSource
-      );
-      expectedCustomDebugInformation = changedSourcePdb.customDebugInformation;
-    } else {
-      assert.throws(
-        () => assembly.replaceEmbeddedPortablePdbSource(
-          embeddedPdbDebugIndex,
-          embeddedSourceRecord.Parent.target.rid,
-          changedSource
-        ),
-        /existing data slot/
-      );
-    }
+    assembly.replaceEmbeddedPortablePdbSource(
+      embeddedPdbDebugIndex,
+      embeddedSourceRecord.Parent.target.rid,
+      changedSource
+    );
+    let expectedCustomDebugInformation = changedSourcePdb.customDebugInformation;
     const originalDocumentName = embeddedPdb.documents[0].name;
     const renamedDocument = replaceEmbeddedPortablePdbDocumentName(
       embeddedPdb,
@@ -616,29 +604,33 @@ test("strong-name signed PE32+ assemblies load and execute in .NET", {
       changedPoints[visiblePointIndex].startLine
     );
     let expectedMethodDebugInformation = embeddedPdb.methodDebugInformation;
-    if (changedPdbBytes.length <= embeddedPdbEntry.sizeOfData) {
-      assembly.replaceEmbeddedPortablePdbSequencePoints(
-        embeddedPdbDebugIndex,
-        methodDebugInfo.rid,
-        {
-          localSignatureRid: methodDebugInfo.localSignatureRid,
-          points: changedPoints
-        }
-      );
-      expectedMethodDebugInformation = changedPdb.methodDebugInformation;
-    } else {
-      assert.throws(
-        () => assembly.replaceEmbeddedPortablePdbSequencePoints(
-          embeddedPdbDebugIndex,
-          methodDebugInfo.rid,
-          {
-            localSignatureRid: methodDebugInfo.localSignatureRid,
-            points: changedPoints
-          }
-        ),
-        /existing data slot/
-      );
-    }
+    assembly.replaceEmbeddedPortablePdbSequencePoints(
+      embeddedPdbDebugIndex,
+      methodDebugInfo.rid,
+      {
+        localSignatureRid: methodDebugInfo.localSignatureRid,
+        points: changedPoints
+      }
+    );
+    const combinedPdbBytes = replaceEmbeddedPortablePdbSequencePoints(
+      parseEmbeddedPortablePdbData(
+        changedSourcePdbBytes,
+        0,
+        changedSourcePdbBytes.length
+      ),
+      methodDebugInfo.rid,
+      {
+        localSignatureRid: methodDebugInfo.localSignatureRid,
+        points: changedPoints
+      }
+    );
+    const combinedPdb = parseEmbeddedPortablePdbData(
+      combinedPdbBytes,
+      0,
+      combinedPdbBytes.length
+    );
+    expectedMethodDebugInformation = combinedPdb.methodDebugInformation;
+    expectedCustomDebugInformation = combinedPdb.customDebugInformation;
     assembly.replaceStrongNamePublicKey(
       generateKeyPairSync("rsa", { modulusLength: 1024 }).privateKey
     );
@@ -652,6 +644,13 @@ test("strong-name signed PE32+ assemblies load and execute in .NET", {
     assert.deepEqual(rewrittenPdb?.documents, embeddedPdb.documents);
     assert.deepEqual(rewrittenPdb?.methodDebugInformation, expectedMethodDebugInformation);
     assert.deepEqual(rewrittenPdb?.customDebugInformation, expectedCustomDebugInformation);
+    const rewrittenPdbEntry = signed.pe.debugDirectoryEntries[embeddedPdbDebugIndex];
+    assert.ok(rewrittenPdbEntry.sizeOfData > 0);
+    assert.notEqual(rewrittenPdbEntry.pointerToRawData, embeddedPdbEntry.pointerToRawData);
+    assert.equal(
+      signed.pe.rvaToOffset(rewrittenPdbEntry.addressOfRawData, rewrittenPdbEntry.sizeOfData),
+      rewrittenPdbEntry.pointerToRawData
+    );
     await writeFile(assemblyPath, signedBytes);
 
     const harnessProject = join(directory, "RuntimeHarness.csproj");

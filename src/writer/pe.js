@@ -82,7 +82,8 @@ export function appendPeSection(
   metadataOffset,
   metadataSize,
   resourcesDirectory = null,
-  preserveStrongName = false
+  preserveStrongName = false,
+  debugDirectoryPayload = null
 ) {
   if (payload.length === 0) throw new RangeError("Cannot add an empty PE section");
   if (pe.sectionCount >= 0xffff) throw new UnsupportedFormatError("PE section-count limit reached");
@@ -122,10 +123,12 @@ export function appendPeSection(
   writeU16(view, sectionHeaderOffset + 34, 0, "section line-number count");
   writeU32(view, sectionHeaderOffset + 36, 0x60000020, "section characteristics");
 
-  const newMetadataRva = virtualAddress + metadataOffset;
   const shiftedCliOffset = cli.offset >= expanded.insertionOffset ? cli.offset + expanded.delta : cli.offset;
-  writeU32(view, shiftedCliOffset + 8, newMetadataRva, "CLI metadata RVA");
-  writeU32(view, shiftedCliOffset + 12, metadataSize, "CLI metadata size");
+  if (metadataOffset !== null) {
+    const newMetadataRva = virtualAddress + metadataOffset;
+    writeU32(view, shiftedCliOffset + 8, newMetadataRva, "CLI metadata RVA");
+    writeU32(view, shiftedCliOffset + 12, metadataSize, "CLI metadata size");
+  }
   if (resourcesDirectory) {
     writeU32(view, shiftedCliOffset + 24, resourcesDirectory.rva, "CLI resources RVA");
     writeU32(view, shiftedCliOffset + 28, resourcesDirectory.size, "CLI resources size");
@@ -140,6 +143,47 @@ export function appendPeSection(
     writeU32(view, shiftedCliOffset + 16, cli.flags & ~0x08, "CLI flags");
     writeU32(view, shiftedCliOffset + 32, 0, "strong-name RVA");
     writeU32(view, shiftedCliOffset + 36, 0, "strong-name size");
+  }
+  if (debugDirectoryPayload) {
+    const directoryBase = pe.optionalHeaderOffset +
+      (pe.optionalHeaderMagic === 0x10b ? 96 : 112);
+    const directoryField = directoryBase + 6 * 8;
+    if (directoryField + 8 > pe.optionalHeaderOffset + pe.optionalHeaderSize) {
+      throw new UnsupportedFormatError("PE optional header has no debug data-directory slot");
+    }
+    writeU32(
+      view,
+      directoryField,
+      virtualAddress + debugDirectoryPayload.tableOffset,
+      "debug directory RVA"
+    );
+    writeU32(view, directoryField + 4, debugDirectoryPayload.size, "debug directory size");
+    for (const entry of debugDirectoryPayload.preservedEntries) {
+      const pointer = entry.pointer >= expanded.insertionOffset && entry.pointer !== 0
+        ? entry.pointer + expanded.delta
+        : entry.pointer;
+      writeU32(view, rawPointer + entry.pointerOffset, pointer, "debug record raw pointer");
+    }
+    for (const entry of debugDirectoryPayload.relocatedEntries) {
+      writeU32(
+        view,
+        rawPointer + entry.entryOffset + 16,
+        entry.size,
+        "debug record data size"
+      );
+      writeU32(
+        view,
+        rawPointer + entry.entryOffset + 20,
+        virtualAddress + entry.dataOffset,
+        "debug record data RVA"
+      );
+      writeU32(
+        view,
+        rawPointer + entry.entryOffset + 24,
+        rawPointer + entry.dataOffset,
+        "debug record raw pointer"
+      );
+    }
   }
   return {
     bytes: output,

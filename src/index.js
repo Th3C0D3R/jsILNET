@@ -1466,6 +1466,7 @@ export class Assembly {
     this._metadataDirty = false;
     this._heapStreams = null;
     this._resourceEdits = new Map();
+    this._embeddedPortablePdbEdits = new Map();
     this._clearResourcesDirectory = false;
   }
 
@@ -1492,6 +1493,13 @@ export class Assembly {
     this._addedMethodBodies.delete(methodRid);
     this._structuralBodies.set(methodRid, state);
     this._bodyCache.set(methodRid, state.body);
+  }
+
+  #getPortablePdbForEdit(debugEntryIndex, entry) {
+    const replacement = this._embeddedPortablePdbEdits.get(debugEntryIndex);
+    return replacement
+      ? parseEmbeddedPortablePdbData(replacement, 0, replacement.length)
+      : entry.embeddedPortablePdb;
   }
 
   static from(input) {
@@ -2684,56 +2692,13 @@ export class Assembly {
     if (entry.type !== 17 || !entry.embeddedPortablePdb) {
       throw new UnsupportedFormatError("Debug-directory entry is not an embedded Portable PDB");
     }
-    if (data.length > entry.sizeOfData) {
-      throw new UnsupportedFormatError(
-        "Embedded Portable PDB replacement must fit within its existing data slot"
-      );
-    }
     const pdb = parseEmbeddedPortablePdbData(data, 0, data.length);
     validatePortablePdbAssemblyReferences(pdb, this.tables.counts);
     const codeView = this.pe.debugDirectoryEntries.find((candidate) =>
       candidate.codeView?.format === "RSDS"
     )?.codeView;
     if (codeView) validatePortablePdbCodeViewIdentity(pdb, codeView);
-
-    const dataOffset = entry.pointerToRawData !== 0
-      ? entry.pointerToRawData
-      : this.pe.rvaToOffset(entry.addressOfRawData, entry.sizeOfData);
-    const dataEnd = dataOffset + entry.sizeOfData;
-    const debugDirectory = this.pe.directories[6];
-    if (debugDirectory?.rva && debugDirectory.size > 0) {
-      const directoryOffset = this.pe.rvaToOffset(debugDirectory.rva, debugDirectory.size);
-      const directoryEnd = directoryOffset + debugDirectory.size;
-      if (dataOffset < directoryEnd && directoryOffset < dataEnd) {
-        throw new UnsupportedFormatError(
-          "Embedded Portable PDB data overlaps the PE debug-directory table"
-        );
-      }
-    }
-    for (let index = 0; index < this.pe.debugDirectoryEntries.length; index++) {
-      if (index === debugEntryIndex) continue;
-      const other = this.pe.debugDirectoryEntries[index];
-      if (other.sizeOfData === 0) continue;
-      const otherOffset = other.pointerToRawData !== 0
-        ? other.pointerToRawData
-        : this.pe.rvaToOffset(other.addressOfRawData, other.sizeOfData);
-      if (dataOffset < otherOffset + other.sizeOfData &&
-          otherOffset < dataEnd) {
-        throw new UnsupportedFormatError(
-          "Embedded Portable PDB data overlaps another PE debug record"
-        );
-      }
-    }
-
-    const debugDirectoryOffset = this.pe.rvaToOffset(
-      debugDirectory.rva,
-      debugDirectory.size
-    );
-    const entrySizeOffset = debugDirectoryOffset + debugEntryIndex * 28 + 16;
-    const sizeBytes = new Uint8Array(4);
-    new DataView(sizeBytes.buffer).setUint32(0, data.length, true);
-    this._patches.push({ offset: dataOffset, bytes: Uint8Array.from(data) });
-    this._patches.push({ offset: entrySizeOffset, bytes: sizeBytes });
+    this._embeddedPortablePdbEdits.set(debugEntryIndex, Uint8Array.from(data));
     return this;
   }
 
@@ -2748,7 +2713,7 @@ export class Assembly {
       throw new UnsupportedFormatError("Debug-directory entry is not an embedded Portable PDB");
     }
     const data = replacePortablePdbDocumentName(
-      entry.embeddedPortablePdb,
+      this.#getPortablePdbForEdit(debugEntryIndex, entry),
       documentRid,
       name,
       separator
@@ -2767,7 +2732,7 @@ export class Assembly {
       throw new UnsupportedFormatError("Debug-directory entry is not an embedded Portable PDB");
     }
     const data = replacePortablePdbSequencePoints(
-      entry.embeddedPortablePdb,
+      this.#getPortablePdbForEdit(debugEntryIndex, entry),
       methodRid,
       sequencePoints
     );
@@ -2785,7 +2750,7 @@ export class Assembly {
       throw new UnsupportedFormatError("Debug-directory entry is not an embedded Portable PDB");
     }
     const data = replacePortablePdbSource(
-      entry.embeddedPortablePdb,
+      this.#getPortablePdbForEdit(debugEntryIndex, entry),
       documentRid,
       source,
       options
@@ -2803,7 +2768,10 @@ export class Assembly {
     if (entry.type !== 17 || !entry.embeddedPortablePdb) {
       throw new UnsupportedFormatError("Debug-directory entry is not an embedded Portable PDB");
     }
-    const data = replacePortablePdbSourceLink(entry.embeddedPortablePdb, sourceLink);
+    const data = replacePortablePdbSourceLink(
+      this.#getPortablePdbForEdit(debugEntryIndex, entry),
+      sourceLink
+    );
     return this.replaceEmbeddedPortablePdb(debugEntryIndex, data);
   }
 
@@ -12829,7 +12797,8 @@ export class Assembly {
   serialize() {
     const structurallyDirty = this._structuralBodies.size > 0 ||
       this._addedMethodBodies.size > 0 || this._metadataDirty ||
-      this._resourceEdits.size > 0 || this._clearResourcesDirectory;
+      this._resourceEdits.size > 0 || this._clearResourcesDirectory ||
+      this._embeddedPortablePdbEdits.size > 0;
     let output = structurallyDirty
       ? serializeStructural(this, {
         preserveStrongName: this.#strongNamePrivateKey !== null,
