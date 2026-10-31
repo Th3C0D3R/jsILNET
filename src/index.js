@@ -3430,19 +3430,14 @@ export class Assembly {
       throw new FormatError(`MethodDef row ${rid} has inconsistent GenericParam ownership`);
     }
     if (genericParamRids.size > 0) {
-      if (rid !== rows.length) {
-        throw new UnsupportedFormatError(
-          "MethodDef removal with GenericParam rows is currently limited to the trailing MethodDef"
-        );
-      }
       const sortedGenericParamRids = [...genericParamRids].sort((a, b) => a - b);
-      const firstGenericParamRid = genericParamRows.length - sortedGenericParamRids.length + 1;
+      const firstGenericParamRid = sortedGenericParamRids[0];
       if (firstGenericParamRid < 1 ||
           sortedGenericParamRids.some((parameterRid, index) =>
             parameterRid !== firstGenericParamRid + index
-          )) {
+          ) || sortedGenericParamRids.at(-1) > genericParamRows.length) {
         throw new UnsupportedFormatError(
-          "MethodDef removal requires its GenericParam rows to form the trailing table range"
+          "MethodDef removal requires its GenericParam rows to form a contiguous table range"
         );
       }
     }
@@ -3456,17 +3451,13 @@ export class Assembly {
       throw new FormatError(`MethodDef row ${rid} has inconsistent Param ownership`);
     }
     if (parameterRids.size > 0) {
-      if (rid !== rows.length) {
-        throw new UnsupportedFormatError(
-          "MethodDef removal with Param rows is currently limited to the trailing MethodDef"
-        );
-      }
       const sortedParameterRids = [...parameterRids].sort((a, b) => a - b);
-      const firstParameterRid = parameterRows.length - sortedParameterRids.length + 1;
+      const firstParameterRid = sortedParameterRids[0];
       if (firstParameterRid < 1 ||
-          sortedParameterRids.some((parameterRid, index) => parameterRid !== firstParameterRid + index)) {
+          sortedParameterRids.some((parameterRid, index) => parameterRid !== firstParameterRid + index) ||
+          sortedParameterRids.at(-1) > parameterRows.length) {
         throw new UnsupportedFormatError(
-          "MethodDef removal requires its Param rows to form the trailing Param range"
+          "MethodDef removal requires its Param rows to form a contiguous table range"
         );
       }
     }
@@ -3490,11 +3481,12 @@ export class Assembly {
       const pointerRids = paramPointerRows
         .filter((pointer) => parameterRids.has(pointer.Param.rid))
         .map((pointer) => pointer.rid);
-      const firstPointerRid = paramPointerRows.length - pointerRids.length + 1;
+      const firstPointerRid = Math.min(...pointerRids);
       if (pointerRids.length !== parameterRids.size ||
-          pointerRids.some((pointerRid, index) => pointerRid !== firstPointerRid + index)) {
+          [...pointerRids].sort((a, b) => a - b)
+            .some((pointerRid, index) => pointerRid !== firstPointerRid + index)) {
         throw new UnsupportedFormatError(
-          "MethodDef removal requires its ParamPtr rows to form the trailing pointer range"
+          "MethodDef removal requires its ParamPtr rows to form a contiguous pointer range"
         );
       }
     }
@@ -3580,6 +3572,26 @@ export class Assembly {
     for (let oldRid = rid + 1; oldRid <= rows.length; oldRid++) {
       tokenMap.set(0x06000000 + oldRid, 0x06000000 + oldRid - 1);
     }
+    const lastParameterRid = parameterRids.size > 0
+      ? Math.max(...parameterRids)
+      : 0;
+    const remapParameterRid = (oldRid) =>
+      oldRid > lastParameterRid ? oldRid - parameterRids.size : oldRid;
+    if (parameterRids.size > 0) {
+      for (let oldRid = lastParameterRid + 1; oldRid <= parameterRows.length; oldRid++) {
+        tokenMap.set(0x08000000 + oldRid, 0x08000000 + remapParameterRid(oldRid));
+      }
+    }
+    const lastGenericParamRid = genericParamRids.size > 0
+      ? Math.max(...genericParamRids)
+      : 0;
+    const remapGenericParamRid = (oldRid) =>
+      oldRid > lastGenericParamRid ? oldRid - genericParamRids.size : oldRid;
+    if (genericParamRids.size > 0) {
+      for (let oldRid = lastGenericParamRid + 1; oldRid <= genericParamRows.length; oldRid++) {
+        tokenMap.set(0x2a000000 + oldRid, 0x2a000000 + remapGenericParamRid(oldRid));
+      }
+    }
     const rowChanges = [];
     for (const [tableId, tableRows] of this.tables.rows) {
       const schema = metadataTableSchemas[tableId];
@@ -3593,6 +3605,29 @@ export class Assembly {
           const columnName = name ?? value;
           if (kind === "coded") {
             const target = row[columnName]?.target;
+            if (target?.table === 8 || target?.table === 42) {
+              const removedRids = target.table === 8 ? parameterRids : genericParamRids;
+              if (removedRids.has(target.rid)) {
+                throw new FormatError(
+                  `${metadataTableNames[target.table]} row ${target.rid} is referenced by ${metadataTableNames[tableId]}.${columnName}`
+                );
+              }
+              const remappedRid = target.table === 8
+                ? remapParameterRid(target.rid)
+                : remapGenericParamRid(target.rid);
+              if (remappedRid !== target.rid) {
+                const remappedTarget = { ...target, rid: remappedRid };
+                rowChanges.push({
+                  row,
+                  columnName,
+                  value: {
+                    raw: encodeCodedIndex(target.table, remappedRid, value),
+                    target: remappedTarget
+                  }
+                });
+              }
+              continue;
+            }
             if (target?.table !== 6) continue;
             if (tableId === 42 && columnName === "Owner" &&
                 genericParamRids.has(row.rid)) continue;
@@ -3611,6 +3646,26 @@ export class Assembly {
               });
             }
           } else if (kind === "u4" && (tableId === 30 || tableId === 31) &&
+              columnName === "Token" && [8, 42].includes(row[columnName] >>> 24)) {
+            const tokenTable = row[columnName] >>> 24;
+            const targetRid = row[columnName] & 0x00ffffff;
+            const removedRids = tokenTable === 8 ? parameterRids : genericParamRids;
+            if (removedRids.has(targetRid)) {
+              throw new FormatError(
+                `${metadataTableNames[tokenTable]} row ${targetRid} is referenced by ${metadataTableNames[tableId]}.${columnName}`
+              );
+            }
+            const remappedRid = tokenTable === 8
+              ? remapParameterRid(targetRid)
+              : remapGenericParamRid(targetRid);
+            if (remappedRid !== targetRid) {
+              rowChanges.push({
+                row,
+                columnName,
+                value: (tokenTable << 24) | remappedRid
+              });
+            }
+          } else if (kind === "u4" && (tableId === 30 || tableId === 31) &&
               columnName === "Token" && row[columnName] >>> 24 === 6 &&
               (row[columnName] & 0x00ffffff) === rid) {
             throw new FormatError(`MethodDef row ${rid} is referenced by ${metadataTableNames[tableId]}.${columnName}`);
@@ -3624,6 +3679,40 @@ export class Assembly {
             const targetTable = pointer !== undefined &&
               (this.tables.valid & (1n << BigInt(pointer))) !== 0n ? pointer : value;
             const targetRid = row[columnName]?.rid;
+            if (targetTable === 8) {
+              if ((tableId === 6 && columnName === "ParamList") ||
+                  (tableId === 7 && columnName === "Param")) continue;
+              if (parameterRids.has(targetRid)) {
+                throw new FormatError(
+                  `Param row ${targetRid} is referenced by ${metadataTableNames[tableId]}.${columnName}`
+                );
+              }
+              const remappedRid = remapParameterRid(targetRid);
+              if (remappedRid !== targetRid) {
+                rowChanges.push({
+                  row,
+                  columnName,
+                  value: { ...row[columnName], raw: remappedRid, rid: remappedRid }
+                });
+              }
+              continue;
+            }
+            if (targetTable === 42) {
+              if (genericParamRids.has(targetRid)) {
+                throw new FormatError(
+                  `GenericParam row ${targetRid} is referenced by ${metadataTableNames[tableId]}.${columnName}`
+                );
+              }
+              const remappedRid = remapGenericParamRid(targetRid);
+              if (remappedRid !== targetRid) {
+                rowChanges.push({
+                  row,
+                  columnName,
+                  value: { ...row[columnName], raw: remappedRid, rid: remappedRid }
+                });
+              }
+              continue;
+            }
             if (targetTable !== 6) continue;
             if (tableId === 5 && columnName === "Method") {
               if (row.rid === pointerRid) continue;
@@ -3666,7 +3755,7 @@ export class Assembly {
       }
     }
     const sortedKeyColumns = new Map([
-      [10, "Class"], [12, "Parent"], [14, "Parent"],
+      [10, "Class"], [11, "Parent"], [12, "Parent"], [13, "Parent"], [14, "Parent"],
       [28, "MemberForwarded"], [42, "Owner"], [43, "Method"]
     ]);
     const changedSortedKeys = new Map(rowChanges
@@ -3674,7 +3763,9 @@ export class Assembly {
       .map((change) => [change.row, change.value]));
     for (const [tableId, keyOf] of [
       [10, (row) => [row.Class.raw]],
+      [11, (row) => [row.Parent.raw]],
       [12, (row) => [row.Parent.raw]],
+      [13, (row) => [row.Parent.raw]],
       [14, (row) => [row.Parent.raw, row.Action]],
       [28, (row) => [row.MemberForwarded.raw]],
       [42, (row) => [row.Owner.raw, row.Number]],
@@ -3734,12 +3825,37 @@ export class Assembly {
         });
       }
     }
+    const removedParamListPositions = paramPointerRows
+      ? paramPointerRows.filter((pointer) => parameterRids.has(pointer.Param.rid))
+        .map((pointer) => pointer.rid)
+      : [...parameterRids];
+    const paramListChanges = [];
+    if (removedParamListPositions.length > 0) {
+      for (const methodRow of this.tables.get(6)) {
+        const oldBoundary = methodRow.ParamList.rid;
+        const newBoundary = oldBoundary -
+          removedParamListPositions.filter((position) => position < oldBoundary).length;
+        if (newBoundary === oldBoundary) continue;
+        paramListChanges.push({
+          row: methodRow,
+          value: {
+            ...methodRow.ParamList,
+            raw: newBoundary,
+            rid: newBoundary
+          }
+        });
+      }
+    }
     for (const change of rowChanges) change.row[change.columnName] = change.value;
     for (const change of listChanges) change.row.MethodList = change.value;
+    for (const change of paramListChanges) change.row.ParamList = change.value;
     for (const update of tokenUpdates) update.instruction.operand.value = update.replacement;
     this._patches.push(...patches);
     if (parameterRids.size > 0) {
       const remainingParams = parameterRows.filter((parameter) => !parameterRids.has(parameter.rid));
+      remainingParams.forEach((parameter) => {
+        parameter.rid = remapParameterRid(parameter.rid);
+      });
       this.tables.rows.set(8, remainingParams);
       this.tables.counts[8] = remainingParams.length;
       if (remainingParams.length === 0) this.tables.valid &= ~(1n << 8n);
@@ -3749,22 +3865,66 @@ export class Assembly {
         );
         remainingParamPointers.forEach((pointer, index) => {
           pointer.rid = index + 1;
+          const remappedRid = remapParameterRid(pointer.Param.rid);
+          if (remappedRid !== pointer.Param.rid) {
+            pointer.Param = {
+              ...pointer.Param,
+              raw: remappedRid,
+              rid: remappedRid
+            };
+          }
         });
         this.tables.rows.set(7, remainingParamPointers);
         this.tables.counts[7] = remainingParamPointers.length;
         if (remainingParamPointers.length === 0) this.tables.valid &= ~(1n << 7n);
+      }
+      for (const candidate of this.methods) {
+        candidate.parameterRids = candidate.parameterRids
+          .filter((parameterRid) => !parameterRids.has(parameterRid))
+          .map(remapParameterRid);
+        candidate.parameters = candidate.parameters
+          .filter((parameter) => !parameterRids.has(parameter.rid))
+          .map((parameter) => {
+            parameter.rid = remapParameterRid(parameter.rid);
+            return parameter;
+          });
       }
     }
     if (genericParamRids.size > 0) {
       const remainingGenericParams = genericParamRows.filter((parameter) =>
         !genericParamRids.has(parameter.rid)
       );
+      remainingGenericParams.forEach((parameter) => {
+        parameter.rid = remapGenericParamRid(parameter.rid);
+      });
       this.tables.rows.set(42, remainingGenericParams);
       this.tables.counts[42] = remainingGenericParams.length;
       if (remainingGenericParams.length === 0) this.tables.valid &= ~(1n << 42n);
       this.genericParams = this.genericParams.filter((parameter) =>
         !genericParamRids.has(parameter.rid)
       );
+      for (const parameter of this.genericParams) {
+        parameter.rid = remapGenericParamRid(parameter.rid);
+      }
+      for (const constraint of this.genericParamConstraints) {
+        constraint.ownerRid = remapGenericParamRid(constraint.ownerRid);
+      }
+    }
+    if (parameterRids.size > 0 || genericParamRids.size > 0) {
+      for (const attribute of this.customAttributes) {
+        if (attribute.parent?.table === 8 && !parameterRids.has(attribute.parent.rid)) {
+          attribute.parent = {
+            ...attribute.parent,
+            rid: remapParameterRid(attribute.parent.rid)
+          };
+        } else if (attribute.parent?.table === 42 &&
+            !genericParamRids.has(attribute.parent.rid)) {
+          attribute.parent = {
+            ...attribute.parent,
+            rid: remapGenericParamRid(attribute.parent.rid)
+          };
+        }
+      }
     }
     const remainingRows = rows.filter((row) => row.rid !== rid);
     remainingRows.forEach((row, index) => {

@@ -58,7 +58,7 @@ TypeRef rows can be removed with live-reference checks and surviving metadata, s
 MemberRef rows can be removed with the same live-reference and surviving-token safeguards across metadata and CIL.
 MethodDef rows can be appended to the last TypeDef with a complete validated tiny/fat managed IL body, or as bodyless abstract virtual methods on abstract types/interfaces. Generic signatures and method generic-variable contexts are validated; callers add matching GenericParam rows separately. MethodPtr and ParamPtr tables are supported when each is bijective with its target table.
 
-MethodDef removal is supported when no live metadata or CIL references remain. A trailing method may own trailing Param and method-owned GenericParam rows; they are removed only when their ranges are trailing and have no live references. Non-trailing removal with owned Param/GenericParam rows is refused. Non-trailing removal without owned rows remaps later MethodDef references in metadata and CIL and returns a token map; it is refused when added method bodies are present. Bijective MethodPtr/ParamPtr ownership and TypeDef list boundaries are updated.
+MethodDef removal is supported when no live metadata or CIL references remain. Owned Param and method-owned GenericParam rows can be removed with the method when their row ranges are contiguous; surviving Param and GenericParam references and tokens are remapped. Non-trailing RID remapping is refused when debug data, unknown streams, or added method bodies make it unsafe. Bijective MethodPtr/ParamPtr ownership and TypeDef list boundaries are updated.
 
 MethodDef names, flags, and implementation flags can be replaced without changing row identity.
 

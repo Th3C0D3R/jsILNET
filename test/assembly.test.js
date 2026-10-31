@@ -2807,6 +2807,109 @@ test("MethodDef removal rejects referenced owned GenericParam rows without mutat
   assert.equal(assembly.methods.at(-1).rid, methodRid);
 });
 
+test("non-trailing MethodDef removal remaps owned Param and GenericParam rows", () => {
+  for (const useParamPointerTable of [false, true]) {
+    const assembly = parseAssembly(withoutDebugDirectory());
+    if (useParamPointerTable) {
+      usePointerTable(assembly, {
+        pointerId: 7,
+        targetId: 8,
+        column: "Param",
+        listTableId: 6,
+        listColumn: "ParamList",
+        pointerName: "ParamPtr",
+        targetName: "Param"
+      });
+    }
+    const ownerRid = assembly.addTypeDef({ name: "RemovalOwner", flags: 0x0080 }) & 0x00ffffff;
+    const signature = Uint8Array.of(0x10, 0x01, 0x01, 0x01, 0x1e, 0x00);
+    const removedToken = assembly.addMethod({
+      owner: { table: "TypeDef", rid: ownerRid },
+      name: "Remove",
+      flags: 0x0466,
+      signature
+    });
+    const removedRid = removedToken & 0x00ffffff;
+    assembly.addParam({
+      owner: { table: "MethodDef", rid: removedRid },
+      sequence: 1
+    });
+    assembly.addGenericParam({
+      owner: { table: "MethodDef", rid: removedRid },
+      name: "T",
+      number: 0
+    });
+    const survivingToken = assembly.addMethod({
+      owner: { table: "TypeDef", rid: ownerRid },
+      name: "Keep",
+      flags: 0x0466,
+      signature
+    });
+    const survivingRid = survivingToken & 0x00ffffff;
+    const survivingParamRid = assembly.addParam({
+      owner: { table: "MethodDef", rid: survivingRid },
+      sequence: 1
+    });
+    const survivingGenericParamRid = assembly.addGenericParam({
+      owner: { table: "MethodDef", rid: survivingRid },
+      name: "U",
+      number: 0
+    }) & 0x00ffffff;
+    const constraintRid = assembly.addGenericParamConstraint({
+      ownerRid: survivingGenericParamRid,
+      constraint: { table: "TypeDef", rid: 2 }
+    });
+    assembly.addConstant({
+      parent: { table: "Param", rid: survivingParamRid },
+      type: 0x08,
+      value: Uint8Array.of(7, 0, 0, 0)
+    });
+    addEncToken(assembly, 30, 0x08000000 + survivingParamRid);
+    addEncToken(assembly, 31, 0x2a000000 + survivingGenericParamRid);
+
+    const tokenMap = assembly.removeMethod(removedRid);
+    const remappedMethodRid = survivingRid - 1;
+    const remappedParamRid = survivingParamRid - 1;
+    const remappedGenericParamRid = survivingGenericParamRid - 1;
+    const remappedMethodToken = 0x06000000 + remappedMethodRid;
+    const remappedParamToken = 0x08000000 + remappedParamRid;
+    const remappedGenericParamToken = 0x2a000000 + remappedGenericParamRid;
+    assert.equal(tokenMap.get(survivingToken), remappedMethodToken);
+    assert.equal(tokenMap.get(0x08000000 + survivingParamRid), remappedParamToken);
+    assert.equal(tokenMap.get(0x2a000000 + survivingGenericParamRid), remappedGenericParamToken);
+    const survivingMethod = assembly.methods[remappedMethodRid - 1];
+    assert.equal(survivingMethod.name, "Keep");
+    assert.deepEqual(survivingMethod.parameterRids, [remappedParamRid]);
+    assert.equal(survivingMethod.parameters[0].rid, remappedParamRid);
+    const constant = assembly.tables.get(11).at(-1);
+    assert.equal(constant.Parent.target.rid, remappedParamRid);
+    assert.equal(constant.Parent.raw, encodeCodedIndex(8, remappedParamRid, "HasConstant"));
+    assert.equal(assembly.tables.get(30).at(-1).Token, remappedParamToken);
+    assert.equal(assembly.tables.get(31).at(-1).Token, remappedGenericParamToken);
+    const survivingGenericParam = assembly.genericParams.find((parameter) =>
+      parameter.owner.table === 6 && parameter.owner.rid === remappedMethodRid
+    );
+    assert.equal(survivingGenericParam.rid, remappedGenericParamRid);
+    const constraint = assembly.genericParamConstraints.find((item) => item.rid === constraintRid);
+    assert.equal(constraint.ownerRid, remappedGenericParamRid);
+    if (useParamPointerTable) {
+      assert.equal(assembly.tables.get(7).find((pointer) =>
+        pointer.Param.rid === remappedParamRid
+      ).Param.rid, remappedParamRid);
+    }
+
+    const reparsed = parseAssembly(assembly.serialize());
+    assert.equal(reparsed.methods[remappedMethodRid - 1].name, "Keep");
+    assert.equal(reparsed.methods[remappedMethodRid - 1].parameters[0].rid, remappedParamRid);
+    assert.equal(reparsed.genericParams.find((parameter) =>
+      parameter.owner.table === 6 && parameter.owner.rid === remappedMethodRid
+    ).rid, remappedGenericParamRid);
+    assert.equal(reparsed.genericParamConstraints.find((item) =>
+      item.rid === constraintRid
+    ).ownerRid, remappedGenericParamRid);
+  }
+});
+
 test("MethodDef removal refuses live CIL references without mutating metadata", () => {
   const assembly = parseAssembly(withoutDebugDirectory());
   const targetOwner = assembly.types.at(-1);
