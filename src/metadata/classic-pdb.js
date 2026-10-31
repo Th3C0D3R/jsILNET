@@ -135,6 +135,9 @@ function parseDbiModules(dbiStream, moduleInfoSize, streams) {
     } else if (symbolBytes !== 0 || c11Bytes !== 0 || c13Bytes !== 0) {
       throw new FormatError("Classic PDB DBI module has data lengths but no module stream");
     }
+    const symbols = symbolBytes === 0
+      ? null
+      : parseCodeViewSymbolRecords(streams[streamIndex].bytes.subarray(0, symbolBytes));
     modules.push({
       moduleName,
       objectName,
@@ -142,6 +145,7 @@ function parseDbiModules(dbiStream, moduleInfoSize, streams) {
       symbolBytes,
       c11Bytes,
       c13Bytes,
+      symbols,
       fileCount
     });
   }
@@ -213,6 +217,34 @@ function parseDbiFileInfo(dbiStream, fileInfoOffset, fileInfoSize, modules) {
     fileInfoModuleIndex: moduleIndices[index],
     sourceFiles: filesByModule[index]
   }));
+}
+
+export function parseCodeViewSymbolRecords(input) {
+  const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
+  if (bytes.length < 4) throw new FormatError("Classic PDB module symbol data is truncated");
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const signature = view.getUint32(0, true);
+  if (![1, 2, 4].includes(signature)) {
+    throw new UnsupportedFormatError(`Unsupported CodeView module symbol signature ${signature}`);
+  }
+  const records = [];
+  let offset = 4;
+  while (offset < bytes.length) {
+    if (bytes.length - offset < 2) {
+      throw new FormatError("Classic PDB module symbol-record length is truncated");
+    }
+    const length = view.getUint16(offset, true);
+    if (length < 2 || length > bytes.length - offset - 2) {
+      throw new FormatError("Classic PDB module symbol record exceeds its stream bounds");
+    }
+    records.push({
+      offset,
+      kind: view.getUint16(offset + 2, true),
+      data: bytes.slice(offset + 4, offset + 2 + length)
+    });
+    offset += 2 + length;
+  }
+  return { signature, records };
 }
 
 export function parseClassicPdb(input) {

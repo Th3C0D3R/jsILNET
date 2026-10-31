@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { parseClassicPdb } from "../src/index.js";
+import { parseCodeViewSymbolRecords } from "../src/metadata/classic-pdb.js";
 
 function makeClassicPdb() {
   const blockSize = 512;
@@ -54,4 +55,23 @@ test("classic PDB parser rejects invalid signatures and overlapping MSF blocks",
   const overlapping = makeClassicPdb();
   new DataView(overlapping.buffer).setUint32(512 * 4 + 12, 4, true);
   assert.throws(() => parseClassicPdb(overlapping), /overlaps another MSF structure/);
+});
+
+test("classic PDB module symbols preserve bounded CodeView record payloads", () => {
+  const bytes = Uint8Array.from([
+    4, 0, 0, 0,
+    4, 0, 0x0e, 0x11, 0xaa, 0xbb,
+    2, 0, 0x04, 0x11
+  ]);
+  assert.deepEqual(parseCodeViewSymbolRecords(bytes), {
+    signature: 4,
+    records: [
+      { offset: 4, kind: 0x110e, data: Uint8Array.from([0xaa, 0xbb]) },
+      { offset: 10, kind: 0x1104, data: new Uint8Array() }
+    ]
+  });
+  assert.throws(() => parseCodeViewSymbolRecords(Uint8Array.from([4, 0, 0, 0, 1])),
+    /length is truncated/);
+  assert.throws(() => parseCodeViewSymbolRecords(Uint8Array.from([4, 0, 0, 0, 5, 0, 1, 2])),
+    /exceeds its stream bounds/);
 });
