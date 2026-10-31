@@ -8185,10 +8185,22 @@ export class Assembly {
   }
 
   addGenericParamConstraint({ ownerRid, constraint }) {
+    return this.#writeGenericParamConstraint({ ownerRid, constraint }, false).rid;
+  }
+
+  insertGenericParamConstraint({ ownerRid, constraint }) {
+    return this.#writeGenericParamConstraint({ ownerRid, constraint }, true);
+  }
+
+  #writeGenericParamConstraint({ ownerRid, constraint }, insertSorted) {
     this.#ensureEditable();
     if (!Number.isInteger(ownerRid) || ownerRid < 1 ||
         ownerRid > (this.tables.counts[42] ?? 0)) {
       throw new RangeError("GenericParamConstraint owner references a missing GenericParam row");
+    }
+    const ownerParameter = this.genericParams[ownerRid - 1];
+    if (!ownerParameter || ownerParameter.rid !== ownerRid) {
+      throw new FormatError(`GenericParam row ${ownerRid} has no semantic record`);
     }
     if (!constraint || !Number.isInteger(constraint.rid) || constraint.rid < 1) {
       throw new TypeError("GenericParamConstraint type must identify a TypeDef, TypeRef, or TypeSpec row");
@@ -8212,30 +8224,148 @@ export class Assembly {
     }
     const constraintValue = encodeCodedIndex(constraintTable, constraint.rid, "TypeDefOrRef");
     const constraintRows = this.tables.rows.get(44) ?? [];
-    if ((this.tables.sorted & (1n << 44n)) !== 0n && constraintRows.length > 0 &&
+    if (constraintRows.length !== (this.tables.counts[44] ?? 0) ||
+        constraintRows.length !== this.genericParamConstraints.length) {
+      throw new FormatError("GenericParamConstraint row count is inconsistent with the metadata table header");
+    }
+    let insertionIndex = constraintRows.length;
+    if (insertSorted) {
+      for (let index = 1; index < constraintRows.length; index++) {
+        if (constraintRows[index - 1].Owner.rid > constraintRows[index].Owner.rid) {
+          throw new UnsupportedFormatError(
+            "Sorted GenericParamConstraint insertion requires rows already ordered by Owner"
+          );
+        }
+      }
+      const laterOwner = constraintRows.findIndex((row) => row.Owner.rid > ownerRid);
+      if (laterOwner !== -1) insertionIndex = laterOwner;
+    } else if (constraintRows.length > 0 &&
         constraintRows.at(-1).Owner.rid > ownerRid) {
       throw new FormatError("Appending this GenericParamConstraint would violate the table's sorted Owner order");
     }
-    const rid = constraintRows.length + 1;
-    if (rid > 0xffffffff) throw new RangeError("GenericParamConstraint row ID exceeds 32-bit range");
+    const rid = insertionIndex + 1;
+    if (rid > 0x00ffffff) {
+      throw new RangeError("GenericParamConstraint token row ID exceeds 24-bit range");
+    }
+    const tokenMap = new Map();
+    const rowChanges = [];
+    const tokenUpdates = [];
+    const patches = [];
+    if (insertionIndex < constraintRows.length) {
+      if (this._structuralBodies.size > 0 || this._addedMethodBodies.size > 0) {
+        throw new UnsupportedFormatError(
+          "Sorted GenericParamConstraint insertion cannot be combined with method-body edits"
+        );
+      }
+      this.#ensureTokenRemappingSafe("GenericParamConstraint");
+      for (let oldRid = rid; oldRid <= constraintRows.length; oldRid++) {
+        tokenMap.set(0x2c000000 + oldRid, 0x2c000000 + oldRid + 1);
+      }
+      for (const [tableId, rows] of this.tables.rows) {
+        const schema = metadataTableSchemas[tableId];
+        if (!schema) {
+          throw new UnsupportedFormatError(
+            `Cannot remap GenericParamConstraint tokens through unknown table ${tableId}`
+          );
+        }
+        for (const row of rows) {
+          for (const [kind, value, name] of schema) {
+            const columnName = name ?? value;
+            const column = row[columnName];
+            if (kind === "coded" && column?.target?.table === 44 &&
+                column.target.rid >= rid) {
+              const target = { ...column.target, rid: column.target.rid + 1 };
+              rowChanges.push({
+                row,
+                columnName,
+                value: {
+                  raw: encodeCodedIndex(44, target.rid, value),
+                  target
+                }
+              });
+            } else if (kind === "table" && value === 44 &&
+                column?.rid >= rid) {
+              rowChanges.push({
+                row,
+                columnName,
+                value: { ...column, raw: column.rid + 1, rid: column.rid + 1 }
+              });
+            } else if (kind === "u4" && (tableId === 30 || tableId === 31) &&
+                columnName === "Token" && row[columnName] >>> 24 === 44) {
+              const oldToken = row[columnName];
+              const targetRid = oldToken & 0x00ffffff;
+              if (targetRid >= rid) {
+                rowChanges.push({
+                  row,
+                  columnName,
+                  value: 0x2c000000 | (targetRid + 1)
+                });
+              }
+            }
+          }
+        }
+      }
+      for (const method of this.methods) {
+        for (const instruction of this.getMethodBody(method.rid)?.instructions ?? []) {
+          const token = instruction.operand?.kind === "token" ? instruction.operand.value : 0;
+          if ((token >>> 24) !== 44 || (token & 0x00ffffff) < rid) continue;
+          const replacement = token + 1;
+          tokenUpdates.push({ instruction, replacement });
+          patches.push(...createOperandPatches(instruction, replacement));
+        }
+      }
+      if ((this.tables.sorted & (1n << 12n)) !== 0n) {
+        const changedParents = new Map(rowChanges
+          .filter((change) => change.columnName === "Parent")
+          .map((change) => [change.row, change.value]));
+        let previous = -1;
+        for (const row of this.tables.get(12)) {
+          const parent = changedParents.get(row) ?? row.Parent;
+          if (parent.raw < previous) {
+            throw new FormatError(
+              "GenericParamConstraint token remapping would violate sorted CustomAttribute order"
+            );
+          }
+          previous = parent.raw;
+        }
+      }
+    }
     const target = {
       table: constraintTable,
       tableName: metadataTableNames[constraintTable],
       rid: constraint.rid
     };
-    constraintRows.push({
+    const newRow = {
       table: 44,
       tableName: metadataTableNames[44],
       rid,
       Owner: { rid: ownerRid },
       Constraint: { raw: constraintValue, target }
-    });
+    };
+    for (const change of rowChanges) change.row[change.columnName] = change.value;
+    for (const row of constraintRows) {
+      if (row.rid >= rid) row.rid++;
+    }
+    constraintRows.splice(insertionIndex, 0, newRow);
     this.tables.rows.set(44, constraintRows);
     this.tables.valid |= 1n << 44n;
-    this.tables.counts[44] = rid;
-    this.genericParamConstraints.push({ rid, ownerRid, constraint: target });
+    this.tables.counts[44] = constraintRows.length;
+    for (const parameterConstraint of this.genericParamConstraints) {
+      if (parameterConstraint.rid >= rid) parameterConstraint.rid++;
+    }
+    const parameterConstraint = { rid, ownerRid, constraint: target };
+    this.genericParamConstraints.splice(insertionIndex, 0, parameterConstraint);
+    ownerParameter.constraints ??= [];
+    ownerParameter.constraints.push(parameterConstraint);
+    for (const attribute of this.customAttributes) {
+      const row = this.tables.row(12, attribute.rid);
+      attribute.parent = row.Parent.target;
+      attribute.constructor = row.Type.target;
+    }
+    for (const update of tokenUpdates) update.instruction.operand.value = update.replacement;
+    this._patches.push(...patches);
     this._metadataDirty = true;
-    return rid;
+    return { rid, tokenMap };
   }
 
   replaceGenericParamConstraint(rid, { constraint } = {}) {

@@ -1985,6 +1985,69 @@ test("generic parameter constraints append and replace valid type references", (
   assert.ok(reparsed.genericParams[genericParam.rid - 1].constraints.includes(constraint));
 });
 
+test("sorted GenericParamConstraint insertion remaps metadata and ENC tokens", () => {
+  const assembly = parseAssembly(withoutDebugDirectory());
+  const ownerRid = assembly.addTypeDef({
+    name: "ConstraintInsertionOwner",
+    flags: 0x0080
+  }) & 0x00ffffff;
+  const signature = Uint8Array.of(0x10, 0x01, 0x01, 0x01, 0x1e, 0x00);
+  const earlierMethod = assembly.addMethod({
+    owner: { table: "TypeDef", rid: ownerRid },
+    name: "Earlier",
+    flags: 0x0466,
+    signature
+  }) & 0x00ffffff;
+  const earlierGenericParam = assembly.addGenericParam({
+    owner: { table: "MethodDef", rid: earlierMethod },
+    name: "T",
+    number: 0
+  }) & 0x00ffffff;
+  const laterMethod = assembly.addMethod({
+    owner: { table: "TypeDef", rid: ownerRid },
+    name: "Later",
+    flags: 0x0466,
+    signature
+  }) & 0x00ffffff;
+  const laterGenericParam = assembly.addGenericParam({
+    owner: { table: "MethodDef", rid: laterMethod },
+    name: "U",
+    number: 0
+  }) & 0x00ffffff;
+  const laterConstraintRid = assembly.addGenericParamConstraint({
+    ownerRid: laterGenericParam,
+    constraint: { table: "TypeDef", rid: 2 }
+  });
+  assembly.tables.sorted &= ~(1n << 12n);
+  const attributeTemplate = assembly.customAttributes[1];
+  assembly.addCustomAttribute({
+    parent: { table: "GenericParamConstraint", rid: laterConstraintRid },
+    constructor: attributeTemplate.constructor,
+    value: assembly.parseCustomAttribute(attributeTemplate.rid)
+  });
+  addEncToken(assembly, 31, 0x2c000000 + laterConstraintRid);
+
+  const { rid, tokenMap } = assembly.insertGenericParamConstraint({
+    ownerRid: earlierGenericParam,
+    constraint: { table: "TypeRef", rid: assembly.typeRefs.find((type) =>
+      type.name === "IDisposable"
+    ).rid }
+  });
+  assert.equal(rid, laterConstraintRid);
+  assert.equal(tokenMap.get(0x2c000000 + laterConstraintRid),
+    0x2c000000 + laterConstraintRid + 1);
+  assert.equal(assembly.tables.row(44, rid).Owner.rid, earlierGenericParam);
+  assert.equal(assembly.tables.row(44, rid + 1).Owner.rid, laterGenericParam);
+  assert.equal(assembly.genericParams[earlierGenericParam - 1].constraints.at(-1).rid, rid);
+  assert.equal(assembly.genericParams[laterGenericParam - 1].constraints[0].rid, rid + 1);
+  assert.equal(assembly.customAttributes.at(-1).parent.rid, laterConstraintRid + 1);
+  assert.equal(assembly.tables.get(31).at(-1).Token, 0x2c000000 + laterConstraintRid + 1);
+
+  const reparsed = parseAssembly(assembly.serialize());
+  assert.equal(reparsed.tables.row(44, rid + 1).Owner.rid, laterGenericParam);
+  assert.equal(reparsed.customAttributes.at(-1).parent.rid, laterConstraintRid + 1);
+});
+
 test("GenericParamConstraint removal remaps surviving metadata references", () => {
   const assembly = parseAssembly(withoutDebugDirectory());
   const genericParam = assembly.genericParams.find((parameter) => parameter.owner.table === 2);
