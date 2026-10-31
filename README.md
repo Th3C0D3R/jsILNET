@@ -91,7 +91,7 @@ Invalid or unsupported structures and edits raise `FormatError` or `UnsupportedF
 
 `addParam` appends a validated Param row to a MethodDef whose ParamList reaches the end of the list, advancing later empty MethodDef boundaries. Its sequence must fit the current method signature and preserve existing parameter-row order. `insertParam` inserts by sequence into any valid method range and returns `{ rid, tokenMap }`; optimized metadata remaps shifted Param tokens, while `#-` is supported when ParamPtr has a one-to-one mapping. `replaceParam` updates a Param row's name or flags without changing its row identity. `removeParam` rejects live references and remaps surviving Param row IDs and MethodDef list boundaries.
 
-`insertProperty` and `insertEvent` append within an existing owner's list range and return `{ rid, tokenMap }`; optimized metadata remaps shifted tokens, while `#-` insertion requires a bijective PropertyPtr or EventPtr table. These insertion APIs require an existing PropertyMap or EventMap row for the owner.
+`insertProperty` and `insertEvent` insert at the end of any valid owner range and return `{ rid, tokenMap }`; if the owner has no PropertyMap or EventMap row, insertion creates one in TypeDef order. Optimized metadata remaps shifted tokens, while `#-` insertion requires a bijective PropertyPtr or EventPtr table.
 
 `insertStandAloneSig({ beforeRid, signature })` inserts a parsed method or local-variable signature at a 1-based row position and returns `{ token, tokenMap }`; insertion remaps shifted metadata/ENC and CIL tokens plus fat method-header local-signature tokens. It refuses unsafe debug, opaque-stream, or method-body-edit combinations.
 

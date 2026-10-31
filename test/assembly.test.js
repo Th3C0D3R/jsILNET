@@ -86,10 +86,15 @@ function usePointerTable(assembly, {
   pointerName,
   targetName
 }) {
-  const tablesStream = assembly.metadataRoot.streams.get("#~");
+  const optimizedTablesStream = assembly.metadataRoot.streams.get("#~");
+  const tablesStream = optimizedTablesStream ?? assembly.metadataRoot.streams.get("#-");
   assert.ok(tablesStream);
   assembly.metadataRoot.streams.delete("#~");
   assembly.metadataRoot.streams.set("#-", tablesStream);
+  if (assembly._heapStreams) {
+    assembly._heapStreams.delete("#~");
+    assembly._heapStreams.set("#-", tablesStream.bytes.slice());
+  }
   const targets = assembly.tables.get(targetId);
   const pointers = targets.map((target, index) => ({
     table: pointerId,
@@ -5834,6 +5839,62 @@ test("insertProperty and insertEvent support non-trailing owner ranges", () => {
       .events.at(-1).name, "InsertedEvent");
     assert.deepEqual(reparsedEventAssembly.types[laterEventOwnerRid - 1]
       .eventRids, laterEventOwner.eventRids);
+  }
+});
+
+test("property and event insertion creates missing owner maps before later owners", () => {
+  for (const pointerMode of [false, true]) {
+    const assembly = parseAssembly(withoutDebugDirectory());
+    assembly.tables.sorted &= ~(1n << 12n);
+    const ownerRid = assembly.insertTypeDef({
+      beforeRid: 2,
+      name: "OwnerWithoutMaps"
+    }).token & 0x00ffffff;
+    if (pointerMode) {
+      usePointerTable(assembly, {
+        pointerId: 22,
+        targetId: 23,
+        column: "Property",
+        listTableId: 21,
+        listColumn: "PropertyList",
+        pointerName: "PropertyPtr",
+        targetName: "Property"
+      });
+      usePointerTable(assembly, {
+        pointerId: 19,
+        targetId: 20,
+        column: "Event",
+        listTableId: 18,
+        listColumn: "EventList",
+        pointerName: "EventPtr",
+        targetName: "Event"
+      });
+    }
+
+    const eventType = assembly.typeRefs.find((type) => type.name === "IDisposable");
+    assert.ok(eventType);
+    assert.equal(assembly.types[ownerRid - 1].properties.length, 0);
+    assert.equal(assembly.types[ownerRid - 1].events.length, 0);
+    assembly.insertProperty({
+      owner: { table: "TypeDef", rid: ownerRid },
+      name: "NewOwnerProperty",
+      signature: Uint8Array.of(0x08, 0x00, 0x08)
+    });
+    assembly.insertEvent({
+      owner: { table: "TypeDef", rid: ownerRid },
+      name: "NewOwnerEvent",
+      eventType: { table: "TypeRef", rid: eventType.rid }
+    });
+    assert.deepEqual(assembly.tables.get(21).map((row) => row.Parent.rid),
+      assembly.tables.get(21).map((row) => row.Parent.rid).toSorted((a, b) => a - b));
+    assert.deepEqual(assembly.tables.get(18).map((row) => row.Parent.rid),
+      assembly.tables.get(18).map((row) => row.Parent.rid).toSorted((a, b) => a - b));
+
+    const reparsed = parseAssembly(assembly.serialize());
+    assert.equal(reparsed.types[ownerRid - 1].properties[0].name, "NewOwnerProperty");
+    assert.equal(reparsed.types[ownerRid - 1].events[0].name, "NewOwnerEvent");
+    assert.equal(reparsed.types[ownerRid].properties[0].name, "Value");
+    assert.equal(reparsed.types[ownerRid + 1].events[0].name, "Changed");
   }
 });
 

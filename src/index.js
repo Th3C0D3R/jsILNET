@@ -5858,6 +5858,10 @@ export class Assembly {
     }
     const ownerMap = maps.find((row) => row.Parent.rid === ownerRid);
     const ownerMapIndex = ownerMap ? maps.indexOf(ownerMap) : -1;
+    const nextMapIndex = maps.findIndex((row) => row.Parent.rid > ownerRid);
+    const mapInsertIndex = ownerMap
+      ? ownerMapIndex
+      : nextMapIndex < 0 ? maps.length : nextMapIndex;
     if (ownerMap) {
       const endRid = maps[ownerMapIndex + 1]?.PropertyList.rid ?? listCount + 1;
       const ownedRids = pointerRows
@@ -5875,25 +5879,26 @@ export class Assembly {
     } else if (ownerType.propertyRids.length !== 0) {
       throw new FormatError(`TypeDef row ${ownerRid} has properties without a PropertyMap row`);
     }
-    if (insertIntoOwner && !ownerMap) {
-      throw new UnsupportedFormatError("Property insertion requires an existing PropertyMap row");
-    }
     if (!insertIntoOwner && ownerMap &&
         (maps[ownerMapIndex + 1]?.PropertyList.rid ?? listCount + 1) !== listCount + 1) {
       throw new UnsupportedFormatError("Property append requires the owner's properties to be contiguous at the end");
     }
-    if (!ownerMap && maps.at(-1)?.Parent.rid >= ownerRid) {
+    if (!insertIntoOwner && !ownerMap && maps.at(-1)?.Parent.rid >= ownerRid) {
       throw new FormatError("Appending a PropertyMap row would violate TypeDef ordering");
     }
     const endRid = ownerMap
       ? maps[ownerMapIndex + 1]?.PropertyList.rid ?? listCount + 1
-      : listCount + 1;
+      : insertIntoOwner
+        ? maps[mapInsertIndex]?.PropertyList.rid ?? listCount + 1
+        : listCount + 1;
     const ownedCount = ownerType.propertyRids.length;
     const rid = pointerRows ? rows.length + 1 : endRid;
     const pointerInsertionIndex = pointerRows
       ? ownerMap
         ? ownerMap.PropertyList.rid - 1 + ownedCount
-        : pointerRows.length
+        : insertIntoOwner
+          ? endRid - 1
+          : pointerRows.length
       : -1;
     const pointerRid = pointerInsertionIndex + 1;
     const { tokenMap, rowChanges, tokenUpdates, patches } = pointerRows
@@ -5938,7 +5943,13 @@ export class Assembly {
       this.tables.rows.set(22, pointerRows);
       this.tables.counts[22] = pointerRows.length;
     }
-    if (ownerMap && (pointerRows || rid > originalRowCount)) {
+    if (pointerRows && (ownerMap || insertIntoOwner)) {
+      const firstFollowingMap = ownerMap ? ownerMapIndex + 1 : mapInsertIndex;
+      for (const map of maps.slice(firstFollowingMap)) {
+        map.PropertyList.rid++;
+        map.PropertyList.raw++;
+      }
+    } else if (ownerMap && rid > originalRowCount) {
       for (const map of maps.slice(ownerMapIndex + 1)) {
         map.PropertyList.rid++;
         map.PropertyList.raw++;
@@ -5955,13 +5966,12 @@ export class Assembly {
       }
     }
     if (!ownerMap) {
-      const mapRid = maps.length + 1;
       const listTable = pointerRows ? 22 : 23;
-      const listRid = pointerRows?.length ?? rid;
-      maps.push({
+      const listRid = pointerRows ? pointerRid : rid;
+      const mapRow = {
         table: 21,
         tableName: metadataTableNames[21],
-        rid: mapRid,
+        rid: mapInsertIndex + 1,
         Parent: { raw: ownerRid, table: 2, tableName: metadataTableNames[2], rid: ownerRid },
         PropertyList: {
           raw: listRid,
@@ -5969,9 +5979,11 @@ export class Assembly {
           tableName: metadataTableNames[listTable],
           rid: listRid
         }
-      });
+      };
+      for (const map of maps.slice(mapInsertIndex)) map.rid++;
+      maps.splice(mapInsertIndex, 0, mapRow);
       this.tables.rows.set(21, maps);
-      this.tables.counts[21] = mapRid;
+      this.tables.counts[21] = maps.length;
       this.tables.valid |= 1n << 21n;
     }
     ownerType.propertyRids.push(rid);
@@ -6043,6 +6055,10 @@ export class Assembly {
     }
     const ownerMap = maps.find((row) => row.Parent.rid === ownerRid);
     const ownerMapIndex = ownerMap ? maps.indexOf(ownerMap) : -1;
+    const nextMapIndex = maps.findIndex((row) => row.Parent.rid > ownerRid);
+    const mapInsertIndex = ownerMap
+      ? ownerMapIndex
+      : nextMapIndex < 0 ? maps.length : nextMapIndex;
     if (ownerMap) {
       const endRid = maps[ownerMapIndex + 1]?.EventList.rid ?? listCount + 1;
       const ownedRids = pointerRows
@@ -6060,25 +6076,26 @@ export class Assembly {
     } else if (ownerType.eventRids.length !== 0) {
       throw new FormatError(`TypeDef row ${ownerRid} has events without an EventMap row`);
     }
-    if (insertIntoOwner && !ownerMap) {
-      throw new UnsupportedFormatError("Event insertion requires an existing EventMap row");
-    }
     if (!insertIntoOwner && ownerMap &&
         (maps[ownerMapIndex + 1]?.EventList.rid ?? listCount + 1) !== listCount + 1) {
       throw new UnsupportedFormatError("Event append requires the owner's events to be contiguous at the end");
     }
-    if (!ownerMap && maps.at(-1)?.Parent.rid >= ownerRid) {
+    if (!insertIntoOwner && !ownerMap && maps.at(-1)?.Parent.rid >= ownerRid) {
       throw new FormatError("Appending an EventMap row would violate TypeDef ordering");
     }
     const endRid = ownerMap
       ? maps[ownerMapIndex + 1]?.EventList.rid ?? listCount + 1
-      : listCount + 1;
+      : insertIntoOwner
+        ? maps[mapInsertIndex]?.EventList.rid ?? listCount + 1
+        : listCount + 1;
     const ownedCount = ownerType.eventRids.length;
     const rid = pointerRows ? rows.length + 1 : endRid;
     const pointerInsertionIndex = pointerRows
       ? ownerMap
         ? ownerMap.EventList.rid - 1 + ownedCount
-        : pointerRows.length
+        : insertIntoOwner
+          ? endRid - 1
+          : pointerRows.length
       : -1;
     const pointerRid = pointerInsertionIndex + 1;
     const { tokenMap, rowChanges, tokenUpdates, patches } = pointerRows
@@ -6121,7 +6138,13 @@ export class Assembly {
       this.tables.rows.set(19, pointerRows);
       this.tables.counts[19] = pointerRows.length;
     }
-    if (ownerMap && (pointerRows || rid > originalRowCount)) {
+    if (pointerRows && (ownerMap || insertIntoOwner)) {
+      const firstFollowingMap = ownerMap ? ownerMapIndex + 1 : mapInsertIndex;
+      for (const map of maps.slice(firstFollowingMap)) {
+        map.EventList.rid++;
+        map.EventList.raw++;
+      }
+    } else if (ownerMap && rid > originalRowCount) {
       for (const map of maps.slice(ownerMapIndex + 1)) {
         map.EventList.rid++;
         map.EventList.raw++;
@@ -6138,13 +6161,12 @@ export class Assembly {
       }
     }
     if (!ownerMap) {
-      const mapRid = maps.length + 1;
       const listTable = pointerRows ? 19 : 20;
-      const listRid = pointerRows?.length ?? rid;
-      maps.push({
+      const listRid = pointerRows ? pointerRid : rid;
+      const mapRow = {
         table: 18,
         tableName: metadataTableNames[18],
-        rid: mapRid,
+        rid: mapInsertIndex + 1,
         Parent: { raw: ownerRid, table: 2, tableName: metadataTableNames[2], rid: ownerRid },
         EventList: {
           raw: listRid,
@@ -6152,9 +6174,11 @@ export class Assembly {
           tableName: metadataTableNames[listTable],
           rid: listRid
         }
-      });
+      };
+      for (const map of maps.slice(mapInsertIndex)) map.rid++;
+      maps.splice(mapInsertIndex, 0, mapRow);
       this.tables.rows.set(18, maps);
-      this.tables.counts[18] = mapRid;
+      this.tables.counts[18] = maps.length;
       this.tables.valid |= 1n << 18n;
     }
     ownerType.eventRids.push(rid);
