@@ -156,3 +156,78 @@ test("rewritten and signed IL assemblies with 15 directories load in .NET", {
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("strong-name signed PE32+ assemblies load and execute in .NET", {
+  skip: dotnetAvailable ? false : ".NET SDK/runtime is unavailable"
+}, async () => {
+  const directory = await mkdtemp(join(tmpdir(), "jsilnet-pe32plus-signing-"));
+  try {
+    const libraryDirectory = join(directory, "library");
+    const libraryProject = join(directory, "RuntimeLibrary.csproj");
+    await writeFile(libraryProject, [
+      "<Project Sdk=\"Microsoft.NET.Sdk\">",
+      "  <PropertyGroup>",
+      `    <TargetFramework>${targetFramework}</TargetFramework>`,
+      "    <PlatformTarget>x64</PlatformTarget>",
+      "    <DebugType>none</DebugType>",
+      "  </PropertyGroup>",
+      "</Project>"
+    ].join("\n"));
+    await writeFile(join(directory, "RuntimeLibrary.cs"), [
+      "public static class RuntimeLibrary",
+      "{",
+      "    public static int Answer() => 42;",
+      "}"
+    ].join("\n"));
+    const libraryBuild = spawnSync(
+      "dotnet",
+      ["build", libraryProject, "--configuration", "Release", "--output", libraryDirectory],
+      { encoding: "utf8", timeout: 120_000 }
+    );
+    assert.equal(
+      libraryBuild.status,
+      0,
+      libraryBuild.stderr || libraryBuild.stdout || libraryBuild.error?.message
+    );
+
+    const assemblyPath = join(libraryDirectory, "RuntimeLibrary.dll");
+    const assembly = parseAssembly(await readFile(assemblyPath));
+    assert.equal(assembly.pe.optionalHeaderMagic, 0x20b);
+    assembly.replaceStrongNamePublicKey(
+      generateKeyPairSync("rsa", { modulusLength: 1024 }).privateKey
+    );
+    const signedBytes = assembly.serialize();
+    const signed = parseAssembly(signedBytes);
+    assert.equal(signed.verifyStrongNameSignature(), true);
+    await writeFile(assemblyPath, signedBytes);
+
+    const harnessProject = join(directory, "RuntimeHarness.csproj");
+    await writeFile(harnessProject, [
+      "<Project Sdk=\"Microsoft.NET.Sdk\">",
+      "  <PropertyGroup>",
+      "    <OutputType>Exe</OutputType>",
+      `    <TargetFramework>${targetFramework}</TargetFramework>`,
+      "  </PropertyGroup>",
+      "</Project>"
+    ].join("\n"));
+    await writeFile(join(directory, "Program.cs"), [
+      "using System;",
+      "using System.IO;",
+      "using System.Reflection;",
+      "var assembly = Assembly.LoadFile(Path.GetFullPath(args[0]));",
+      "var type = assembly.GetType(\"RuntimeLibrary\")",
+      "    ?? throw new InvalidOperationException(\"RuntimeLibrary was not found\");",
+      "Console.WriteLine(type.GetMethod(\"Answer\")!.Invoke(null, null));"
+    ].join("\n"));
+
+    const runtime = spawnSync(
+      "dotnet",
+      ["run", "--project", harnessProject, "--configuration", "Release", "--", assemblyPath],
+      { encoding: "utf8", timeout: 120_000 }
+    );
+    assert.equal(runtime.status, 0, runtime.stderr || runtime.stdout || runtime.error?.message);
+    assert.equal(runtime.stdout.trim().split(/\r?\n/).at(-1), "42");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
