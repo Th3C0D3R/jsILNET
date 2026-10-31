@@ -3152,7 +3152,7 @@ test("MethodDef removal refuses live CIL references without mutating metadata", 
 });
 
 test("Constant rows append and replace encoded values without changing their parent", () => {
-  const assembly = parseAssembly(fixture);
+  const assembly = parseAssembly(withoutDebugDirectory());
   assembly.tables.sorted |= 1n << 11n;
   const integerField = assembly.types.flatMap((type) => type.fields)
     .find((field) => parseSignature(field.signature).type.elementType === 0x08);
@@ -3581,7 +3581,7 @@ test("TypeDef removal refuses sorted-key reordering without mutation", () => {
 });
 
 test("FieldMarshal rows append, replace, and remove with parent ordering preserved", () => {
-  const assembly = parseAssembly(fixture);
+  const assembly = parseAssembly(withoutDebugDirectory());
   assembly.tables.sorted |= 1n << 13n;
   assembly.addFieldMarshal({
     parent: { table: "Field", rid: 1 },
@@ -3627,7 +3627,7 @@ test("sorted FieldMarshal insertion remaps later ENC tokens", () => {
 });
 
 test("ClassLayout and FieldLayout rows support validated in-place metadata edits", () => {
-  const assembly = parseAssembly(fixture);
+  const assembly = parseAssembly(withoutDebugDirectory());
   assembly.tables.sorted |= (1n << 15n) | (1n << 16n);
   const owner = assembly.types.find((type) =>
     !assembly.tables.rows.get(15)?.some((row) => row.Parent.rid === type.rid)
@@ -3714,7 +3714,7 @@ test("sorted FieldLayout insertion remaps later ENC tokens", () => {
 });
 
 test("FieldRVA rows validate static primitive fields and round-trip add/replace/remove", () => {
-  const assembly = parseAssembly(fixture);
+  const assembly = parseAssembly(withoutDebugDirectory());
   const owner = assembly.types.at(-1);
   const fieldToken = assembly.addField({
     owner: { table: "TypeDef", rid: owner.rid },
@@ -3790,7 +3790,7 @@ test("sorted FieldRVA insertion remaps later ENC tokens", () => {
 });
 
 test("MethodSemantics rows validate owners and round-trip add/replace/remove", () => {
-  const assembly = parseAssembly(fixture);
+  const assembly = parseAssembly(withoutDebugDirectory());
   const owner = assembly.types.find((type) =>
     type.propertyRids.length > 0 && type.methodRids.length > 1
   );
@@ -3865,7 +3865,7 @@ test("sorted MethodSemantics insertion remaps later ENC tokens", () => {
 });
 
 test("NestedClass rows preserve ordering and reject cyclic TypeDef relationships", () => {
-  const assembly = parseAssembly(fixture);
+  const assembly = parseAssembly(withoutDebugDirectory());
   const rid = assembly.addNestedClass({
     nestedType: { table: "TypeDef", rid: 3 },
     enclosingType: { table: "TypeDef", rid: 1 }
@@ -3909,13 +3909,48 @@ test("sorted NestedClass insertion remaps ENC tokens", () => {
   assert.equal(tokenMap.get(0x29000000 + laterRid), 0x29000000 + laterRid + 1);
   assert.equal(assembly.tables.row(41, rid).NestedClass.rid, earlierNested);
   assert.equal(assembly.tables.get(31).at(-1).Token, 0x29000000 + laterRid + 1);
+  addEncToken(assembly, 31, 0x29000000 + rid);
+  assert.throws(() => assembly.removeNestedClass(rid), /referenced by ENCMap/);
+  assert.equal(assembly.tables.counts[41], laterRid + 1);
+  assembly.tables.rows.get(31).pop();
+  assembly.tables.counts[31]--;
+
+  const removedTokenMap = assembly.removeNestedClass(rid);
+  assert.equal(removedTokenMap.get(0x29000000 + laterRid + 1), 0x29000000 + laterRid);
+  assert.equal(assembly.tables.get(31).at(-1).Token, 0x29000000 + laterRid);
 
   const reparsed = parseAssembly(assembly.serialize());
-  assert.equal(reparsed.tables.row(41, rid + 1).NestedClass.rid, laterNested);
+  assert.equal(reparsed.tables.row(41, rid).NestedClass.rid, laterNested);
+});
+
+test("token-row removals refuse debug and opaque-stream references atomically", () => {
+  const debugAssembly = parseAssembly(fixture);
+  const debugRid = debugAssembly.addNestedClass({
+    nestedType: { table: "TypeDef", rid: 3 },
+    enclosingType: { table: "TypeDef", rid: 1 }
+  });
+  const debugRowCount = debugAssembly.tables.counts[41];
+  assert.throws(() => debugAssembly.removeNestedClass(debugRid),
+    /token remapping is unsupported while a PE debug directory is present/);
+  assert.equal(debugAssembly.tables.counts[41], debugRowCount);
+
+  const opaqueAssembly = parseAssembly(withoutDebugDirectory());
+  const opaqueRid = opaqueAssembly.addNestedClass({
+    nestedType: { table: "TypeDef", rid: 3 },
+    enclosingType: { table: "TypeDef", rid: 1 }
+  });
+  opaqueAssembly.metadataRoot.streams.set("#Extra", {
+    name: "#Extra",
+    bytes: Uint8Array.of(1, 2, 3, 4)
+  });
+  const opaqueRowCount = opaqueAssembly.tables.counts[41];
+  assert.throws(() => opaqueAssembly.removeNestedClass(opaqueRid),
+    /unrecognized metadata stream #Extra/);
+  assert.equal(opaqueAssembly.tables.counts[41], opaqueRowCount);
 });
 
 test("DeclSecurity rows preserve parent/action uniqueness and allow safe removal", () => {
-  const assembly = parseAssembly(fixture);
+  const assembly = parseAssembly(withoutDebugDirectory());
   assembly.tables.sorted |= 1n << 14n;
   const methodRid = 1;
   const typeRid = 1;
@@ -4023,7 +4058,7 @@ test("sorted MethodImpl insertion remaps ENC tokens", () => {
 });
 
 test("MethodImpl rows validate method references and round-trip replacement/removal", () => {
-  const assembly = parseAssembly(fixture);
+  const assembly = parseAssembly(withoutDebugDirectory());
   assembly.tables.sorted |= 1n << 25n;
   const owner = assembly.types.find((type) => type.methodRids.length > 0);
   const bodyRid = owner.methodRids[0];
@@ -4057,7 +4092,7 @@ test("MethodImpl rows validate method references and round-trip replacement/remo
 });
 
 test("ImplMap rows bind PInvoke fields to ModuleRefs and clear flags on removal", () => {
-  const assembly = parseAssembly(fixture);
+  const assembly = parseAssembly(withoutDebugDirectory());
   assembly.tables.sorted |= 1n << 28n;
   const field = assembly.types.flatMap((type) => type.fields)[0];
   assembly.replaceField(field.rid, { flags: field.flags | 0x2000 });

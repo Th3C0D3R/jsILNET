@@ -2394,13 +2394,9 @@ export class Assembly {
     const field = this.types.flatMap((type) => type.fields)
       .find((candidate) => candidate.rid === rows[rid - 1].Field.rid);
     if (!field) throw new FormatError("FieldRVA row has no resolved Field");
-    rows.splice(rid - 1, 1);
-    for (let index = rid - 1; index < rows.length; index++) rows[index].rid = index + 1;
-    this.tables.counts[29] = rows.length;
-    this.tables.rows.set(29, rows);
+    const tokenMap = this.#removeTokenRow(29, rid, "FieldRVA");
     field.rva = null;
-    this._metadataDirty = true;
-    return this;
+    return tokenMap;
   }
 
   removeField(rid) {
@@ -2709,17 +2705,7 @@ export class Assembly {
 
   removeConstant(rid) {
     this.#ensureEditable();
-    const rows = this.tables.rows.get(11) ?? [];
-    if (!Number.isInteger(rid) || rid < 1 || rid > rows.length ||
-        rows[rid - 1]?.rid !== rid) {
-      throw new RangeError(`Invalid Constant row ID ${rid}`);
-    }
-    rows.splice(rid - 1, 1);
-    for (let index = rid - 1; index < rows.length; index++) rows[index].rid = index + 1;
-    this.tables.counts[11] = rows.length;
-    this.tables.rows.set(11, rows);
-    this._metadataDirty = true;
-    return this;
+    return this.#removeTokenRow(11, rid, "Constant");
   }
 
   addFieldMarshal({ parent, nativeType }) {
@@ -2833,17 +2819,7 @@ export class Assembly {
 
   removeFieldMarshal(rid) {
     this.#ensureEditable();
-    const rows = this.tables.rows.get(13) ?? [];
-    if (!Number.isInteger(rid) || rid < 1 || rid > rows.length ||
-        rows[rid - 1]?.rid !== rid) {
-      throw new RangeError(`Invalid FieldMarshal row ID ${rid}`);
-    }
-    rows.splice(rid - 1, 1);
-    for (let index = rid - 1; index < rows.length; index++) rows[index].rid = index + 1;
-    this.tables.counts[13] = rows.length;
-    this.tables.rows.set(13, rows);
-    this._metadataDirty = true;
-    return this;
+    return this.#removeTokenRow(13, rid, "FieldMarshal");
   }
 
   addClassLayout({ owner, packingSize = 0, classSize = 0 }) {
@@ -2931,17 +2907,7 @@ export class Assembly {
 
   removeClassLayout(rid) {
     this.#ensureEditable();
-    const rows = this.tables.rows.get(15) ?? [];
-    if (!Number.isInteger(rid) || rid < 1 || rid > rows.length ||
-        rows[rid - 1]?.rid !== rid) {
-      throw new RangeError(`Invalid ClassLayout row ID ${rid}`);
-    }
-    rows.splice(rid - 1, 1);
-    for (let index = rid - 1; index < rows.length; index++) rows[index].rid = index + 1;
-    this.tables.counts[15] = rows.length;
-    this.tables.rows.set(15, rows);
-    this._metadataDirty = true;
-    return this;
+    return this.#removeTokenRow(15, rid, "ClassLayout");
   }
 
   addFieldLayout({ fieldRid, offset }) {
@@ -3019,17 +2985,7 @@ export class Assembly {
 
   removeFieldLayout(rid) {
     this.#ensureEditable();
-    const rows = this.tables.rows.get(16) ?? [];
-    if (!Number.isInteger(rid) || rid < 1 || rid > rows.length ||
-        rows[rid - 1]?.rid !== rid) {
-      throw new RangeError(`Invalid FieldLayout row ID ${rid}`);
-    }
-    rows.splice(rid - 1, 1);
-    for (let index = rid - 1; index < rows.length; index++) rows[index].rid = index + 1;
-    this.tables.counts[16] = rows.length;
-    this.tables.rows.set(16, rows);
-    this._metadataDirty = true;
-    return this;
+    return this.#removeTokenRow(16, rid, "FieldLayout");
   }
 
   addNestedClass({ nestedType, enclosingType }) {
@@ -3173,17 +3129,7 @@ export class Assembly {
 
   removeNestedClass(rid) {
     this.#ensureEditable();
-    const rows = this.tables.rows.get(41) ?? [];
-    if (!Number.isInteger(rid) || rid < 1 || rid > rows.length ||
-        rows[rid - 1]?.rid !== rid) {
-      throw new RangeError(`Invalid NestedClass row ID ${rid}`);
-    }
-    rows.splice(rid - 1, 1);
-    for (let index = rid - 1; index < rows.length; index++) rows[index].rid = index + 1;
-    this.tables.counts[41] = rows.length;
-    this.tables.rows.set(41, rows);
-    this._metadataDirty = true;
-    return this;
+    return this.#removeTokenRow(41, rid, "NestedClass");
   }
 
   addImplMap({ member, moduleRefRid, importName, mappingFlags = 0 }) {
@@ -3331,6 +3277,7 @@ export class Assembly {
     if (!memberRow || (memberRow.Flags & 0x2000) === 0) {
       throw new FormatError("ImplMap member row is missing its PInvokeImpl flag");
     }
+    const tokenMap = this.#removeTokenRow(28, rid, "ImplMap");
     memberRow.Flags &= ~0x2000;
     if (member.table === 4) {
       const field = this.types.flatMap((type) => type.fields)
@@ -3340,12 +3287,8 @@ export class Assembly {
       const method = this.methods[member.rid - 1];
       if (method) method.flags = memberRow.Flags;
     }
-    rows.splice(rid - 1, 1);
-    for (let index = rid - 1; index < rows.length; index++) rows[index].rid = index + 1;
-    this.tables.counts[28] = rows.length;
-    this.tables.rows.set(28, rows);
     this._metadataDirty = true;
-    return this;
+    return tokenMap;
   }
 
   addMethodImpl({ owner, body, declaration }) {
@@ -3459,17 +3402,7 @@ export class Assembly {
 
   removeMethodImpl(rid) {
     this.#ensureEditable();
-    const rows = this.tables.rows.get(25) ?? [];
-    if (!Number.isInteger(rid) || rid < 1 || rid > rows.length ||
-        rows[rid - 1]?.rid !== rid) {
-      throw new RangeError(`Invalid MethodImpl row ID ${rid}`);
-    }
-    rows.splice(rid - 1, 1);
-    for (let index = rid - 1; index < rows.length; index++) rows[index].rid = index + 1;
-    this.tables.counts[25] = rows.length;
-    this.tables.rows.set(25, rows);
-    this._metadataDirty = true;
-    return this;
+    return this.#removeTokenRow(25, rid, "MethodImpl");
   }
 
   addDeclSecurity({ parent, action, permissionSet }) {
@@ -3607,17 +3540,7 @@ export class Assembly {
 
   removeDeclSecurity(rid) {
     this.#ensureEditable();
-    const rows = this.tables.rows.get(14) ?? [];
-    if (!Number.isInteger(rid) || rid < 1 || rid > rows.length ||
-        rows[rid - 1]?.rid !== rid) {
-      throw new RangeError(`Invalid DeclSecurity row ID ${rid}`);
-    }
-    rows.splice(rid - 1, 1);
-    for (let index = rid - 1; index < rows.length; index++) rows[index].rid = index + 1;
-    this.tables.counts[14] = rows.length;
-    this.tables.rows.set(14, rows);
-    this._metadataDirty = true;
-    return this;
+    return this.#removeTokenRow(14, rid, "DeclSecurity");
   }
 
   addMethod({ owner, name, flags, implFlags = 0, signature, body: bodyBytes }) {
@@ -5066,17 +4989,7 @@ export class Assembly {
 
   removeMethodSemantics(rid) {
     this.#ensureEditable();
-    const rows = this.tables.rows.get(24) ?? [];
-    if (!Number.isInteger(rid) || rid < 1 || rid > rows.length || rows[rid - 1]?.rid !== rid) {
-      throw new RangeError(`Invalid MethodSemantics row ID ${rid}`);
-    }
-    rows.splice(rid - 1, 1);
-    for (let index = rid - 1; index < rows.length; index++) rows[index].rid = index + 1;
-    this.tables.counts[24] = rows.length;
-    this.tables.rows.set(24, rows);
-    if (rows.length === 0) this.tables.valid &= ~(1n << 24n);
-    this._metadataDirty = true;
-    return this;
+    return this.#removeTokenRow(24, rid, "MethodSemantics");
   }
 
   replacePropertySignature(rid, signature) {
@@ -8717,6 +8630,146 @@ export class Assembly {
       }
     }
     return { tokenMap, rowChanges, tokenUpdates, patches };
+  }
+
+  #prepareTokenRowRemoval(tableId, removedRid, rowCount, tableName) {
+    if (this._structuralBodies.size > 0 || this._addedMethodBodies.size > 0) {
+      throw new UnsupportedFormatError(
+        `${tableName} removal cannot be combined with method-body edits`
+      );
+    }
+    this.#ensureTokenRemappingSafe(tableName);
+    const tokenMap = new Map();
+    const rowChanges = [];
+    const tokenUpdates = [];
+    const patches = [];
+    for (let oldRid = removedRid + 1; oldRid <= rowCount; oldRid++) {
+      tokenMap.set((tableId << 24) + oldRid, (tableId << 24) + oldRid - 1);
+    }
+    for (const [sourceTableId, rows] of this.tables.rows) {
+      const schema = metadataTableSchemas[sourceTableId];
+      if (!schema) {
+        throw new UnsupportedFormatError(
+          `Cannot remap ${tableName} tokens through unknown table ${sourceTableId}`
+        );
+      }
+      for (const row of rows) {
+        for (const [kind, value, name, pointer] of schema) {
+          const columnName = name ?? value;
+          const column = row[columnName];
+          if (kind === "coded" && column?.target?.table === tableId) {
+            const targetRid = column.target.rid;
+            if (targetRid === removedRid) {
+              throw new FormatError(
+                `${tableName} row ${removedRid} is referenced by ${metadataTableNames[sourceTableId]}.${columnName}`
+              );
+            }
+            if (targetRid > removedRid) {
+              const target = { ...column.target, rid: targetRid - 1 };
+              rowChanges.push({
+                row,
+                columnName,
+                value: { raw: encodeCodedIndex(tableId, target.rid, value), target }
+              });
+            }
+          } else if (kind === "table") {
+            const targetTable = pointer !== undefined &&
+              (this.tables.valid & (1n << BigInt(pointer))) !== 0n ? pointer : value;
+            if (targetTable !== tableId || !Number.isInteger(column?.rid)) continue;
+            if (column.rid === removedRid) {
+              throw new FormatError(
+                `${tableName} row ${removedRid} is referenced by ${metadataTableNames[sourceTableId]}.${columnName}`
+              );
+            }
+            if (column.rid > removedRid) {
+              rowChanges.push({
+                row,
+                columnName,
+                value: { ...column, raw: column.rid - 1, rid: column.rid - 1 }
+              });
+            }
+          } else if (kind === "u4" &&
+              (sourceTableId === 30 || sourceTableId === 31) &&
+              columnName === "Token" && row[columnName] >>> 24 === tableId) {
+            const token = row[columnName];
+            const targetRid = token & 0x00ffffff;
+            if (targetRid === removedRid) {
+              throw new FormatError(
+                `${tableName} row ${removedRid} is referenced by ${metadataTableNames[sourceTableId]}`
+              );
+            }
+            if (targetRid > removedRid) {
+              rowChanges.push({
+                row,
+                columnName,
+                value: (tableId << 24) | (targetRid - 1)
+              });
+            }
+          }
+        }
+      }
+    }
+    for (const method of this.methods) {
+      for (const instruction of this.getMethodBody(method.rid)?.instructions ?? []) {
+        const token = instruction.operand?.kind === "token" ? instruction.operand.value : 0;
+        if ((token >>> 24) !== tableId) continue;
+        const targetRid = token & 0x00ffffff;
+        if (targetRid === removedRid) {
+          throw new FormatError(`${tableName} row ${removedRid} is referenced by CIL`);
+        }
+        if (targetRid > removedRid) {
+          const replacement = token - 1;
+          tokenUpdates.push({ instruction, replacement });
+          patches.push(...createOperandPatches(instruction, replacement));
+        }
+      }
+    }
+    if ((this.tables.sorted & (1n << 12n)) !== 0n) {
+      const changedParents = new Map(rowChanges
+        .filter((change) => change.columnName === "Parent")
+        .map((change) => [change.row, change.value]));
+      let previous = -1;
+      for (const row of this.tables.get(12)) {
+        const parent = changedParents.get(row) ?? row.Parent;
+        if (parent.raw < previous) {
+          throw new FormatError(
+            `${tableName} token remapping would violate sorted CustomAttribute order`
+          );
+        }
+        previous = parent.raw;
+      }
+    }
+    return { tokenMap, rowChanges, tokenUpdates, patches };
+  }
+
+  #removeTokenRow(tableId, rid, tableName) {
+    const rows = this.tables.rows.get(tableId) ?? [];
+    if (rows.length !== (this.tables.counts[tableId] ?? 0) ||
+        !Number.isInteger(rid) || rid < 1 || rid > rows.length ||
+        rows[rid - 1]?.rid !== rid) {
+      throw new RangeError(`Invalid ${tableName} row ID ${rid}`);
+    }
+    const { tokenMap, rowChanges, tokenUpdates, patches } =
+      this.#prepareTokenRowRemoval(tableId, rid, rows.length, tableName);
+    const attributeRows = this.customAttributes.map((attribute) => {
+      const row = this.tables.row(12, attribute.rid);
+      if (!row) throw new FormatError(`CustomAttribute row ${attribute.rid} has no metadata row`);
+      return { attribute, row };
+    });
+    for (const change of rowChanges) change.row[change.columnName] = change.value;
+    rows.splice(rid - 1, 1);
+    for (let index = rid - 1; index < rows.length; index++) rows[index].rid = index + 1;
+    this.tables.rows.set(tableId, rows);
+    this.tables.counts[tableId] = rows.length;
+    if (rows.length === 0) this.tables.valid &= ~(1n << BigInt(tableId));
+    for (const { attribute, row } of attributeRows) {
+      attribute.parent = row.Parent.target;
+      attribute.constructor = row.Type.target;
+    }
+    for (const update of tokenUpdates) update.instruction.operand.value = update.replacement;
+    this._patches.push(...patches);
+    this._metadataDirty = true;
+    return tokenMap;
   }
 
   #writeGenericParamConstraint({ ownerRid, constraint }, insertSorted) {

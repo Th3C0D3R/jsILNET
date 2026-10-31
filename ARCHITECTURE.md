@@ -79,23 +79,23 @@ MethodDef names, flags, and implementation flags can be replaced without changin
 
 TypeDef names, namespaces, flags, and base-type references can be replaced without changing row identity; the required `<Module>` identity is preserved, and TypeSpec base signatures are checked against known generic context.
 
-Constant rows can be appended, replaced, and removed for Field, Param, and Property parents. Values are supplied as raw ECMA element-type/byte pairs; duplicate parents and append operations that violate declared Parent ordering are rejected.
+Constant rows can be appended, replaced, and removed for Field, Param, and Property parents. Values are supplied as raw ECMA element-type/byte pairs; duplicate parents and append operations that violate declared Parent ordering are rejected. Sorted insertion and removal remap surviving token references and return token maps.
 
-FieldMarshal rows can be appended, replaced, and removed for Field and Param parents using raw native-type descriptor blobs, with duplicate-parent and sorted-order checks on append.
+FieldMarshal rows can be appended, replaced, and removed for Field and Param parents using raw native-type descriptor blobs, with duplicate-parent and sorted-order checks on append. Sorted insertion and removal remap surviving token references and return token maps.
 
-ClassLayout and FieldLayout rows support add/replace/remove operations with TypeDef/Field parent validation, unique-parent checks, bounds validation, and sorted-key checks on append.
+ClassLayout and FieldLayout rows support add/replace/remove operations with TypeDef/Field parent validation, unique-parent checks, bounds validation, and sorted-key checks on append. Sorted insertion and removal remap surviving token references and return token maps.
 
-FieldRVA rows support add/replace/remove for static fixed-width primitive fields. RVA ranges must map to file-backed PE data, and Field metadata changes preserve static status and the supported storage width while an RVA row exists.
+FieldRVA rows support add/replace/remove for static fixed-width primitive fields. RVA ranges must map to file-backed PE data, and Field metadata changes preserve static status and the supported storage width while an RVA row exists. Sorted insertion and removal remap surviving token references and return token maps.
 
-NestedClass relationships support add/replace/remove with valid TypeDef references, unique nested owners, sorted-key checks, and cycle rejection.
+NestedClass relationships support add/replace/remove with valid TypeDef references, unique nested owners, sorted-key checks, and cycle rejection. Sorted insertion and removal remap surviving token references and return token maps.
 
-DeclSecurity rows support append, action/raw PermissionSet replacement, and removal with valid TypeDef/MethodDef/Assembly parents, unique parent/action pairs, and sorted-key checks. PermissionSet blobs remain opaque.
+DeclSecurity rows support append, action/raw PermissionSet replacement, and removal with valid TypeDef/MethodDef/Assembly parents, unique parent/action pairs, and sorted-key checks. PermissionSet blobs remain opaque. Sorted insertion and removal remap surviving token references and return token maps.
 
-MethodImpl rows support append/replace/remove with valid owner and method references, owner checks for MethodDef bodies, duplicate rejection, and sorted Class-key checks.
+MethodImpl rows support append/replace/remove with valid owner and method references, owner checks for MethodDef bodies, duplicate rejection, and sorted Class-key checks. Sorted insertion and removal remap surviving token references and return token maps.
 
-MethodSemantics rows support append/replace/remove with association-kind semantics validation, same-TypeDef accessor checks, accessor signature validation, duplicate rejection, and declared Association-order checks.
+MethodSemantics rows support append/replace/remove with association-kind semantics validation, same-TypeDef accessor checks, accessor signature validation, duplicate rejection, and declared Association-order checks. Sorted insertion and removal remap surviving token references and return token maps.
 
-ImplMap rows support append/replace/remove with valid Field/MethodDef and ModuleRef references, duplicate and sorted-key checks; row removal clears the associated PInvokeImpl member flag.
+ImplMap rows support append/replace/remove with valid Field/MethodDef and ModuleRef references, duplicate and sorted-key checks; row removal clears the associated PInvokeImpl member flag. Sorted insertion and removal remap surviving token references and return token maps.
 TypeDef rows can be appended with validated optional base references and computed FieldList/MethodList boundaries for optimized or pointer-table metadata; their stable tokens can then be used by supported field/method additions. An unreferenced empty non-module TypeDef can be removed at any RID; later TypeDef references are remapped through metadata coded/direct indices, supported signatures, CIL operands, and EH catch-clause tokens. TypeRef sorted insertion and TypeRef/TypeSpec removal likewise remap or reject affected EH catch-clause tokens. These operations refuse live references, debug data, unknown streams, sorted-key reordering, and unsupported combinations with added method bodies.
 
 TypeDef removal requires no fields, methods, events, properties, or generic parameters on the removed owner; references to that TypeDef are rejected rather than removed implicitly.
