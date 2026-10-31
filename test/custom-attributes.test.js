@@ -93,6 +93,13 @@ test("binary PermissionSet blobs decode named security-attribute values", () => 
   });
   assert.throws(() => parsePermissionSet(Uint8Array.from([0x2e, 1, 1, 0x41, 3, 0, 0, 1])),
     /Trailing bytes after PermissionSet attribute data/);
+  const xml = "<PermissionSet><IPermission class=\"Example.Permission\" /></PermissionSet>";
+  assert.deepEqual(parsePermissionSet(new TextEncoder().encode(xml)), {
+    format: "xml",
+    xml
+  });
   assert.throws(() => parsePermissionSet(Uint8Array.from([0x3c])),
-    /Only binary CLI PermissionSet blobs are supported/);
+    /not UTF-8 XML text/);
+  assert.throws(() => parsePermissionSet(Uint8Array.from([0xff, 0xfe, 0x3c, 0x00])),
+    /encoding is unsupported/);
 });

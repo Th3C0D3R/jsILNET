@@ -25,6 +25,7 @@ This is an early-stage library, not a dnlib-equivalent rewriter. Tier 1 and Tier
 - Add embedded or linked manifest-resource rows and replace embedded payloads while updating offsets and relocating the CLI resources directory.
 - Replace File-linked resource payloads while updating the referenced File hash; the external file must still be written by the caller.
 - Parse and replace custom-attribute blobs for supported primitive, string, array, boxed, and enum argument types; an optional resolver callback supplies external enum underlying types.
+- Decode binary declarative-security PermissionSets into typed named arguments and expose legacy UTF-8 XML PermissionSets as text without expanding entities.
 - Decode CIL instructions, including `0xFE`-prefixed opcodes, branch and switch operands, tiny/fat method headers, and exception-handler sections.
 - Patch fixed-width instruction operands using existing heap entries and validated metadata tokens, or replace an opcode when its encoded width and operand layout remain unchanged.
 - Insert/remove CIL instructions, resolve branch and switch targets, promote out-of-range short branches, and update supported exception-handler regions.

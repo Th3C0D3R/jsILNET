@@ -247,10 +247,25 @@ export function parseCustomAttribute(bytes, fixedTypes, resolveEnum = () => {
 export function parsePermissionSet(bytes, resolveEnum = () => {
   throw new UnsupportedFormatError("PermissionSet enum type is not resolvable");
 }) {
-  const reader = new BinaryReader(bytes, { context: "PermissionSet" });
-  if (reader.u1() !== 0x2e) {
-    throw new UnsupportedFormatError("Only binary CLI PermissionSet blobs are supported");
+  if (!(bytes instanceof Uint8Array)) {
+    throw new TypeError("PermissionSet data must be a Uint8Array");
   }
+  if (bytes[0] !== 0x2e) {
+    let xml;
+    try {
+      xml = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    } catch (error) {
+      throw new UnsupportedFormatError(`XML PermissionSet encoding is unsupported: ${error.message}`);
+    }
+    if (xml.charCodeAt(0) === 0xfeff) xml = xml.slice(1);
+    const trimmedXml = xml.trim();
+    if (xml.includes("\0") || !trimmedXml.startsWith("<") || !trimmedXml.endsWith(">")) {
+      throw new FormatError("XML PermissionSet payload is not UTF-8 XML text");
+    }
+    return { format: "xml", xml };
+  }
+  const reader = new BinaryReader(bytes, { context: "PermissionSet" });
+  reader.u1();
   const attributeCount = readCompressedUInt(reader);
   if (attributeCount > Math.floor(reader.remaining / 2)) {
     throw new FormatError("PermissionSet attribute count exceeds remaining blob data");
