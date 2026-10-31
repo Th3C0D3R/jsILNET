@@ -5,6 +5,7 @@ import { generateKeyPairSync } from "node:crypto";
 import {
   encodeCodedIndex,
   encodeSignature,
+  metadataTableNames,
   parseCliHeader,
   parseAssembly,
   parsePE,
@@ -4682,7 +4683,7 @@ test("event replacement preserves identity and validates add/remove accessors", 
   assert.equal(token, 0x14000000 + reparsedEvent.rid);
 });
 
-test("properties and events append to the last TypeDef and rebuild ownership maps", () => {
+test("properties and events append to an owner's tail and rebuild ownership maps", () => {
   const assembly = parseAssembly(fixture);
   const owner = assembly.types.at(-1);
   const eventType = assembly.typeRefs.find((type) => type.name === "IDisposable");
@@ -4709,6 +4710,80 @@ test("properties and events append to the last TypeDef and rebuild ownership map
     tableName: "TypeRef",
     rid: eventType.rid
   });
+});
+
+test("properties and events append before later empty ownership ranges", () => {
+  const propertyAssembly = parseAssembly(fixture);
+  const propertyOwner = propertyAssembly.types.at(-2);
+  const laterPropertyOwner = propertyAssembly.types.at(-1);
+  const propertyMaps = propertyAssembly.tables.get(21);
+  const laterPropertyMap = propertyMaps.find((map) => map.Parent.rid === laterPropertyOwner.rid);
+  assert.ok(propertyOwner && laterPropertyOwner && laterPropertyMap);
+  propertyOwner.propertyRids.push(...laterPropertyOwner.propertyRids);
+  propertyOwner.properties.push(...laterPropertyOwner.properties);
+  laterPropertyOwner.propertyRids = [];
+  laterPropertyOwner.properties = [];
+  laterPropertyMap.PropertyList.rid = propertyAssembly.tables.counts[23] + 1;
+  laterPropertyMap.PropertyList.raw = laterPropertyMap.PropertyList.rid;
+  const propertyRid = propertyAssembly.addProperty({
+    owner: { table: "TypeDef", rid: propertyOwner.rid },
+    name: "EarlierOwnerProperty",
+    signature: Uint8Array.from([0x08, 0x00, 0x08])
+  });
+  assert.equal(propertyAssembly.tables.row(21, propertyAssembly.tables.counts[21])
+    .PropertyList.rid, propertyRid + 1);
+  const reparsedPropertyAssembly = parseAssembly(propertyAssembly.serialize());
+  assert.equal(reparsedPropertyAssembly.types[propertyOwner.rid - 1]
+    .properties.at(-1).name, "EarlierOwnerProperty");
+  assert.equal(reparsedPropertyAssembly.types[laterPropertyOwner.rid - 1]
+    .properties.length, 0);
+
+  const eventAssembly = parseAssembly(fixture);
+  const eventOwner = eventAssembly.types.at(-2);
+  const laterEventOwner = eventAssembly.types.at(-1);
+  const eventMaps = eventAssembly.tables.get(18);
+  const laterEventMap = eventMaps.find((map) => map.Parent.rid === laterEventOwner.rid);
+  assert.ok(eventOwner && laterEventOwner && laterEventMap);
+  eventOwner.eventRids.push(...laterEventOwner.eventRids);
+  eventOwner.events.push(...laterEventOwner.events);
+  laterEventOwner.eventRids = [];
+  laterEventOwner.events = [];
+  laterEventMap.EventList.rid = eventAssembly.tables.counts[20] + 1;
+  laterEventMap.EventList.raw = laterEventMap.EventList.rid;
+  eventMaps.unshift({
+    table: 18,
+    tableName: metadataTableNames[18],
+    rid: eventMaps.length + 1,
+    Parent: {
+      raw: eventOwner.rid,
+      table: 2,
+      tableName: metadataTableNames[2],
+      rid: eventOwner.rid
+    },
+    EventList: {
+      raw: 1,
+      table: 20,
+      tableName: metadataTableNames[20],
+      rid: 1
+    }
+  });
+  eventMaps.forEach((map, index) => { map.rid = index + 1; });
+  eventAssembly.tables.counts[18] = eventMaps.length;
+  eventAssembly.tables.valid |= 1n << 18n;
+  const eventType = eventAssembly.typeRefs.find((type) => type.name === "IDisposable");
+  assert.ok(eventType);
+  eventAssembly.addEvent({
+    owner: { table: "TypeDef", rid: eventOwner.rid },
+    name: "EarlierOwnerEvent",
+    eventType: { table: "TypeRef", rid: eventType.rid }
+  });
+  assert.equal(eventAssembly.tables.row(18, eventAssembly.tables.counts[18])
+    .EventList.rid, eventAssembly.tables.counts[20] + 1);
+  const reparsedEventAssembly = parseAssembly(eventAssembly.serialize());
+  assert.equal(reparsedEventAssembly.types[eventOwner.rid - 1]
+    .events.at(-1).name, "EarlierOwnerEvent");
+  assert.equal(reparsedEventAssembly.types[laterEventOwner.rid - 1]
+    .events.length, 0);
 });
 
 test("InterfaceImpl rows can append to any TypeDef when the table is unsorted", () => {

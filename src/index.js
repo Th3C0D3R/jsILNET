@@ -5085,9 +5085,6 @@ export class Assembly {
     if (!Number.isInteger(ownerRid) || ownerRid < 1 || !ownerType) {
       throw new RangeError("Property owner must identify an existing TypeDef");
     }
-    if (ownerType.rid !== this.types.at(-1)?.rid) {
-      throw new UnsupportedFormatError("Properties can only be appended to the last TypeDef row");
-    }
     if (typeof name !== "string" || name.length === 0 || name.includes("\0")) {
       throw new TypeError("Property name must be a non-empty null-free string");
     }
@@ -5134,7 +5131,7 @@ export class Assembly {
       if (endRid !== listCount + 1 ||
           ownedRids.length !== ownerType.propertyRids.length ||
           ownedRids.some((rid, index) => rid !== ownerType.propertyRids[index])) {
-        throw new UnsupportedFormatError("Property append requires the last TypeDef's properties to be contiguous at the end");
+        throw new UnsupportedFormatError("Property append requires the owner's properties to be contiguous at the end");
       }
     } else if (ownerType.propertyRids.length !== 0) {
       throw new FormatError(`TypeDef row ${ownerRid} has properties without a PropertyMap row`);
@@ -5176,6 +5173,13 @@ export class Assembly {
       this.tables.counts[22] = pointerRid;
       this.tables.valid |= 1n << 22n;
     }
+    if (ownerMap) {
+      const ownerMapIndex = maps.indexOf(ownerMap);
+      for (const map of maps.slice(ownerMapIndex + 1)) {
+        map.PropertyList.rid++;
+        map.PropertyList.raw++;
+      }
+    }
     if (!ownerMap) {
       const mapRid = maps.length + 1;
       const listTable = pointerRows ? 22 : 23;
@@ -5210,9 +5214,6 @@ export class Assembly {
     const ownerType = this.types[ownerRid - 1];
     if (!Number.isInteger(ownerRid) || ownerRid < 1 || !ownerType) {
       throw new RangeError("Event owner must identify an existing TypeDef");
-    }
-    if (ownerType.rid !== this.types.at(-1)?.rid) {
-      throw new UnsupportedFormatError("Events can only be appended to the last TypeDef row");
     }
     if (typeof name !== "string" || name.length === 0 || name.includes("\0")) {
       throw new TypeError("Event name must be a non-empty null-free string");
@@ -5265,7 +5266,7 @@ export class Assembly {
       if (endRid !== listCount + 1 ||
           ownedRids.length !== ownerType.eventRids.length ||
           ownedRids.some((rid, index) => rid !== ownerType.eventRids[index])) {
-        throw new UnsupportedFormatError("Event append requires the last TypeDef's events to be contiguous at the end");
+        throw new UnsupportedFormatError("Event append requires the owner's events to be contiguous at the end");
       }
     } else if (ownerType.eventRids.length !== 0) {
       throw new FormatError(`TypeDef row ${ownerRid} has events without an EventMap row`);
@@ -5304,6 +5305,13 @@ export class Assembly {
       this.tables.rows.set(19, pointerRows);
       this.tables.counts[19] = pointerRid;
       this.tables.valid |= 1n << 19n;
+    }
+    if (ownerMap) {
+      const ownerMapIndex = maps.indexOf(ownerMap);
+      for (const map of maps.slice(ownerMapIndex + 1)) {
+        map.EventList.rid++;
+        map.EventList.raw++;
+      }
     }
     if (!ownerMap) {
       const mapRid = maps.length + 1;
