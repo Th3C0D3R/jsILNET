@@ -41,9 +41,13 @@ function makeClassicPdb() {
   return bytes;
 }
 
-function makeClassicPdbWithSymbols({ crossBlockName = false } = {}) {
+function makeClassicPdbWithSymbols({ crossBlockName = false, withC13 = false } = {}) {
   const blockSize = 512;
-  const symbolStream = new Uint8Array(crossBlockName ? 516 : 24);
+  const symbolBytes = crossBlockName ? 516 : 24;
+  const c13Bytes = withC13
+    ? Uint8Array.from([0x77, 0x77, 0x77, 0x77, 3, 0, 0, 0, 1, 2, 3, 0])
+    : new Uint8Array();
+  const symbolStream = new Uint8Array(symbolBytes + c13Bytes.length);
   const symbolView = new DataView(symbolStream.buffer);
   const symbolRecordOffset = crossBlockName ? 496 : 4;
   const bytes = new Uint8Array(blockSize * (crossBlockName ? 9 : 8));
@@ -88,12 +92,14 @@ function makeClassicPdbWithSymbols({ crossBlockName = false } = {}) {
   view.setUint16(dbiOffset + 20, 0xffff, true);
   view.setUint32(dbiOffset + 24, 80, true);
   view.setUint16(dbiOffset + 64 + 34, 4, true);
-  view.setUint32(dbiOffset + 64 + 36, symbolStream.length, true);
+  view.setUint32(dbiOffset + 64 + 36, symbolBytes, true);
+  view.setUint32(dbiOffset + 64 + 44, c13Bytes.length, true);
   bytes.set([0x74, 0x65, 0x73, 0x74, 0], dbiOffset + 64 + 64);
   bytes.set([0x74, 0x65, 0x73, 0x74, 0x2e, 0x6f, 0x62, 0x6a, 0],
     dbiOffset + 64 + 69);
 
   symbolView.setUint32(0, 4, true);
+  symbolStream.set(c13Bytes, symbolBytes);
   if (crossBlockName) {
     symbolView.setUint16(4, 490, true);
     symbolView.setUint16(6, 0x7777, true);
@@ -217,6 +223,24 @@ test("classic PDB symbol names can be resized within existing MSF allocations", 
     recordIndex: 0,
     name: "x".repeat(500)
   }), /preserve the module stream's MSF block count/);
+});
+
+test("classic PDB symbol resizing preserves trailing C13 module data", () => {
+  const original = makeClassicPdbWithSymbols({ withC13: true });
+  const rewritten = replaceClassicPdbSymbolName(original, {
+    moduleIndex: 0,
+    recordIndex: 0,
+    name: "expansive"
+  });
+  const pdb = parseClassicPdb(rewritten);
+  const module = pdb.dbi.modules[0];
+  assert.equal(module.symbolBytes, 28);
+  assert.equal(module.c13Bytes, 12);
+  assert.equal(pdb.streams[module.streamIndex].size, 40);
+  assert.deepEqual(module.c13.subsections, [{
+    kind: 0x77777777,
+    data: Uint8Array.from([1, 2, 3])
+  }]);
 });
 
 test("classic PDB symbol names can cross MSF stream blocks", () => {
