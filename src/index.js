@@ -3171,6 +3171,14 @@ export class Assembly {
   }
 
   addMethodImpl({ owner, body, declaration }) {
+    return this.#writeMethodImpl({ owner, body, declaration }, false).rid;
+  }
+
+  insertMethodImpl({ owner, body, declaration }) {
+    return this.#writeMethodImpl({ owner, body, declaration }, true);
+  }
+
+  #writeMethodImpl({ owner, body, declaration }, insertSorted) {
     this.#ensureEditable();
     const ownerRid = metadataTableId(owner?.table) === 2 ? owner.rid : 0;
     if (!Number.isInteger(ownerRid) || ownerRid < 1 || ownerRid > this.tables.counts[2]) {
@@ -3193,23 +3201,52 @@ export class Assembly {
     )) {
       throw new FormatError("The MethodImpl table already contains this implementation mapping");
     }
-    if ((this.tables.sorted & (1n << 25n)) !== 0n && rows.at(-1)?.Class.rid > ownerRid) {
+    let insertionIndex = rows.length;
+    if (insertSorted) {
+      for (let index = 1; index < rows.length; index++) {
+        if (rows[index - 1].Class.rid > rows[index].Class.rid) {
+          throw new UnsupportedFormatError(
+            "Sorted MethodImpl insertion requires rows already ordered by Class"
+          );
+        }
+      }
+      const laterOwner = rows.findIndex((row) => row.Class.rid > ownerRid);
+      if (laterOwner !== -1) insertionIndex = laterOwner;
+    } else if ((this.tables.sorted & (1n << 25n)) !== 0n &&
+        rows.at(-1)?.Class.rid > ownerRid) {
       throw new UnsupportedFormatError("MethodImpl append would violate declared Class ordering");
     }
-    const rid = rows.length + 1;
-    rows.push({
+    const rid = insertionIndex + 1;
+    if (rid > 0x00ffffff) {
+      throw new RangeError("MethodImpl token row ID exceeds 24-bit range");
+    }
+    const { tokenMap, rowChanges, tokenUpdates, patches } =
+      this.#prepareTokenRowInsertion(25, rid, rows.length, "MethodImpl");
+    const newRow = {
       table: 25,
       tableName: metadataTableNames[25],
       rid,
       Class: { raw: ownerRid, table: 2, tableName: metadataTableNames[2], rid: ownerRid },
       MethodBody: bodyReference,
       MethodDeclaration: declarationReference
-    });
+    };
+    for (const change of rowChanges) change.row[change.columnName] = change.value;
+    for (const row of rows) {
+      if (row.rid >= rid) row.rid++;
+    }
+    rows.splice(insertionIndex, 0, newRow);
     this.tables.rows.set(25, rows);
-    this.tables.counts[25] = rid;
+    this.tables.counts[25] = rows.length;
     this.tables.valid |= 1n << 25n;
+    for (const attribute of this.customAttributes) {
+      const row = this.tables.row(12, attribute.rid);
+      attribute.parent = row.Parent.target;
+      attribute.constructor = row.Type.target;
+    }
+    for (const update of tokenUpdates) update.instruction.operand.value = update.replacement;
+    this._patches.push(...patches);
     this._metadataDirty = true;
-    return rid;
+    return { rid, tokenMap };
   }
 
   replaceMethodImpl(rid, { body, declaration } = {}) {

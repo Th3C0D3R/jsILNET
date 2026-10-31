@@ -3733,6 +3733,33 @@ test("sorted DeclSecurity insertion remaps CustomAttribute and ENC references", 
   assert.equal(reparsed.customAttributes.at(-1).parent.rid, laterRid + 1);
 });
 
+test("sorted MethodImpl insertion remaps ENC tokens", () => {
+  const assembly = parseAssembly(withoutDebugDirectory());
+  const earlierOwner = assembly.addTypeDef({ name: "EarlierMethodImplOwner" }) & 0x00ffffff;
+  const laterOwner = assembly.addTypeDef({ name: "LaterMethodImplOwner" }) & 0x00ffffff;
+  const body = { table: "MemberRef", rid: 1 };
+  const declaration = { table: "MemberRef", rid: 2 };
+  const laterRid = assembly.addMethodImpl({
+    owner: { table: "TypeDef", rid: laterOwner },
+    body,
+    declaration
+  });
+  addEncToken(assembly, 31, 0x19000000 + laterRid);
+
+  const { rid, tokenMap } = assembly.insertMethodImpl({
+    owner: { table: "TypeDef", rid: earlierOwner },
+    body,
+    declaration
+  });
+  assert.equal(rid, laterRid);
+  assert.equal(tokenMap.get(0x19000000 + laterRid), 0x19000000 + laterRid + 1);
+  assert.equal(assembly.tables.row(25, rid).Class.rid, earlierOwner);
+  assert.equal(assembly.tables.get(31).at(-1).Token, 0x19000000 + laterRid + 1);
+
+  const reparsed = parseAssembly(assembly.serialize());
+  assert.equal(reparsed.tables.row(25, rid + 1).Class.rid, laterOwner);
+});
+
 test("MethodImpl rows validate method references and round-trip replacement/removal", () => {
   const assembly = parseAssembly(fixture);
   assembly.tables.sorted |= 1n << 25n;
