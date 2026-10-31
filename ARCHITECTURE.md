@@ -316,7 +316,7 @@ The initial implementation should document and enforce a supported-input profile
 1. **Foundation:** bounded binary primitives, diagnostics, PE/CLI parsing, metadata-root/stream discovery, and the declarative table/index schema.
 2. **Tier 1 reader:** heap readers, core table decoding, CIL opcode registry and body decoding, and optional semantic facade.
 3. **Tier 1 fixed-size writer:** dirty-range patching, existing-`#US` operand updates, same-width numeric edits, strong-name stripping, and no-op round-trip validation.
-4. **Tier 2 metadata rewriting:** supported table-specific additions, replacements, removals, heap growth, index-width changes, metadata stream rebuilding, and sorted `MemberRef`/`TypeRef`/`MethodSpec` insertion with known-reference remapping are implemented. Complete table coverage and generalized token remapping remain.
+4. **Tier 2 metadata rewriting:** supported table-specific additions, replacements, removals, heap growth, index-width changes, metadata stream rebuilding, and sorted `MemberRef`/`TypeRef`/`MethodSpec` insertion with known-reference remapping are implemented. Remaining table-specific edit cases and exhaustive signature/opaque-reference remapping remain.
 5. **Tier 2 IL/PE rewriting:** instruction editing, branch/EH fixups, body-format changes, method RVA relocation, PE section relayout, and output reparse validation are implemented for the supported input profile; broaden layout coverage and runtime validation before claiming full Tier 2.
 6. **Tier 3 parity:** generic signatures/metadata, custom attributes, PDBs, signing, resources/manifests, and malformed/obfuscated-input hardening. Generic, attribute, embedded-resource, and strong-name signing support is partial; remaining boundaries are documented above.
 
