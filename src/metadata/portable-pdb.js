@@ -598,3 +598,43 @@ export function replaceEmbeddedPortablePdbDocumentName(pdb, documentRid, name, s
     tables: { ...pdb.tables, rows }
   });
 }
+
+export function replaceEmbeddedPortablePdbSequencePoints(pdb, methodRid, sequencePoints) {
+  if (!pdb?.metadataRoot?.streams || !(pdb.tables?.rows instanceof Map) ||
+      !Array.isArray(pdb.tables.counts) || !(pdb.rowCounts instanceof Map) ||
+      !Array.isArray(pdb.methodDebugInformation)) {
+    throw new TypeError("Portable PDB sequence-point editing requires parsed PDB data");
+  }
+  if (!Number.isInteger(methodRid) || methodRid < 1 ||
+      methodRid > pdb.methodDebugInformation.length) {
+    throw new RangeError(`Invalid Portable PDB MethodDebugInformation row ID ${methodRid}`);
+  }
+  const rowsForMethods = pdb.tables.rows.get(49) ?? [];
+  const row = rowsForMethods[methodRid - 1];
+  if (!row || row.rid !== methodRid) {
+    throw new FormatError(`Portable PDB MethodDebugInformation row ${methodRid} is missing`);
+  }
+  const encoded = encodePortablePdbSequencePoints(sequencePoints, {
+    documentRid: row.Document.rid,
+    documentCount: pdb.tables.counts[48],
+    localSignatureCount: pdb.rowCounts.get(17) ?? 0
+  });
+  const streams = new Map([...pdb.metadataRoot.streams].map(([streamName, stream]) =>
+    [streamName, { ...stream, bytes: Uint8Array.from(stream.bytes) }]
+  ));
+  const blobStream = streams.get("#Blob");
+  if (!blobStream) throw new FormatError("Portable PDB metadata is missing its #Blob heap");
+  const appended = appendBlobHeap(blobStream.bytes, encoded);
+  blobStream.bytes = appended.heap;
+  const rows = new Map(pdb.tables.rows);
+  rows.set(49, rowsForMethods.map((methodRow) =>
+    methodRow.rid === methodRid
+      ? { ...methodRow, SequencePoints: appended.index }
+      : { ...methodRow }
+  ));
+  return serializeEmbeddedPortablePdb({
+    ...pdb,
+    metadataRoot: { ...pdb.metadataRoot, streams },
+    tables: { ...pdb.tables, rows }
+  });
+}

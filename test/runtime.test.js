@@ -14,6 +14,7 @@ import {
   replaceEmbeddedPortablePdbDocumentName,
   replaceClassicPdbStringTableName,
   replaceClassicPdbSymbolName,
+  replaceEmbeddedPortablePdbSequencePoints,
   serializeEmbeddedPortablePdb
 } from "../src/index.js";
 import { parseEmbeddedPortablePdbData } from "../src/pe/headers.js";
@@ -435,6 +436,52 @@ test("strong-name signed PE32+ assemblies load and execute in .NET", {
         points: methodDebugInfo.sequencePoints
       }
     );
+    const changedPoints = methodDebugInfo.sequencePoints.map((point) => ({ ...point }));
+    const visiblePointIndex = changedPoints.findIndex((point) => !point.hidden);
+    assert.notEqual(visiblePointIndex, -1);
+    changedPoints[visiblePointIndex].startLine++;
+    changedPoints[visiblePointIndex].endLine++;
+    const changedPdbBytes = replaceEmbeddedPortablePdbSequencePoints(
+      embeddedPdb,
+      methodDebugInfo.rid,
+      {
+        localSignatureRid: methodDebugInfo.localSignatureRid,
+        points: changedPoints
+      }
+    );
+    const changedPdb = parseEmbeddedPortablePdbData(
+      changedPdbBytes,
+      0,
+      changedPdbBytes.length
+    );
+    assert.equal(
+      changedPdb.methodDebugInformation[methodDebugInfo.rid - 1].sequencePoints[visiblePointIndex].startLine,
+      changedPoints[visiblePointIndex].startLine
+    );
+    let expectedMethodDebugInformation = embeddedPdb.methodDebugInformation;
+    if (changedPdbBytes.length <= embeddedPdbEntry.sizeOfData) {
+      assembly.replaceEmbeddedPortablePdbSequencePoints(
+        embeddedPdbDebugIndex,
+        methodDebugInfo.rid,
+        {
+          localSignatureRid: methodDebugInfo.localSignatureRid,
+          points: changedPoints
+        }
+      );
+      expectedMethodDebugInformation = changedPdb.methodDebugInformation;
+    } else {
+      assert.throws(
+        () => assembly.replaceEmbeddedPortablePdbSequencePoints(
+          embeddedPdbDebugIndex,
+          methodDebugInfo.rid,
+          {
+            localSignatureRid: methodDebugInfo.localSignatureRid,
+            points: changedPoints
+          }
+        ),
+        /existing data slot/
+      );
+    }
     assembly.replaceStrongNamePublicKey(
       generateKeyPairSync("rsa", { modulusLength: 1024 }).privateKey
     );
@@ -446,7 +493,7 @@ test("strong-name signed PE32+ assemblies load and execute in .NET", {
     )?.embeddedPortablePdb;
     assert.deepEqual(rewrittenPdb?.id, embeddedPdb.id);
     assert.deepEqual(rewrittenPdb?.documents, embeddedPdb.documents);
-    assert.deepEqual(rewrittenPdb?.methodDebugInformation, embeddedPdb.methodDebugInformation);
+    assert.deepEqual(rewrittenPdb?.methodDebugInformation, expectedMethodDebugInformation);
     await writeFile(assemblyPath, signedBytes);
 
     const harnessProject = join(directory, "RuntimeHarness.csproj");
