@@ -4739,6 +4739,7 @@ export class Assembly {
     if (!definition) {
       throw new TypeError("Pointer table must be FieldPtr, MethodPtr, ParamPtr, EventPtr, or PropertyPtr");
     }
+    const allowsCrossOwnerFields = pointerTableId === 3;
     if ((this.tables.valid & (1n << BigInt(pointerTableId))) === 0n) {
       throw new UnsupportedFormatError(`${metadataTableNames[pointerTableId]} is not present`);
     }
@@ -4774,19 +4775,36 @@ export class Assembly {
     }
     const assignments = [];
     let offset = 0;
+    const recordsByRid = new Map(
+      definition.owners.flatMap((owner) =>
+        owner[definition.records].map((record) => [record.rid, record])
+      )
+    );
     for (let index = 0; index < definition.owners.length; index++) {
       const owner = definition.owners[index];
       const oldGroup = ownerGroups[index];
       const nextGroup = newRids.slice(offset, offset + oldGroup.length);
       offset += oldGroup.length;
       const oldSet = new Set(oldGroup);
-      if (nextGroup.some((rid) => !oldSet.has(rid))) {
+      if (!allowsCrossOwnerFields && nextGroup.some((rid) => !oldSet.has(rid))) {
         throw new UnsupportedFormatError("Pointer reordering cannot change row ownership");
       }
-      const recordsByRid = new Map(owner[definition.records].map((record) => [record.rid, record]));
       const nextRecords = nextGroup.map((rid) => recordsByRid.get(rid));
       if (nextRecords.some((record) => !record)) {
         throw new FormatError(`${metadataTableNames[definition.targetTableId]} ownership has no semantic record`);
+      }
+      if (allowsCrossOwnerFields) {
+        for (const record of nextRecords) {
+          const parsed = parseSignature(record.signature, { counts: this.tables.counts });
+          if (parsed.kind !== "field") {
+            throw new FormatError(`Field row ${record.rid} has a non-field signature`);
+          }
+          validateGenericVariableReferences(
+            parsed,
+            getGenericParameterArity(this.genericParams, 2, owner.rid),
+            this
+          );
+        }
       }
       assignments.push({ owner, nextGroup, nextRecords });
     }

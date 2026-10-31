@@ -5259,6 +5259,46 @@ test("reorderPointerTable supports FieldPtr, MethodPtr, and ParamPtr", () => {
   }
 });
 
+test("FieldPtr reordering can move fields across TypeDefs", () => {
+  const assembly = parseAssembly(fixture);
+  usePointerTable(assembly, {
+    pointerId: 3,
+    targetId: 4,
+    column: "Field",
+    listTableId: 2,
+    listColumn: "FieldList",
+    pointerName: "FieldPtr",
+    targetName: "Field"
+  });
+  const order = assembly.tables.get(3).map((row) => row.Field.rid);
+  [order[0], order[1]] = [order[1], order[0]];
+  assembly.reorderPointerTable("FieldPtr", order);
+  assert.deepEqual(assembly.types[1].fieldRids, [2]);
+  assert.deepEqual(assembly.types[2].fieldRids, [1, 3]);
+  const reparsed = parseAssembly(assembly.serialize());
+  assert.deepEqual(reparsed.types[1].fieldRids, [2]);
+  assert.deepEqual(reparsed.types[2].fieldRids, [1, 3]);
+
+  const invalidAssembly = parseAssembly(withoutDebugDirectory());
+  usePointerTable(invalidAssembly, {
+    pointerId: 3,
+    targetId: 4,
+    column: "Field",
+    listTableId: 2,
+    listColumn: "FieldList",
+    pointerName: "FieldPtr",
+    targetName: "Field"
+  });
+  const genericOwner = invalidAssembly.types[2];
+  invalidAssembly.replaceFieldSignature(genericOwner.fieldRids[0], Uint8Array.of(0x06, 0x13, 0x00));
+  const before = invalidAssembly.tables.get(3).map((row) => row.Field.rid);
+  const invalidOrder = [...before];
+  [invalidOrder[0], invalidOrder[1]] = [invalidOrder[1], invalidOrder[0]];
+  assert.throws(() => invalidAssembly.reorderPointerTable("FieldPtr", invalidOrder),
+    /Type generic variable !0 exceeds its declaring type's arity/);
+  assert.deepEqual(invalidAssembly.tables.get(3).map((row) => row.Field.rid), before);
+});
+
 test("Property and Event removal rejects live references and remaps surviving rows", () => {
   const assembly = parseAssembly(withoutDebugDirectory());
   const owner = assembly.types.at(-1);
