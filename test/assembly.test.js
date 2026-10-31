@@ -4974,7 +4974,11 @@ test("DeclSecurity rows preserve parent/action uniqueness and allow safe removal
   assembly.addDeclSecurity({
     parent: { table: "TypeDef", rid: typeRid },
     action: 2,
-    permissionSet: Uint8Array.of(0x2e, 0)
+    permissionSet: { format: "binary", attributes: [] }
+  });
+  assert.deepEqual(assembly.parseDeclSecurity(1).permissionSet, {
+    format: "binary",
+    attributes: []
   });
   const methodSecurityRid = assembly.addDeclSecurity({
     parent: { table: "MethodDef", rid: methodRid },
@@ -4992,6 +4996,9 @@ test("DeclSecurity rows preserve parent/action uniqueness and allow safe removal
   });
   assert.equal(assembly.parseDeclSecurity(methodSecurityRid).permissionSet.attributes[0]
     .namedArguments[0].value, true);
+  const parsedPermissionSet = assembly.parseDeclSecurity(methodSecurityRid).permissionSet;
+  assembly.replaceDeclSecurity(methodSecurityRid, { permissionSet: parsedPermissionSet });
+  assert.deepEqual(assembly.parseDeclSecurity(methodSecurityRid).permissionSet, parsedPermissionSet);
   const enumPermissionSet = Uint8Array.from([
     0x2e, 1, 1, 0x41, 15,
     1, 0, 0x53, 0x55, 4, 0x4d, 0x6f, 0x64, 0x65,
@@ -5005,7 +5012,7 @@ test("DeclSecurity rows preserve parent/action uniqueness and allow safe removal
   const updatedPermissionSet = assembly.tables.row(14, methodSecurityRid).PermissionSet;
   assert.throws(() => assembly.replaceDeclSecurity(methodSecurityRid, {
     permissionSet: new Uint8Array()
-  }), /non-empty Uint8Array/);
+  }), /PermissionSet must be non-empty/);
   assert.equal(assembly.tables.row(14, methodSecurityRid).PermissionSet, updatedPermissionSet);
   assert.throws(() => assembly.addDeclSecurity({
     parent: { table: "MethodDef", rid: methodRid },

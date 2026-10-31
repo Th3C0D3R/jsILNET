@@ -90,7 +90,7 @@ FieldRVA rows support add/replace/remove for static fixed-width primitive fields
 
 NestedClass relationships support add/replace/remove with valid TypeDef references, unique nested owners, sorted-key checks, and cycle rejection. Sorted insertion and removal remap surviving token references and return token maps.
 
-DeclSecurity rows support append, action/raw PermissionSet replacement, and removal with valid TypeDef/MethodDef/Assembly parents, unique parent/action pairs, and sorted-key checks. `parseDeclSecurity` decodes binary CLI PermissionSet attributes and typed named arguments; UTF-8 XML payloads are exposed as text without XML entity expansion or structural interpretation. The exported `encodePermissionSet` serializes decoded binary PermissionSets and XML text. Sorted insertion and removal remap surviving token references and return token maps.
+DeclSecurity rows support append, action/raw-or-structured PermissionSet replacement, and removal with valid TypeDef/MethodDef/Assembly parents, unique parent/action pairs, and sorted-key checks. `parseDeclSecurity` decodes binary CLI PermissionSet attributes and typed named arguments; UTF-8 XML payloads are exposed as text without XML entity expansion or structural interpretation. The exported `encodePermissionSet` serializes decoded binary PermissionSets and XML text. Sorted insertion and removal remap surviving token references and return token maps.
 
 MethodImpl rows support append/replace/remove with valid owner and method references, owner checks for MethodDef bodies, duplicate rejection, and sorted Class-key checks. Sorted insertion and removal remap surviving token references and return token maps.
 

@@ -37,6 +37,7 @@ import {
 } from "./metadata/strong-name.js";
 import {
   encodeCustomAttribute as encodeCustomAttributeBlob,
+  encodePermissionSet as encodePermissionSetBlob,
   parseCustomAttribute as parseCustomAttributeBlob,
   parsePermissionSet as parsePermissionSetBlob
 } from "./metadata/custom-attributes.js";
@@ -3861,8 +3862,11 @@ export class Assembly {
     if (!Number.isInteger(action) || action < 2 || action > 14) {
       throw new RangeError("DeclSecurity action must be a supported CLI security action");
     }
-    if (!(permissionSet instanceof Uint8Array) || permissionSet.length === 0) {
-      throw new TypeError("PermissionSet must be a non-empty Uint8Array");
+    const permissionSetBytes = permissionSet instanceof Uint8Array
+      ? permissionSet
+      : encodePermissionSetBlob(permissionSet);
+    if (permissionSetBytes.length === 0) {
+      throw new TypeError("PermissionSet must be non-empty");
     }
     const rows = this.tables.rows.get(14) ?? [];
     if (rows.length !== this.tables.counts[14] || rows.length >= 0xffffffff) {
@@ -3901,7 +3905,7 @@ export class Assembly {
         [streamName, stream.bytes]
       )))].map(([streamName, bytes]) => [streamName, bytes.slice()])
     );
-    const blob = appendBlobHeap(heapStreams.get("#Blob") ?? new Uint8Array(), permissionSet);
+    const blob = appendBlobHeap(heapStreams.get("#Blob") ?? new Uint8Array(), permissionSetBytes);
     heapStreams.set("#Blob", blob.heap);
     const newRow = {
       table: 14,
@@ -3949,13 +3953,15 @@ export class Assembly {
     const nextAction = action === undefined ? row.Action : action;
     const nextPermissionSet = permissionSet === undefined
       ? null
-      : permissionSet;
+      : permissionSet instanceof Uint8Array
+        ? permissionSet
+        : encodePermissionSetBlob(permissionSet);
     if (!Number.isInteger(nextAction) || nextAction < 2 || nextAction > 14) {
       throw new RangeError("DeclSecurity action must be a supported CLI security action");
     }
     if (nextPermissionSet !== null &&
-        (!(nextPermissionSet instanceof Uint8Array) || nextPermissionSet.length === 0)) {
-      throw new TypeError("PermissionSet must be a non-empty Uint8Array");
+        nextPermissionSet.length === 0) {
+      throw new TypeError("PermissionSet must be non-empty");
     }
     if (nextAction === row.Action && nextPermissionSet === null) return this;
     if (this.tables.rows.get(14).some((other) =>
