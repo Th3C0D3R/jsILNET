@@ -4483,6 +4483,14 @@ export class Assembly {
   }
 
   addParam({ owner, name = "", sequence, flags = 0 }) {
+    return this.#writeParam({ owner, name, sequence, flags }, false).rid;
+  }
+
+  insertParam({ owner, name = "", sequence, flags = 0 }) {
+    return this.#writeParam({ owner, name, sequence, flags }, true);
+  }
+
+  #writeParam({ owner, name = "", sequence, flags = 0 }, insertIntoOwner) {
     this.#ensureEditable();
     const ownerRid = metadataTableId(owner?.table) === 6 ? owner.rid : 0;
     const method = this.methods[ownerRid - 1];
@@ -4505,13 +4513,23 @@ export class Assembly {
     if (method.parameters.some((parameter) => parameter.sequence === sequence)) {
       throw new FormatError(`MethodDef row ${ownerRid} already has Param sequence ${sequence}`);
     }
-    const lastSequence = method.parameters.at(-1)?.sequence ?? -1;
-    if (sequence <= lastSequence) {
+    if (insertIntoOwner && method.parameters.some((parameter, index) =>
+      index > 0 && parameter.sequence <= method.parameters[index - 1].sequence
+    )) {
+      throw new UnsupportedFormatError(
+        "Param insertion requires the method's existing parameters to be in sequence order"
+      );
+    }
+    const parameterIndex = method.parameters.findIndex((parameter) =>
+      parameter.sequence > sequence
+    );
+    if (!insertIntoOwner && parameterIndex !== -1) {
       throw new UnsupportedFormatError("Param append must preserve the method's sequence order");
     }
 
     const rows = this.tables.rows.get(8) ?? [];
-    if (rows.length !== this.tables.counts[8] || rows.length >= 0xffffffff) {
+    const originalRowCount = rows.length;
+    if (rows.length !== this.tables.counts[8] || rows.length >= 0x00ffffff) {
       throw new RangeError("Param row count is inconsistent or exceeds the metadata table limit");
     }
     const methodRows = this.tables.rows.get(6) ?? [];
@@ -4523,8 +4541,11 @@ export class Assembly {
     if (ownerRow?.rid !== ownerRid || !Number.isInteger(ownerRow.ParamList?.rid)) {
       throw new FormatError(`MethodDef row ${ownerRid} has an inconsistent ParamList`);
     }
+    const pointerPresent = (this.tables.valid & (1n << 7n)) !== 0n;
     const pointerRows = getBijectivePointerRows(this, 7, 8, "Param");
-    const pointerPresent = pointerRows !== null;
+    if (pointerPresent && !pointerRows) {
+      throw new FormatError("ParamPtr must be a one-to-one mapping to Param rows");
+    }
     const listRows = pointerRows ?? rows;
     const endRid = methodRows[ownerRid]?.ParamList.rid ?? listRows.length + 1;
     const ownedRids = pointerRows
@@ -4534,11 +4555,23 @@ export class Assembly {
         { length: Math.max(0, endRid - ownerRow.ParamList.rid) },
         (_, index) => ownerRow.ParamList.rid + index
       );
-    if (endRid !== listRows.length + 1 ||
+    if (endRid > listRows.length + 1 ||
         ownedRids.length !== method.parameterRids.length ||
         ownedRids.some((paramRid, index) => paramRid !== method.parameterRids[index])) {
+      throw new UnsupportedFormatError("Param insertion requires a valid contiguous method range");
+    }
+    if (!insertIntoOwner && endRid !== listRows.length + 1) {
       throw new UnsupportedFormatError("Param append requires the method's parameters to be contiguous at the end");
     }
+    const insertionIndex = parameterIndex === -1 ? method.parameters.length : parameterIndex;
+    const rid = pointerRows ? rows.length + 1 : ownerRow.ParamList.rid + insertionIndex;
+    const pointerInsertionIndex = pointerRows
+      ? ownerRow.ParamList.rid - 1 + insertionIndex
+      : -1;
+    const pointerRid = pointerInsertionIndex + 1;
+    const { tokenMap, rowChanges, tokenUpdates, patches } = pointerRows
+      ? { tokenMap: new Map(), rowChanges: [], tokenUpdates: [], patches: [] }
+      : this.#prepareTokenRowInsertion(8, rid, rows.length, "Param");
 
     const heapStreams = new Map(
       [...(this._heapStreams ?? new Map([...this.metadataRoot.streams].map(([streamName, stream]) =>
@@ -4547,39 +4580,59 @@ export class Assembly {
     );
     const stringHeap = appendStringHeap(heapStreams.get("#Strings") ?? new Uint8Array(), name);
     heapStreams.set("#Strings", stringHeap.heap);
-    const rid = rows.length + 1;
-    rows.push({
+    const paramRow = {
       table: 8,
       tableName: metadataTableNames[8],
       rid,
       Flags: flags,
       Sequence: sequence,
       Name: stringHeap.index
-    });
+    };
+    for (const change of rowChanges) change.row[change.columnName] = change.value;
+    for (const row of rows) {
+      if (row.rid >= rid) row.rid++;
+    }
+    rows.splice(rid - 1, 0, paramRow);
     this.tables.rows.set(8, rows);
-    this.tables.counts[8] = rid;
+    this.tables.counts[8] = rows.length;
     this.tables.valid |= 1n << 8n;
-    if (pointerPresent) {
-      const pointerRid = pointerRows.length + 1;
-      pointerRows.push({
+    if (pointerRows) {
+      for (const row of pointerRows) {
+        if (row.rid >= pointerRid) row.rid++;
+      }
+      pointerRows.splice(pointerInsertionIndex, 0, {
         table: 7,
         tableName: metadataTableNames[7],
         rid: pointerRid,
         Param: { raw: rid, table: 8, tableName: metadataTableNames[8], rid }
       });
       this.tables.rows.set(7, pointerRows);
-      this.tables.counts[7] = pointerRid;
+      this.tables.counts[7] = pointerRows.length;
     }
-    for (let index = ownerRid; index < methodRows.length; index++) {
-      methodRows[index].ParamList.rid++;
-      methodRows[index].ParamList.raw++;
+    if (pointerRows || rid > originalRowCount) {
+      for (let index = ownerRid; index < methodRows.length; index++) {
+        methodRows[index].ParamList.rid++;
+        methodRows[index].ParamList.raw++;
+      }
     }
-    method.parameterRids.push(rid);
-    method.parameters.push({ rid, flags, sequence, name });
+    for (const candidate of this.methods) {
+      if (!pointerRows) {
+        candidate.parameterRids = candidate.parameterRids.map((paramRid) =>
+          paramRid >= rid ? paramRid + 1 : paramRid
+        );
+        for (const parameter of candidate.parameters) {
+          if (parameter.rid >= rid) parameter.rid++;
+        }
+      }
+    }
+    method.parameterRids.splice(insertionIndex, 0, rid);
+    method.parameters.splice(insertionIndex, 0, { rid, flags, sequence, name });
     this._heapStreams = heapStreams;
     this.#refreshHeaps();
+    for (const update of tokenUpdates) update.instruction.operand.value = update.replacement;
+    this._patches.push(...patches);
     this._metadataDirty = true;
-    return rid;
+    return { rid, tokenMap };
   }
 
   replaceParam(rid, { name, flags } = {}) {

@@ -2493,6 +2493,54 @@ test("parameters append before later empty MethodDef ownership ranges", () => {
   assert.equal(reparsed.methods[method.rid].parameterRids.length, 0);
 });
 
+test("insertParam orders parameters within methods and remaps optimized Param tokens", () => {
+  for (const pointerMode of [false, true]) {
+    const assembly = parseAssembly(withoutDebugDirectory());
+    if (pointerMode) {
+      usePointerTable(assembly, {
+        pointerId: 7,
+        targetId: 8,
+        column: "Param",
+        listTableId: 6,
+        listColumn: "ParamList",
+        pointerName: "ParamPtr",
+        targetName: "Param"
+      });
+    }
+    const method = assembly.methods[0];
+    assembly.replaceMethodSignature(method.rid, Uint8Array.from([0x20, 0x02, 0x01, 0x0e, 0x08]));
+    const oldParamCount = assembly.tables.counts[8];
+    const laterMethod = assembly.methods[1];
+    const oldLaterParamRids = [...laterMethod.parameterRids];
+    const result = assembly.insertParam({
+      owner: { table: "MethodDef", rid: method.rid },
+      sequence: 2,
+      name: "value",
+      flags: 1
+    });
+    if (pointerMode) {
+      assert.equal(result.rid, oldParamCount + 1);
+      assert.equal(result.tokenMap.size, 0);
+    } else {
+      assert.equal(result.rid, 2);
+      assert.equal(result.tokenMap.get(0x08000002), 0x08000003);
+      assert.deepEqual(laterMethod.parameterRids, oldLaterParamRids.map((rid) =>
+        rid >= result.rid ? rid + 1 : rid
+      ));
+    }
+    assert.deepEqual(method.parameters.map(({ sequence }) => sequence), [1, 2]);
+    assert.equal(method.parameters[1].rid, result.rid);
+
+    const reparsed = parseAssembly(assembly.serialize());
+    assert.deepEqual(reparsed.methods[method.rid - 1].parameters.map(({ sequence }) =>
+      sequence
+    ), [1, 2]);
+    assert.equal(reparsed.methods[method.rid - 1].parameters[1].name, "value");
+    assert.deepEqual(reparsed.methods[laterMethod.rid - 1].parameterRids,
+      laterMethod.parameterRids);
+  }
+});
+
 test("abstract methods append to the last TypeDef in optimized and pointer-table metadata", () => {
   for (const usePointerTables of [false, true]) {
     const assembly = parseAssembly(fixture);
