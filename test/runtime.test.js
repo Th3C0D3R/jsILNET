@@ -20,7 +20,10 @@ import {
   serializeEmbeddedPortablePdb
 } from "../src/index.js";
 import { parseEmbeddedPortablePdbData } from "../src/pe/headers.js";
-import { refreshEmbeddedPortablePdbId } from "../src/metadata/portable-pdb.js";
+import {
+  refreshEmbeddedPortablePdbId,
+  replaceEmbeddedPortablePdbMethodOffsets
+} from "../src/metadata/portable-pdb.js";
 import { appendBlobHeap } from "../src/metadata/writer.js";
 
 const dotnetVersion = spawnSync("dotnet", ["--version"], { encoding: "utf8" });
@@ -599,8 +602,12 @@ test("strong-name signed PE32+ assemblies load and execute in .NET", {
     assert.ok(embeddedPdb.documents.some((document) => document.name.length > 0));
     assert.ok(embeddedPdb.methodDebugInformation.some((row) => row.sequencePoints.length > 0));
     const methodDebugInfo = embeddedPdb.methodDebugInformation.find((row) =>
-      row.sequencePoints.length > 0
+      row.sequencePoints.length > 0 &&
+      !embeddedPdb.customDebugInformation.some((record) =>
+        record.Parent.target?.table === 6 && record.Parent.target.rid === row.rid
+      )
     );
+    assert.ok(methodDebugInfo);
     const sequencePointContext = {
       documentRid: methodDebugInfo.Document.rid,
       documentCount: embeddedPdb.documents.length,
@@ -662,8 +669,33 @@ test("strong-name signed PE32+ assemblies load and execute in .NET", {
       0,
       combinedPdbBytes.length
     );
-    expectedMethodDebugInformation = combinedPdb.methodDebugInformation;
-    expectedCustomDebugInformation = combinedPdb.customDebugInformation;
+    const methodBodyBeforePdbRemap = assembly.getMethodBody(methodDebugInfo.rid);
+    assert.ok(methodBodyBeforePdbRemap);
+    const methodScopes = combinedPdb.tables.rows.get(50)
+      .filter((scope) => scope.Method.rid === methodDebugInfo.rid)
+      .map((scope) => ({
+        rid: scope.rid,
+        startOffset: scope.StartOffset + 2,
+        length: scope.Length
+      }));
+    const pdbWithRemappedOffsetsBytes = replaceEmbeddedPortablePdbMethodOffsets(
+      combinedPdb,
+      methodDebugInfo.rid,
+      {
+        sequencePoints: changedPoints.map((point) => ({ ...point, offset: point.offset + 2 })),
+        localSignatureRid: methodDebugInfo.localSignatureRid,
+        scopes: methodScopes
+      }
+    );
+    const pdbWithRemappedOffsets = parseEmbeddedPortablePdbData(
+      pdbWithRemappedOffsetsBytes,
+      0,
+      pdbWithRemappedOffsetsBytes.length
+    );
+    expectedMethodDebugInformation = pdbWithRemappedOffsets.methodDebugInformation;
+    expectedCustomDebugInformation = pdbWithRemappedOffsets.customDebugInformation;
+    assembly.insertInstruction(methodDebugInfo.rid, 0, "nop");
+    assembly.insertInstruction(methodDebugInfo.rid, 0, "nop");
     assembly.replaceCodeViewPath(codeViewDebugIndex, "final.pdb");
     assembly.replaceStrongNamePublicKey(
       generateKeyPairSync("rsa", { modulusLength: 1024 }).privateKey
@@ -674,11 +706,26 @@ test("strong-name signed PE32+ assemblies load and execute in .NET", {
     const rewrittenPdb = signed.pe.debugDirectoryEntries.find((entry) =>
       entry.type === 17
     )?.embeddedPortablePdb;
-    const expectedPdb = refreshEmbeddedPortablePdbId(combinedPdb);
+    const expectedPdb = refreshEmbeddedPortablePdbId(rewrittenPdb);
+    const normalizeMethodDebugInformation = (rows) => rows.map((row) => {
+      const { SequencePoints, ...method } = row;
+      return method;
+    });
+    assert.deepEqual(
+      normalizeMethodDebugInformation(rewrittenPdb?.methodDebugInformation ?? []),
+      normalizeMethodDebugInformation(expectedMethodDebugInformation)
+    );
+    assert.deepEqual(rewrittenPdb?.customDebugInformation, expectedCustomDebugInformation);
     assert.deepEqual(rewrittenPdb?.id, expectedPdb.id);
     assert.deepEqual(rewrittenPdb?.documents, combinedPdb.documents);
-    assert.deepEqual(rewrittenPdb?.methodDebugInformation, expectedMethodDebugInformation);
-    assert.deepEqual(rewrittenPdb?.customDebugInformation, expectedCustomDebugInformation);
+    const rewrittenScopes = rewrittenPdb.tables.rows.get(50)
+      .filter((scope) => scope.Method.rid === methodDebugInfo.rid)
+      .map((scope) => ({
+        rid: scope.rid,
+        startOffset: scope.StartOffset,
+        length: scope.Length
+      }));
+    assert.deepEqual(rewrittenScopes, methodScopes);
     const checksumEntry = signed.pe.debugDirectoryEntries.find((entry) => entry.type === 19);
     assert.ok(checksumEntry);
     const checksumOffset = checksumEntry.pointerToRawData !== 0

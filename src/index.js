@@ -31,6 +31,7 @@ import {
   validatePortablePdbAssemblyReferences,
   validatePortablePdbCodeViewIdentity,
   refreshEmbeddedPortablePdbId,
+  replaceEmbeddedPortablePdbMethodOffsets as replacePortablePdbMethodOffsets,
   replaceEmbeddedPortablePdbDocumentName as replacePortablePdbDocumentName,
   replaceEmbeddedPortablePdbSequencePoints as replacePortablePdbSequencePoints,
   replaceEmbeddedPortablePdbSource as replacePortablePdbSource,
@@ -1503,6 +1504,7 @@ export class Assembly {
     this._resourceEdits = new Map();
     this._embeddedPortablePdbEdits = new Map();
     this._debugRecordEdits = new Map();
+    this._portablePdbOffsetBaselines = new Map();
     this._clearResourcesDirectory = false;
   }
 
@@ -1517,14 +1519,103 @@ export class Assembly {
 
   #commitStructuralState(methodRid, state) {
     const previousBody = this._bodyCache.get(methodRid);
-    if (this.#hasDebugDirectory && previousBody &&
-        (state.instructions.length !== previousBody.instructions.length ||
-         state.instructions.some((instruction, index) =>
-           instruction.offset !== previousBody.instructions[index]?.offset
-         ))) {
-      throw new UnsupportedFormatError(
-        "Instruction-offset changes cannot be combined with PE debug information because sequence points are not rewritten"
+    const offsetsChanged = previousBody &&
+      (state.instructions.length !== previousBody.instructions.length ||
+       state.instructions.some((instruction, index) =>
+         instruction.offset !== previousBody.instructions[index]?.offset
+       ));
+    if (this.#hasDebugDirectory && offsetsChanged) {
+      const embeddedPdbIndices = this.pe.debugDirectoryEntries.flatMap((entry, index) =>
+        entry.embeddedPortablePdb ? [index] : []
       );
+      if (embeddedPdbIndices.length !== 1) {
+        throw new UnsupportedFormatError(
+          "Instruction-offset changes cannot be combined with PE debug information without exactly one embedded Portable PDB"
+        );
+      }
+      const debugEntryIndex = embeddedPdbIndices[0];
+      const entry = this.pe.debugDirectoryEntries[debugEntryIndex];
+      const pdb = this.#getPortablePdbForEdit(debugEntryIndex, entry);
+      if (pdb.customDebugInformation.some((record) =>
+        record.Parent.target?.table === 6 && record.Parent.target.rid === methodRid
+      )) {
+        throw new UnsupportedFormatError(
+          "Instruction-offset changes cannot rewrite method-scoped custom debug information"
+        );
+      }
+      const methodInfo = pdb.methodDebugInformation[methodRid - 1];
+      const baseline = this._portablePdbOffsetBaselines.get(methodRid) ?? {
+        codeSize: previousBody.codeSize,
+        localSignatureRid: methodInfo?.localSignatureRid ?? 0,
+        points: methodInfo?.sequencePoints.map((point) => ({ ...point })) ?? [],
+        scopes: (pdb.tables.rows.get(50) ?? [])
+          .filter((scope) => scope.Method.rid === methodRid)
+          .map((scope) => ({
+            rid: scope.rid,
+            startOffset: scope.StartOffset,
+            endOffset: scope.StartOffset + scope.Length
+          }))
+      };
+      const offsets = new Map();
+      for (const instruction of state.instructions) {
+        if (instruction.originalOffset === null || instruction.originalOffset === undefined) continue;
+        if (offsets.has(instruction.originalOffset)) {
+          throw new FormatError("Structural IL state contains duplicate original instruction offsets");
+        }
+        offsets.set(instruction.originalOffset, instruction.offset);
+      }
+      offsets.set(baseline.codeSize, state.body.codeSize);
+      const remapOffset = (oldOffset, context) => {
+        const newOffset = offsets.get(oldOffset);
+        if (newOffset === undefined) {
+          throw new UnsupportedFormatError(
+            `Cannot preserve Portable PDB ${context} at removed IL_${oldOffset.toString(16)}`
+          );
+        }
+        return newOffset;
+      };
+      const points = baseline.points.map((point) => ({
+        ...point,
+        offset: remapOffset(point.offset, "sequence point")
+      }));
+      const scopes = baseline.scopes.map((scope) => {
+        const startOffset = remapOffset(scope.startOffset, "local-scope start");
+        const endOffset = remapOffset(scope.endOffset, "local-scope end");
+        return {
+          rid: scope.rid,
+          startOffset,
+          length: endOffset - startOffset
+        };
+      });
+      if (points.some((point, index) =>
+        index > 0 && point.offset <= points[index - 1].offset
+      )) {
+        throw new FormatError("Portable PDB sequence-point offsets are not strictly increasing after IL edits");
+      }
+      if (points.some((point) => point.offset >= state.body.codeSize) ||
+          scopes.some((scope) => scope.length < 0 ||
+            scope.startOffset + scope.length > state.body.codeSize)) {
+        throw new FormatError("Portable PDB offsets exceed the rewritten method body");
+      }
+      if (points.some((point, index) =>
+        point.offset !== baseline.points[index]?.offset
+      ) || scopes.some((scope, index) =>
+        scope.startOffset !== baseline.scopes[index]?.startOffset ||
+        scope.length !== baseline.scopes[index]?.endOffset -
+          baseline.scopes[index]?.startOffset
+      )) {
+        const updatedPdb = replacePortablePdbMethodOffsets(
+          pdb,
+          methodRid,
+          {
+            sequencePoints: baseline.points.length > 0 ? points : null,
+            localSignatureRid: baseline.localSignatureRid,
+            scopes
+          }
+        );
+        this.replaceEmbeddedPortablePdb(debugEntryIndex, updatedPdb);
+      }
+      this._portablePdbOffsetBaselines.set(methodRid, baseline);
     }
     this._addedMethodBodies.delete(methodRid);
     this._structuralBodies.set(methodRid, state);
@@ -2855,6 +2946,11 @@ export class Assembly {
 
   replaceEmbeddedPortablePdbSequencePoints(debugEntryIndex, methodRid, sequencePoints) {
     this.#ensureEditable();
+    if (this._portablePdbOffsetBaselines.has(methodRid)) {
+      throw new UnsupportedFormatError(
+        "Portable PDB sequence points cannot be replaced after IL offset remapping has been staged"
+      );
+    }
     if (!Number.isInteger(debugEntryIndex) || debugEntryIndex < 0 ||
         debugEntryIndex >= this.pe.debugDirectoryEntries.length) {
       throw new RangeError(`Invalid debug-directory entry index ${debugEntryIndex}`);

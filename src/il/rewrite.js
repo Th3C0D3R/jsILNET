@@ -49,6 +49,9 @@ function updateRegionOffsets(state) {
 export function createStructuralState(body) {
   const instructions = body.instructions.map((instruction) => ({
     ...instruction,
+    originalOffset: Object.hasOwn(instruction, "originalOffset")
+      ? instruction.originalOffset
+      : instruction.offset,
     operand: instruction.operand
       ? instruction.operand.kind === "switch"
         ? { kind: "switch", targetOffsets: [...instruction.operand.targetOffsets] }
@@ -161,6 +164,7 @@ function makeInstruction(state, opcode, value) {
     opcodeOffset: null,
     operandOffset: null,
     patchOffsets: [],
+    originalOffset: null,
     isNew: true
   };
   if (targets !== null) state.branchTargets.set(instruction, targets);
