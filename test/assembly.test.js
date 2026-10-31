@@ -890,6 +890,26 @@ test("PE header expansion relocates debug data raw pointers", () => {
   assert.equal(reparsed.debugDirectoryEntries[0].pointerToRawData, debugEntry.pointerToRawData + 0x200);
 });
 
+test("structural rewriting preserves PE overlay data before the appended section", () => {
+  const overlay = Uint8Array.of(0x4a, 0x53, 0x49, 0x4c, 0x4e, 0x45, 0x54);
+  const input = new Uint8Array(fixture.length + overlay.length);
+  input.set(fixture);
+  input.set(overlay, fixture.length);
+  const sourcePE = parsePE(input);
+  const assembly = parseAssembly(input);
+  assembly.addUserString("overlay preservation");
+
+  const output = assembly.serialize();
+  const rewrittenPE = parsePE(output);
+  const headerShift = rewrittenPE.sections[0].rawPointer - sourcePE.sections[0].rawPointer;
+  const overlayOffset = input.length - overlay.length + headerShift;
+  assert.deepEqual(
+    output.subarray(overlayOffset, overlayOffset + overlay.length),
+    overlay
+  );
+  assert.ok(rewrittenPE.sections.at(-1).rawPointer >= input.length + headerShift);
+});
+
 test("PE parser rejects out-of-file and overlapping section ranges", () => {
   const parsed = parsePE(fixture);
   assert.ok(parsed.sections.length > 1);

@@ -264,7 +264,7 @@ Use an explicit rebuild pipeline:
 5. Recompute row counts, heap-size flags, simple-index and coded-index widths; encode all tables.
 6. Re-encode method bodies, iterating instruction layout and branch promotions to a fixed point; update EH sections and method RVAs.
 7. Rebuild metadata streams and root headers with correct offsets/alignment.
-8. Rebuild PE section data and update affected sizes, RVAs, and CLI metadata directory.
+8. Rebuild PE section data and update affected sizes, RVAs, and CLI metadata directory; preserve the original image overlay before the appended section.
 9. Apply the strong-name strip policy unless signing is explicitly available.
 10. Validate the output by reparsing it before returning bytes.
 
