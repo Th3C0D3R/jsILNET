@@ -67,6 +67,7 @@ GenericParamConstraint rows owned by a removed method's GenericParam rows are re
 `insertNestedClass` inserts by NestedClass into an already ordered table and remaps shifted row tokens in ENC records.
 `insertMethodImpl` inserts by Class into an already Class-ordered table and remaps shifted MethodImpl tokens in ENC records.
 `insertConstant` inserts by Parent into an already Parent-ordered table and remaps shifted Constant tokens in metadata, CIL operands, and ENC records.
+`insertFieldMarshal` inserts by Parent into an already Parent-ordered table and remaps shifted FieldMarshal tokens in ENC records.
 
 MethodDef names, flags, and implementation flags can be replaced without changing row identity.
 

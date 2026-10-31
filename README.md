@@ -56,6 +56,7 @@ Invalid or unsupported structures and edits raise `FormatError` or `UnsupportedF
 `insertNestedClass` inserts by NestedClass into an already ordered table and returns `{ rid, tokenMap }`, remapping shifted NestedClass tokens in ENC records.
 `insertMethodImpl` inserts by Class into an already Class-ordered table and returns `{ rid, tokenMap }`, remapping shifted MethodImpl tokens in ENC records.
 `insertConstant` inserts by Parent into an already Parent-ordered table and returns `{ token, rid, tokenMap }`, remapping shifted Constant tokens in metadata, CIL operands, and ENC records.
+`insertFieldMarshal` inserts by Parent into an already Parent-ordered table and returns `{ rid, tokenMap }`, remapping shifted FieldMarshal tokens in ENC records.
 
 `replaceTypeRef` updates a TypeRef name, namespace, or resolution scope without changing its token; `removeTypeRef` rejects live references and remaps surviving metadata, signature, and CIL references.
 

@@ -2693,6 +2693,15 @@ export class Assembly {
   }
 
   addFieldMarshal({ parent, nativeType }) {
+    this.#writeFieldMarshal({ parent, nativeType }, false);
+    return this;
+  }
+
+  insertFieldMarshal({ parent, nativeType }) {
+    return this.#writeFieldMarshal({ parent, nativeType }, true);
+  }
+
+  #writeFieldMarshal({ parent, nativeType }, insertSorted) {
     this.#ensureEditable();
     const parentTable = metadataTableId(parent?.table);
     if (![4, 8].includes(parentTable) || !Number.isInteger(parent.rid) ||
@@ -2703,7 +2712,7 @@ export class Assembly {
       throw new TypeError("Native type descriptor must be a non-empty Uint8Array");
     }
     const rows = this.tables.rows.get(13) ?? [];
-    if (rows.length !== this.tables.counts[13] || rows.length >= 0xffffffff) {
+    if (rows.length !== this.tables.counts[13] || rows.length >= 0x00ffffff) {
       throw new RangeError("FieldMarshal row count is inconsistent or exceeds the metadata table limit");
     }
     if (rows.some((row) =>
@@ -2712,12 +2721,25 @@ export class Assembly {
       throw new FormatError("The FieldMarshal table already has a descriptor for this parent");
     }
     const encodedParent = encodeCodedIndex(parentTable, parent.rid, "HasFieldMarshal");
-    if ((this.tables.sorted & (1n << 13n)) !== 0n &&
+    let insertionIndex = rows.length;
+    if (insertSorted) {
+      for (let index = 1; index < rows.length; index++) {
+        if (rows[index - 1].Parent.raw > rows[index].Parent.raw) {
+          throw new UnsupportedFormatError(
+            "Sorted FieldMarshal insertion requires rows already ordered by Parent"
+          );
+        }
+      }
+      const laterParent = rows.findIndex((row) => row.Parent.raw > encodedParent);
+      if (laterParent !== -1) insertionIndex = laterParent;
+    } else if ((this.tables.sorted & (1n << 13n)) !== 0n &&
         rows.at(-1)?.Parent.raw > encodedParent) {
-      throw new UnsupportedFormatError(
-        "FieldMarshal append would violate declared Parent ordering"
-      );
+      throw new UnsupportedFormatError("FieldMarshal append would violate declared Parent ordering");
     }
+    const rid = insertionIndex + 1;
+    const { tokenMap, rowChanges, tokenUpdates, patches } = insertSorted
+      ? this.#prepareTokenRowInsertion(13, rid, rows.length, "FieldMarshal")
+      : { tokenMap: new Map(), rowChanges: [], tokenUpdates: [], patches: [] };
 
     const heapStreams = new Map(
       [...(this._heapStreams ?? new Map([...this.metadataRoot.streams].map(([streamName, stream]) =>
@@ -2726,8 +2748,7 @@ export class Assembly {
     );
     const blob = appendBlobHeap(heapStreams.get("#Blob") ?? new Uint8Array(), nativeType);
     heapStreams.set("#Blob", blob.heap);
-    const rid = rows.length + 1;
-    rows.push({
+    const newRow = {
       table: 13,
       tableName: metadataTableNames[13],
       rid,
@@ -2736,14 +2757,21 @@ export class Assembly {
         target: { table: parentTable, tableName: metadataTableNames[parentTable], rid: parent.rid }
       },
       NativeType: blob.index
-    });
+    };
+    for (const change of rowChanges) change.row[change.columnName] = change.value;
+    for (const row of rows) {
+      if (row.rid >= rid) row.rid++;
+    }
+    rows.splice(insertionIndex, 0, newRow);
     this.tables.rows.set(13, rows);
-    this.tables.counts[13] = rid;
+    this.tables.counts[13] = rows.length;
     this.tables.valid |= 1n << 13n;
     this._heapStreams = heapStreams;
     this.#refreshHeaps();
+    for (const update of tokenUpdates) update.instruction.operand.value = update.replacement;
+    this._patches.push(...patches);
     this._metadataDirty = true;
-    return this;
+    return { rid, tokenMap };
   }
 
   replaceFieldMarshal(rid, nativeType) {

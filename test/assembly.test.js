@@ -3538,6 +3538,27 @@ test("FieldMarshal rows append, replace, and remove with parent ordering preserv
   assert.deepEqual(reparsed.heaps.getBlob(row.NativeType), Uint8Array.of(0x07));
 });
 
+test("sorted FieldMarshal insertion remaps later ENC tokens", () => {
+  const assembly = parseAssembly(withoutDebugDirectory());
+  assembly.tables.sorted |= 1n << 13n;
+  const later = assembly.insertFieldMarshal({
+    parent: { table: "Param", rid: 1 },
+    nativeType: Uint8Array.of(0x07)
+  });
+  addEncToken(assembly, 31, 0x0d000000 + later.rid);
+  const earlier = assembly.insertFieldMarshal({
+    parent: { table: "Field", rid: 1 },
+    nativeType: Uint8Array.of(0x20)
+  });
+
+  assert.equal(earlier.rid, 1);
+  assert.equal(earlier.tokenMap.get(0x0d000000 + later.rid), 0x0d000000 + later.rid + 1);
+  assert.equal(assembly.tables.get(31).at(-1).Token, 0x0d000000 + later.rid + 1);
+  const reparsed = parseAssembly(assembly.serialize());
+  assert.equal(reparsed.tables.get(31).at(-1).Token, 0x0d000000 + later.rid + 1);
+  assert.equal(reparsed.tables.row(13, 1).Parent.raw, encodeCodedIndex(4, 1, "HasFieldMarshal"));
+});
+
 test("ClassLayout and FieldLayout rows support validated in-place metadata edits", () => {
   const assembly = parseAssembly(fixture);
   assembly.tables.sorted |= (1n << 15n) | (1n << 16n);
