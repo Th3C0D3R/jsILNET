@@ -415,6 +415,45 @@ test("metadata token edits validate opcode table kinds and row bounds", () => {
   assert.equal(rewrittenCall.operand.value, validToken);
 });
 
+test("calli token edits require a method-form StandAloneSig", () => {
+  const assembly = parseAssembly(withoutDebugDirectory());
+  const callSite = assembly.methods.map((method) => ({
+    method,
+    instruction: assembly.getInstructions(method.rid).find((item) => item.opcode.name === "call")
+  })).find((entry) => entry.instruction);
+  assert.ok(callSite);
+  const methodSignatureToken = assembly.addStandAloneSig({
+    signature: Uint8Array.of(0x00, 0x00, 0x01)
+  });
+  const localSignatureToken = assembly.addStandAloneSig({
+    signature: Uint8Array.of(0x07, 0x00)
+  });
+  const calli = listOpcodes().find((opcode) => opcode.name === "calli");
+  assert.ok(calli);
+  callSite.instruction.opcode = calli;
+  assembly._patches.push({
+    offset: callSite.instruction.opcodeOffset,
+    bytes: Uint8Array.of(calli.code)
+  });
+
+  assembly.setInstructionOperand(
+    callSite.method.rid,
+    callSite.instruction.offset,
+    methodSignatureToken
+  );
+  assert.throws(() => assembly.setInstructionOperand(
+    callSite.method.rid,
+    callSite.instruction.offset,
+    localSignatureToken
+  ), /calli operand must identify a StandAloneSig method signature/);
+  assert.equal(callSite.instruction.operand.value, methodSignatureToken);
+  const reparsed = parseAssembly(assembly.serialize());
+  const rewrittenCallSite = reparsed.getInstructions(callSite.method.rid)
+    .find((instruction) => instruction.offset === callSite.instruction.offset);
+  assert.equal(rewrittenCallSite.opcode.name, "calli");
+  assert.equal(rewrittenCallSite.operand.value, methodSignatureToken);
+});
+
 test("Tier 1 rejects a variable-width edit", () => {
   const assembly = parseAssembly(fixture);
   const answer = assembly.methods.find((method) => method.name === "Answer");

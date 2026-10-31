@@ -332,6 +332,29 @@ function validateMethodSpecUseAtCallSite(assembly, methodRid, methodSpec, typeSp
   );
 }
 
+function validateStandAloneSigCallSite(assembly, methodRid, signatureRid) {
+  const method = assembly.methods[methodRid - 1];
+  if (!method) throw new FormatError(`CIL call site references missing MethodDef row ${methodRid}`);
+  const row = assembly.tables.row(17, signatureRid);
+  if (!row) throw new FormatError(`CIL references missing StandAloneSig row ${signatureRid}`);
+  const signature = parseSignature(assembly.heaps.getBlob(row.Signature), {
+    counts: assembly.tables.counts
+  });
+  if (signature.kind !== "method") {
+    throw new FormatError("calli operand must identify a StandAloneSig method signature");
+  }
+  const methodSignature = parseSignature(method.signature, { counts: assembly.tables.counts });
+  const declaringType = assembly.types.find((type) => type.methodRids.includes(methodRid));
+  validateGenericVariableReferences(
+    signature,
+    declaringType ? getGenericParameterArity(assembly.genericParams, 2, declaringType.rid) : 0,
+    assembly,
+    null,
+    methodSignature.generic ? methodSignature.genericParameterCount : 0
+  );
+  return signature;
+}
+
 function validateMethodSpecUseSites(
   assembly,
   methodSpecRid = null,
@@ -6493,6 +6516,8 @@ export class Assembly {
         const methodSpec = this.methodSpecs[rid - 1];
         if (!methodSpec) throw new FormatError(`CIL references missing MethodSpec row ${rid}`);
         validateMethodSpecUseAtCallSite(this, methodRid, methodSpec);
+      } else if (instruction.opcode.name === "calli" && table === 17) {
+        validateStandAloneSigCallSite(this, methodRid, rid);
       }
     }
 
