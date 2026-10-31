@@ -359,6 +359,11 @@ test("strong-name signed PE32+ assemblies load and execute in .NET", {
     const embeddedPdbDebugIndex = assembly.pe.debugDirectoryEntries.findIndex((entry) =>
       entry.type === 17
     );
+    const codeViewDebugIndex = assembly.pe.debugDirectoryEntries.findIndex((entry) =>
+      entry.type === 2 && entry.codeView?.format === "RSDS"
+    );
+    assert.notEqual(codeViewDebugIndex, -1);
+    assembly.replaceCodeViewPath(codeViewDebugIndex, "updated.pdb");
     const embeddedPdbEntry = assembly.pe.debugDirectoryEntries[embeddedPdbDebugIndex];
     const embeddedPdbOffset = embeddedPdbEntry.pointerToRawData !== 0
       ? embeddedPdbEntry.pointerToRawData
@@ -642,6 +647,7 @@ test("strong-name signed PE32+ assemblies load and execute in .NET", {
     );
     expectedMethodDebugInformation = combinedPdb.methodDebugInformation;
     expectedCustomDebugInformation = combinedPdb.customDebugInformation;
+    assembly.replaceCodeViewPath(codeViewDebugIndex, "final.pdb");
     assembly.replaceStrongNamePublicKey(
       generateKeyPairSync("rsa", { modulusLength: 1024 }).privateKey
     );
@@ -671,6 +677,10 @@ test("strong-name signed PE32+ assemblies load and execute in .NET", {
     assert.deepEqual(
       checksumBytes.subarray(checksumNameEnd + 1),
       expectedPdb.hashes.get(checksumName)
+    );
+    assert.equal(
+      signed.pe.debugDirectoryEntries[codeViewDebugIndex].codeView.path,
+      "final.pdb"
     );
     const rewrittenPdbEntry = signed.pe.debugDirectoryEntries[embeddedPdbDebugIndex];
     assert.ok(rewrittenPdbEntry.sizeOfData > 0);

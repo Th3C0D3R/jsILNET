@@ -80,11 +80,23 @@ function formatPortablePdbGuid(bytes) {
   return `${first}-${second}-${third}-${tail.slice(0, 4)}-${tail.slice(4)}`;
 }
 
-function readDebugRecord(pe, entry) {
+function readDebugRecord(assembly, entry) {
+  const { pe } = assembly;
   const offset = entry.pointerToRawData !== 0
     ? entry.pointerToRawData
     : pe.rvaToOffset(entry.addressOfRawData, entry.sizeOfData);
-  return pe.bytes.slice(offset, offset + entry.sizeOfData);
+  const bytes = pe.bytes.slice(offset, offset + entry.sizeOfData);
+  for (const patch of assembly._patches) {
+    const overlapStart = Math.max(offset, patch.offset);
+    const overlapEnd = Math.min(offset + bytes.length, patch.offset + patch.bytes.length);
+    if (overlapStart < overlapEnd) {
+      bytes.set(
+        patch.bytes.subarray(overlapStart - patch.offset, overlapEnd - patch.offset),
+        overlapStart - offset
+      );
+    }
+  }
+  return bytes;
 }
 
 function allowedTokenTables(opcodeName) {
@@ -2698,6 +2710,15 @@ export class Assembly {
       offset: dataOffset + codeView.pathOffset,
       bytes: pathBytes
     });
+    const stagedDebugRecord = this._debugRecordEdits.get(debugEntryIndex);
+    if (stagedDebugRecord) {
+      const stagedBytes = Uint8Array.from(stagedDebugRecord.bytes);
+      stagedBytes.set(pathBytes, codeView.pathOffset);
+      this._debugRecordEdits.set(debugEntryIndex, {
+        ...stagedDebugRecord,
+        bytes: stagedBytes
+      });
+    }
     codeView.path = path;
     codeView.pathByteLength = encodedPath.length;
     return this;
@@ -2715,6 +2736,13 @@ export class Assembly {
     const entry = this.pe.debugDirectoryEntries[debugEntryIndex];
     if (entry.type !== 17 || !entry.embeddedPortablePdb) {
       throw new UnsupportedFormatError("Debug-directory entry is not an embedded Portable PDB");
+    }
+    if ([...this._embeddedPortablePdbEdits.keys()].some((index) =>
+      index !== debugEntryIndex
+    )) {
+      throw new UnsupportedFormatError(
+        "Only one embedded Portable PDB can be edited per assembly"
+      );
     }
     const pdb = parseEmbeddedPortablePdbData(data, 0, data.length);
     validatePortablePdbAssemblyReferences(pdb, this.tables.counts);
@@ -2748,7 +2776,7 @@ export class Assembly {
       if (debugEntry.codeView?.format !== "RSDS") continue;
       const previousDebugEdit = this._debugRecordEdits.get(index);
       const currentCodeViewBytes = previousDebugEdit?.bytes ??
-        readDebugRecord(this.pe, debugEntry);
+        readDebugRecord(this, debugEntry);
       const currentGuid = formatPortablePdbGuid(currentCodeViewBytes.subarray(4, 20));
       if (currentGuid === oldGuid) {
         if (debugEntry.codeView.age !== 1) {
@@ -2776,7 +2804,7 @@ export class Assembly {
       if (debugEntry.majorVersion !== 1 || debugEntry.minorVersion !== 0) {
         throw new UnsupportedFormatError("PDB checksum debug-directory version is unsupported");
       }
-      const checksumBytes = readDebugRecord(this.pe, debugEntry);
+      const checksumBytes = readDebugRecord(this, debugEntry);
       const terminator = checksumBytes.indexOf(0);
       if (terminator <= 0 || terminator > 64 ||
           checksumBytes.subarray(0, terminator).some((byte) => byte > 0x7f)) {
