@@ -53,6 +53,7 @@ Invalid or unsupported structures and edits raise `FormatError` or `UnsupportedF
 `insertInterfaceImplementation` inserts by Class into an already Class-ordered InterfaceImpl table and returns `{ rid, tokenMap }`, remapping affected CustomAttribute, CIL, and ENC references.
 `insertCustomAttribute` inserts by Parent into an already Parent-ordered table and returns `{ token, rid, tokenMap }`, remapping later CustomAttribute tokens in CIL and ENC references.
 `insertDeclSecurity` inserts by Parent into an already Parent-ordered table and returns `{ rid, tokenMap }`, remapping shifted DeclSecurity references in metadata, custom attributes, CIL, and ENC records.
+`insertNestedClass` inserts by NestedClass into an already ordered table and returns `{ rid, tokenMap }`, remapping shifted NestedClass tokens in ENC records.
 
 `replaceTypeRef` updates a TypeRef name, namespace, or resolution scope without changing its token; `removeTypeRef` rejects live references and remaps surviving metadata, signature, and CIL references.
 

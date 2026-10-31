@@ -3629,6 +3629,29 @@ test("NestedClass rows preserve ordering and reject cyclic TypeDef relationships
   assert.equal(parseAssembly(reparsed.serialize()).tables.counts[41], 0);
 });
 
+test("sorted NestedClass insertion remaps ENC tokens", () => {
+  const assembly = parseAssembly(withoutDebugDirectory());
+  const earlierNested = assembly.addTypeDef({ name: "EarlierNested" }) & 0x00ffffff;
+  const laterNested = assembly.addTypeDef({ name: "LaterNested" }) & 0x00ffffff;
+  const laterRid = assembly.addNestedClass({
+    nestedType: { table: "TypeDef", rid: laterNested },
+    enclosingType: { table: "TypeDef", rid: 2 }
+  });
+  addEncToken(assembly, 31, 0x29000000 + laterRid);
+
+  const { rid, tokenMap } = assembly.insertNestedClass({
+    nestedType: { table: "TypeDef", rid: earlierNested },
+    enclosingType: { table: "TypeDef", rid: 2 }
+  });
+  assert.equal(rid, laterRid);
+  assert.equal(tokenMap.get(0x29000000 + laterRid), 0x29000000 + laterRid + 1);
+  assert.equal(assembly.tables.row(41, rid).NestedClass.rid, earlierNested);
+  assert.equal(assembly.tables.get(31).at(-1).Token, 0x29000000 + laterRid + 1);
+
+  const reparsed = parseAssembly(assembly.serialize());
+  assert.equal(reparsed.tables.row(41, rid + 1).NestedClass.rid, laterNested);
+});
+
 test("DeclSecurity rows preserve parent/action uniqueness and allow safe removal", () => {
   const assembly = parseAssembly(fixture);
   assembly.tables.sorted |= 1n << 14n;

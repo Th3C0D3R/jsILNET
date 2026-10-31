@@ -2927,6 +2927,77 @@ export class Assembly {
     return rid;
   }
 
+  insertNestedClass({ nestedType, enclosingType }) {
+    this.#ensureEditable();
+    const nestedRid = metadataTableId(nestedType?.table) === 2 ? nestedType.rid : 0;
+    const enclosingRid = metadataTableId(enclosingType?.table) === 2 ? enclosingType.rid : 0;
+    if (!Number.isInteger(nestedRid) || nestedRid < 1 || nestedRid > this.tables.counts[2] ||
+        !Number.isInteger(enclosingRid) || enclosingRid < 1 ||
+        enclosingRid > this.tables.counts[2]) {
+      throw new RangeError("NestedClass and EnclosingClass must identify existing TypeDef rows");
+    }
+    if (nestedRid === enclosingRid) {
+      throw new FormatError("A TypeDef cannot be nested inside itself");
+    }
+    const rows = this.tables.rows.get(41) ?? [];
+    if (rows.length !== (this.tables.counts[41] ?? 0) || rows.length >= 0xffffffff) {
+      throw new RangeError("NestedClass row count is inconsistent or exceeds the metadata table limit");
+    }
+    if (rows.some((row) => row.NestedClass.rid === nestedRid)) {
+      throw new FormatError("The NestedClass table already has an enclosing TypeDef for this row");
+    }
+    for (let index = 1; index < rows.length; index++) {
+      if (rows[index - 1].NestedClass.rid > rows[index].NestedClass.rid) {
+        throw new UnsupportedFormatError(
+          "Sorted NestedClass insertion requires rows already ordered by NestedClass"
+        );
+      }
+    }
+    validateNestedTypeRelationship(this, nestedRid, enclosingRid);
+    const laterNestedType = rows.findIndex((row) => row.NestedClass.rid > nestedRid);
+    const insertionIndex = laterNestedType === -1 ? rows.length : laterNestedType;
+    const rid = insertionIndex + 1;
+    if (rid > 0x00ffffff) {
+      throw new RangeError("NestedClass token row ID exceeds 24-bit range");
+    }
+    const { tokenMap, rowChanges, tokenUpdates, patches } =
+      this.#prepareTokenRowInsertion(41, rid, rows.length, "NestedClass");
+    const newRow = {
+      table: 41,
+      tableName: metadataTableNames[41],
+      rid,
+      NestedClass: {
+        raw: nestedRid,
+        table: 2,
+        tableName: metadataTableNames[2],
+        rid: nestedRid
+      },
+      EnclosingClass: {
+        raw: enclosingRid,
+        table: 2,
+        tableName: metadataTableNames[2],
+        rid: enclosingRid
+      }
+    };
+    for (const change of rowChanges) change.row[change.columnName] = change.value;
+    for (const row of rows) {
+      if (row.rid >= rid) row.rid++;
+    }
+    rows.splice(insertionIndex, 0, newRow);
+    this.tables.rows.set(41, rows);
+    this.tables.counts[41] = rows.length;
+    this.tables.valid |= 1n << 41n;
+    for (const attribute of this.customAttributes) {
+      const row = this.tables.row(12, attribute.rid);
+      attribute.parent = row.Parent.target;
+      attribute.constructor = row.Type.target;
+    }
+    for (const update of tokenUpdates) update.instruction.operand.value = update.replacement;
+    this._patches.push(...patches);
+    this._metadataDirty = true;
+    return { rid, tokenMap };
+  }
+
   replaceNestedClass(rid, { enclosingType } = {}) {
     this.#ensureEditable();
     const row = this.tables.row(41, rid);

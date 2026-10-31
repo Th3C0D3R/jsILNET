@@ -64,6 +64,7 @@ GenericParamConstraint rows owned by a removed method's GenericParam rows are re
 `insertGenericParamConstraint` inserts by Owner into an already Owner-ordered table, remapping later constraint references in metadata, custom attributes, CIL operands, and ENC tokens; it returns the inserted RID and token map.
 `insertCustomAttribute` inserts by Parent into an already Parent-ordered table and remaps shifted CustomAttribute tokens in CIL operands and ENC records.
 `insertDeclSecurity` inserts by Parent into an already Parent-ordered table and remaps shifted DeclSecurity references in metadata, custom attributes, CIL operands, and ENC records.
+`insertNestedClass` inserts by NestedClass into an already ordered table and remaps shifted row tokens in ENC records.
 
 MethodDef names, flags, and implementation flags can be replaced without changing row identity.
 
