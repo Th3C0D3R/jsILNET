@@ -61,6 +61,29 @@ test("custom-attribute codecs support arrays, boxed values, and enums", () => {
   assert.deepEqual(parseCustomAttribute(bytes, fixedTypes, () => 0x08), value);
 });
 
+test("custom-attribute codecs support System.Type values and boxed System.Type values", () => {
+  const fixedTypes = [
+    { kind: "type" },
+    { kind: "object" },
+    { kind: "type" }
+  ];
+  const value = {
+    fixedArguments: [
+      "System.String, System.Private.CoreLib",
+      { type: { kind: "type" }, value: "System.Int32, System.Private.CoreLib" },
+      null
+    ],
+    namedArguments: [{
+      kind: "property",
+      type: { kind: "type" },
+      name: "NullableType",
+      value: null
+    }]
+  };
+  const bytes = encodeCustomAttribute(value, fixedTypes);
+  assert.deepEqual(parseCustomAttribute(bytes, fixedTypes), value);
+});
+
 test("custom-attribute codecs reject excessive nested types and boxed values", () => {
   const nestedBlob = Uint8Array.from([1, 0, ...new Array(40).fill(0x51)]);
   assert.throws(() => parseCustomAttribute(nestedBlob, [{ kind: "object" }]), /nesting exceeds supported depth/);
