@@ -1796,6 +1796,277 @@ export class Assembly {
     return 0x02000000 + rid;
   }
 
+  insertTypeDef({ beforeRid, name, namespace = "", flags = 0, extends: baseType = null }) {
+    this.#ensureEditable();
+    if (typeof name !== "string" || name.length === 0 || name.includes("\0")) {
+      throw new TypeError("TypeDef name must be a non-empty null-free string");
+    }
+    if (typeof namespace !== "string" || namespace.includes("\0")) {
+      throw new TypeError("TypeDef namespace must be a null-free string");
+    }
+    if (name === "<Module>" && namespace === "") {
+      throw new FormatError("The special <Module> TypeDef must remain unique to the first row");
+    }
+    if (!Number.isInteger(flags) || flags < 0 || flags > 0xffffffff) {
+      throw new RangeError("TypeDef flags must be an unsigned 32-bit integer");
+    }
+    const rows = this.tables.rows.get(2) ?? [];
+    if (rows.length !== (this.tables.counts[2] ?? 0) || rows.length !== this.types.length) {
+      throw new FormatError("TypeDef row count is inconsistent with its semantic records");
+    }
+    if (!Number.isInteger(beforeRid) || beforeRid < 2 || beforeRid > rows.length + 1) {
+      throw new RangeError(`Invalid TypeDef insertion position ${beforeRid}`);
+    }
+    if (rows.length >= 0x00ffffff) {
+      throw new RangeError("TypeDef token row ID exceeds 24-bit range");
+    }
+
+    let baseTarget = null;
+    if (baseType !== null) {
+      const baseTable = metadataTableId(baseType?.table);
+      if (![1, 2, 27].includes(baseTable) || !Number.isInteger(baseType.rid) ||
+          baseType.rid < 1 || baseType.rid > (this.tables.counts[baseTable] ?? 0)) {
+        throw new RangeError("TypeDef base type must identify an existing TypeDef, TypeRef, or TypeSpec row");
+      }
+      if (baseTable === 27) validateTypeSpecGenericContext(this, baseType.rid, 0, 0);
+    }
+
+    const { tokenMap, rowChanges, tokenUpdates, patches } =
+      this.#prepareTokenRowInsertion(2, beforeRid, rows.length, "TypeDef");
+    const changesByRow = new Map();
+    for (const change of rowChanges) {
+      if (!changesByRow.has(change.row)) changesByRow.set(change.row, new Map());
+      changesByRow.get(change.row).set(change.columnName, change.value);
+    }
+    const sortedKeys = new Map([
+      [9, (row) => [row.Class.rid]],
+      [10, (row) => [row.Class.raw]],
+      [12, (row) => [row.Parent.raw]],
+      [14, (row) => [row.Parent.raw]],
+      [15, (row) => [row.Parent.rid]],
+      [18, (row) => [row.Parent.rid]],
+      [21, (row) => [row.Parent.rid]],
+      [25, (row) => [row.Class.rid]],
+      [41, (row) => [row.NestedClass.rid]],
+      [42, (row) => [row.Owner.raw, row.Number]]
+    ]);
+    for (const [tableId, keyOf] of sortedKeys) {
+      if ((this.tables.sorted & (1n << BigInt(tableId))) === 0n) continue;
+      let previous = null;
+      for (const row of this.tables.get(tableId)) {
+        const changes = changesByRow.get(row);
+        const current = keyOf(new Proxy(row, {
+          get(target, property) {
+            return changes?.get(property) ?? target[property];
+          }
+        }));
+        let outOfOrder = false;
+        if (previous) {
+          for (let index = 0; index < current.length; index++) {
+            if (current[index] === previous[index]) continue;
+            outOfOrder = current[index] < previous[index];
+            break;
+          }
+        }
+        if (outOfOrder) {
+          throw new FormatError(
+            `TypeDef token remapping would violate sorted ${metadataTableNames[tableId]} order`
+          );
+        }
+        previous = current;
+      }
+    }
+
+    const heapStreams = new Map(
+      [...(this._heapStreams ?? new Map([...this.metadataRoot.streams].map(([streamName, stream]) =>
+        [streamName, stream.bytes]
+      )))].map(([streamName, bytes]) => [streamName, bytes.slice()])
+    );
+    const signatureColumns = new Map([
+      [4, "Signature"], [6, "Signature"], [10, "Signature"], [17, "Signature"],
+      [23, "Type"], [43, "Instantiation"]
+    ]);
+    const signatureChanges = [];
+    const remapTypeRid = (oldRid) => oldRid >= beforeRid ? oldRid + 1 : oldRid;
+    for (const [tableId, columnName] of signatureColumns) {
+      for (const row of this.tables.get(tableId)) {
+        const parsed = parseSignature(this.heaps.getBlob(row[columnName]), {
+          counts: this.tables.counts
+        });
+        if (!rows.slice(beforeRid - 1).some((candidate) =>
+          containsMetadataReference(parsed, 2, candidate.rid)
+        )) continue;
+        const remapped = remapTypeReferences(parsed, remapTypeRid, 2);
+        const blob = appendBlobHeap(
+          heapStreams.get("#Blob") ?? new Uint8Array(),
+          encodeSignature(remapped)
+        );
+        heapStreams.set("#Blob", blob.heap);
+        signatureChanges.push({ row, columnName, index: blob.index });
+      }
+    }
+    for (const row of this.tables.get(27)) {
+      const parsed = parseTypeSignature(this.heaps.getBlob(row.Signature), {
+        counts: this.tables.counts
+      });
+      if (!rows.slice(beforeRid - 1).some((candidate) =>
+        containsMetadataReference(parsed, 2, candidate.rid)
+      )) continue;
+      const remapped = remapTypeReferences(parsed, remapTypeRid, 2);
+      const blob = appendBlobHeap(
+        heapStreams.get("#Blob") ?? new Uint8Array(),
+        encodeTypeSignature(remapped)
+      );
+      heapStreams.set("#Blob", blob.heap);
+      signatureChanges.push({ row, columnName: "Signature", index: blob.index });
+    }
+
+    const tokenUpdatesForExceptions = [];
+    for (const method of this.methods) {
+      const body = this.getMethodBody(method.rid);
+      if (!body) continue;
+      const catchRemaps = collectCatchTokenRemaps(
+        body,
+        2,
+        rows.length,
+        remapTypeRid,
+        "TypeDef"
+      );
+      patches.push(...catchRemaps.patches);
+      tokenUpdatesForExceptions.push(...catchRemaps.updates);
+    }
+
+    const nameHeap = appendStringHeap(heapStreams.get("#Strings") ?? new Uint8Array(), name);
+    const namespaceHeap = appendStringHeap(nameHeap.heap, namespace);
+    heapStreams.set("#Strings", namespaceHeap.heap);
+    if (baseType !== null) {
+      const baseTable = metadataTableId(baseType.table);
+      const baseRid = baseTable === 2 && baseType.rid >= beforeRid
+        ? baseType.rid + 1
+        : baseType.rid;
+      baseTarget = { table: baseTable, tableName: metadataTableNames[baseTable], rid: baseRid };
+    }
+    const fieldPointer = (this.tables.valid & (1n << 3n)) !== 0n;
+    const methodPointer = (this.tables.valid & (1n << 5n)) !== 0n;
+    const fieldListRid = beforeRid <= rows.length
+      ? rows[beforeRid - 1].FieldList.rid
+      : (this.tables.counts[fieldPointer ? 3 : 4] ?? 0) + 1;
+    const methodListRid = beforeRid <= rows.length
+      ? rows[beforeRid - 1].MethodList.rid
+      : (this.tables.counts[methodPointer ? 5 : 6] ?? 0) + 1;
+    const rid = beforeRid;
+    const row = {
+      table: 2,
+      tableName: metadataTableNames[2],
+      rid,
+      Flags: flags,
+      TypeName: nameHeap.index,
+      TypeNamespace: namespaceHeap.index,
+      Extends: {
+        raw: baseTarget
+          ? encodeCodedIndex(baseTarget.table, baseTarget.rid, "TypeDefOrRef")
+          : 0,
+        target: baseTarget
+      },
+      FieldList: {
+        raw: fieldListRid,
+        table: fieldPointer ? 3 : 4,
+        tableName: metadataTableNames[fieldPointer ? 3 : 4],
+        rid: fieldListRid
+      },
+      MethodList: {
+        raw: methodListRid,
+        table: methodPointer ? 5 : 6,
+        tableName: metadataTableNames[methodPointer ? 5 : 6],
+        rid: methodListRid
+      }
+    };
+
+    for (const change of rowChanges) change.row[change.columnName] = change.value;
+    for (const change of signatureChanges) change.row[change.columnName] = change.index;
+    rows.splice(rid - 1, 0, row);
+    rows.forEach((typeRow, index) => {
+      typeRow.rid = index + 1;
+    });
+    this.tables.rows.set(2, rows);
+    this.tables.valid |= 1n << 2n;
+    this.tables.counts[2] = rows.length;
+    this.types.splice(rid - 1, 0, {
+      rid,
+      flags,
+      name,
+      namespace,
+      extends: baseTarget,
+      fieldRids: [],
+      methodRids: [],
+      eventRids: [],
+      propertyRids: [],
+      methods: [],
+      fields: [],
+      events: [],
+      properties: [],
+      genericParams: []
+    });
+    this._heapStreams = heapStreams;
+    this.#refreshHeaps();
+    this.types.forEach((type, index) => {
+      type.rid = index + 1;
+      type.extends = this.tables.row(2, type.rid).Extends.target;
+      for (const event of type.events) {
+        event.eventType = this.tables.row(20, event.rid).EventType.target;
+      }
+    });
+    for (const typeRef of this.typeRefs) {
+      typeRef.resolutionScope = this.tables.row(1, typeRef.rid).ResolutionScope.target;
+    }
+    for (const memberRef of this.memberRefs) {
+      const memberRow = this.tables.row(10, memberRef.rid);
+      memberRef.parent = memberRow.Class.target;
+      memberRef.signature = this.heaps.getBlob(memberRow.Signature);
+    }
+    for (const parameter of this.genericParams) {
+      parameter.owner = this.tables.row(42, parameter.rid).Owner.target;
+    }
+    for (const attribute of this.customAttributes) {
+      attribute.parent = this.tables.row(12, attribute.rid).Parent.target;
+    }
+    for (const constraint of this.genericParamConstraints) {
+      constraint.constraint = this.tables.row(44, constraint.rid).Constraint.target;
+    }
+    for (const type of this.types) {
+      for (const field of type.fields) {
+        field.signature = this.heaps.getBlob(this.tables.row(4, field.rid).Signature);
+      }
+      for (const property of type.properties) {
+        property.signature = this.heaps.getBlob(this.tables.row(23, property.rid).Type);
+      }
+    }
+    for (const method of this.methods) {
+      method.signature = this.heaps.getBlob(method.row.Signature);
+    }
+    for (const typeSpec of this.typeSpecs) {
+      const typeSpecRow = this.tables.row(27, typeSpec.rid);
+      typeSpec.signature = this.heaps.getBlob(typeSpecRow.Signature);
+      typeSpec.parsedSignature = parseTypeSignature(typeSpec.signature, {
+        counts: this.tables.counts
+      });
+    }
+    for (const methodSpec of this.methodSpecs) {
+      const methodSpecRow = this.tables.row(43, methodSpec.rid);
+      methodSpec.instantiation = this.heaps.getBlob(methodSpecRow.Instantiation);
+      methodSpec.parsedInstantiation = parseSignature(methodSpec.instantiation, {
+        counts: this.tables.counts
+      });
+    }
+    for (const update of tokenUpdates) update.instruction.operand.value = update.replacement;
+    for (const update of tokenUpdatesForExceptions) {
+      update.clause.classTokenOrFilterOffset = update.replacement;
+    }
+    this._patches.push(...patches);
+    this._metadataDirty = true;
+    return { token: 0x02000000 + rid, tokenMap };
+  }
+
   replaceTypeDef(rid, { name, namespace, flags, extends: baseType } = {}) {
     this.#ensureEditable();
     const type = this.types[rid - 1];

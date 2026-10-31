@@ -3533,6 +3533,45 @@ test("TypeDefs append with stable tokens and can receive fields before serializa
   assert.equal(generated.fields[0].name, "Value");
 });
 
+test("TypeDefs can be inserted before existing rows with token and signature remapping", () => {
+  const assembly = parseAssembly(withoutDebugDirectory());
+  const existingTypeName = assembly.types[1].name;
+  const typeSpecToken = assembly.addTypeSpec({ signature: Uint8Array.of(0x12, 0x08) });
+  const typeSpecRid = typeSpecToken & 0x00ffffff;
+  assembly.tables.sorted &= ~(1n << 12n);
+  const inserted = assembly.insertTypeDef({
+    beforeRid: 2,
+    name: "InsertedType",
+    extends: { table: "TypeDef", rid: 2 }
+  });
+
+  assert.equal(inserted.token, 0x02000002);
+  assert.equal(inserted.tokenMap.get(0x02000002), 0x02000003);
+  assert.equal(assembly.types[1].name, "InsertedType");
+  assert.equal(assembly.types[2].name, existingTypeName);
+  assert.deepEqual(assembly.types[1].extends, {
+    table: 2,
+    tableName: "TypeDef",
+    rid: 3
+  });
+  assert.deepEqual(assembly.types[1].fieldRids, []);
+  assert.deepEqual(assembly.types[1].methodRids, []);
+  assert.deepEqual(assembly.typeSpecs[typeSpecRid - 1].signature, Uint8Array.of(0x12, 0x0c));
+  assert.equal(typeSpecToken >>> 24, 0x1b);
+
+  const reparsed = parseAssembly(assembly.serialize());
+  assert.equal(reparsed.types[1].name, "InsertedType");
+  assert.equal(reparsed.types[2].name, existingTypeName);
+  assert.deepEqual(reparsed.typeSpecs[typeSpecRid - 1].signature, Uint8Array.of(0x12, 0x0c));
+
+  const invalidAssembly = parseAssembly(withoutDebugDirectory());
+  assert.throws(() => invalidAssembly.insertTypeDef({
+    beforeRid: 1,
+    name: "InvalidPosition"
+  }), /Invalid TypeDef insertion position/);
+  assert.equal(invalidAssembly.modified, false);
+});
+
 test("TypeDef append initializes #- pointer-table ownership boundaries", () => {
   const assembly = parseAssembly(fixture);
   const tableStream = assembly.metadataRoot.streams.get("#~");
@@ -3582,6 +3621,56 @@ test("TypeDef append initializes #- pointer-table ownership boundaries", () => {
   assert.equal(reparsed.types[rid - 1].fields[0].name, "Value");
   assert.equal(reparsed.tables.row(3, reparsed.tables.counts[3]).Field.rid,
     reparsed.tables.counts[4]);
+});
+
+test("TypeDef insertion preserves #- pointer-table ownership boundaries", () => {
+  const assembly = parseAssembly(withoutDebugDirectory());
+  const tableStream = assembly.metadataRoot.streams.get("#~");
+  assert.ok(tableStream);
+  assembly.metadataRoot.streams.delete("#~");
+  assembly.metadataRoot.streams.set("#-", tableStream);
+  for (const [pointerId, targetId, targetName, listName] of [
+    [3, 4, "Field", "FieldList"],
+    [5, 6, "Method", "MethodList"]
+  ]) {
+    const targetRows = assembly.tables.get(targetId);
+    const pointerRows = targetRows.map((target, index) => ({
+      table: pointerId,
+      tableName: metadataTableNames[pointerId],
+      rid: index + 1,
+      [targetName]: {
+        raw: target.rid,
+        rid: target.rid,
+        table: targetId,
+        tableName: metadataTableNames[targetId]
+      }
+    }));
+    assembly.tables.rows.set(pointerId, pointerRows);
+    assembly.tables.valid |= 1n << BigInt(pointerId);
+    assembly.tables.counts[pointerId] = pointerRows.length;
+    for (const row of assembly.tables.get(2)) {
+      const index = row[listName].rid;
+      row[listName] = {
+        raw: index,
+        table: pointerId,
+        tableName: metadataTableNames[pointerId],
+        rid: index
+      };
+    }
+  }
+  assembly.tables.sorted &= ~(1n << 12n);
+  const originalType = assembly.types[1];
+  const originalFields = originalType.fields.map(({ name }) => name);
+  const originalMethods = originalType.methods.map(({ name }) => name);
+
+  assembly.insertTypeDef({ beforeRid: 2, name: "PointerInsertedType" });
+  const reparsed = parseAssembly(assembly.serialize());
+  assert.equal(reparsed.metadataRoot.streams.has("#-"), true);
+  assert.equal(reparsed.types[1].name, "PointerInsertedType");
+  assert.deepEqual(reparsed.types[1].fields, []);
+  assert.deepEqual(reparsed.types[1].methods, []);
+  assert.deepEqual(reparsed.types[2].fields.map(({ name }) => name), originalFields);
+  assert.deepEqual(reparsed.types[2].methods.map(({ name }) => name), originalMethods);
 });
 
 test("TypeDef removal supports unreferenced empty types and protects owned rows", () => {
