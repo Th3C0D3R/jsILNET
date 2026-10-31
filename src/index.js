@@ -83,12 +83,23 @@ function resolveEnumElementType(assembly, name) {
   const definition = assembly.types.find((type) =>
     `${type.namespace ? `${type.namespace}.` : ""}${type.name}` === fullName
   );
-  const underlyingField = definition?.fields.find((field) => field.name === "value__");
-  if (!underlyingField) {
+  if (!definition || getManagedTypeName(assembly, definition.extends) !== "System.Enum") {
+    throw new UnsupportedFormatError(
+      `Custom-attribute enum ${name} is not defined in this assembly or does not derive from System.Enum`
+    );
+  }
+  const underlyingFields = definition.fields.filter((field) => field.name === "value__");
+  if (underlyingFields.length !== 1) {
     throw new UnsupportedFormatError(`Custom-attribute enum ${name} is not defined in this assembly`);
   }
+  const underlyingField = underlyingFields[0];
+  if ((underlyingField.flags & 0x10) !== 0) {
+    throw new UnsupportedFormatError(`Custom-attribute enum ${name} has a static underlying field`);
+  }
   const signature = parseSignature(underlyingField.signature);
-  const elementType = signature.type?.kind === "primitive" ? signature.type.elementType : 0;
+  const elementType = signature.kind === "field" && signature.type?.kind === "primitive"
+    ? signature.type.elementType
+    : 0;
   if (![0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b].includes(elementType)) {
     throw new UnsupportedFormatError(`Custom-attribute enum ${name} has an unsupported underlying type`);
   }
