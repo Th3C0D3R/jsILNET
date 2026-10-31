@@ -193,15 +193,20 @@ test("strong-name signed PE32+ assemblies load and execute in .NET", {
     const assemblyPath = join(libraryDirectory, "RuntimeLibrary.dll");
     const assembly = parseAssembly(await readFile(assemblyPath));
     assert.equal(assembly.pe.optionalHeaderMagic, 0x20b);
-    assert.ok(assembly.pe.debugDirectoryEntries.some((entry) =>
-      entry.type === 17 && entry.embeddedPortablePdb
-    ));
+    const embeddedPdb = assembly.pe.debugDirectoryEntries.find((entry) =>
+      entry.type === 17
+    )?.embeddedPortablePdb;
+    assert.ok(embeddedPdb);
     assembly.replaceStrongNamePublicKey(
       generateKeyPairSync("rsa", { modulusLength: 1024 }).privateKey
     );
     const signedBytes = assembly.serialize();
     const signed = parseAssembly(signedBytes);
     assert.equal(signed.verifyStrongNameSignature(), true);
+    const rewrittenPdb = signed.pe.debugDirectoryEntries.find((entry) =>
+      entry.type === 17
+    )?.embeddedPortablePdb;
+    assert.deepEqual(rewrittenPdb?.id, embeddedPdb.id);
     await writeFile(assemblyPath, signedBytes);
 
     const harnessProject = join(directory, "RuntimeHarness.csproj");
