@@ -9,6 +9,7 @@ import {
   parseAssembly,
   parseClassicPdb,
   parsePE,
+  replaceClassicPdbStringTableName,
   replaceClassicPdbSymbolName
 } from "../src/index.js";
 
@@ -100,6 +101,20 @@ test("classic PDB parser reads a compiler-produced MSF identity", {
       renamedPdb.dbi.modules[managedModuleIndex].symbols.records[managedRecordIndex].decoded.name,
       "Ansxxx"
     );
+    const sourceFile = pdb.dbi.modules.flatMap((module) =>
+      module.c13?.lines.flatMap((line) => line.blocks) ?? []
+    ).find((block) => block.fileName?.endsWith("Class1.cs"));
+    assert.ok(sourceFile);
+    const replacementPath = sourceFile.fileName.replace("Class1.cs", "Other1.cs");
+    const renamedPathPdb = parseClassicPdb(replaceClassicPdbStringTableName(pdbBytes, {
+      nameOffset: sourceFile.fileNameOffset,
+      name: replacementPath
+    }));
+    assert.ok(renamedPathPdb.dbi.modules.some((module) =>
+      module.c13?.lines.some((line) =>
+        line.blocks.some((block) => block.fileName === replacementPath)
+      )
+    ));
     assert.ok(pdb.dbi.modules.some((module) =>
       module.sourceFiles.some((file) => file.endsWith("Class1.cs"))
     ));

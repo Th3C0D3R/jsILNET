@@ -965,6 +965,37 @@ export function parseClassicPdb(input) {
   };
 }
 
+function replaceClassicPdbStreamBytes(bytes, pdb, streamIndex, streamOffset, replacement) {
+  const stream = pdb.streams[streamIndex];
+  if (!stream?.blockIndices?.length) {
+    throw new FormatError("Classic PDB replacement stream has no allocated MSF blocks");
+  }
+  if (!Number.isInteger(streamOffset) || streamOffset < 0 ||
+      streamOffset > stream.size - replacement.length) {
+    throw new FormatError("Classic PDB replacement exceeds its stream bounds");
+  }
+  const output = Uint8Array.from(bytes);
+  for (let index = 0; index < replacement.length; index++) {
+    const position = streamOffset + index;
+    const blockIndex = Math.floor(position / pdb.blockSize);
+    const block = stream.blockIndices[blockIndex];
+    if (block === undefined) throw new FormatError("Classic PDB replacement exceeds its MSF block list");
+    output[block * pdb.blockSize + position % pdb.blockSize] = replacement[index];
+  }
+  return output;
+}
+
+function encodeClassicPdbReplacementText(value, context) {
+  if (typeof value !== "string" || value.includes("\0")) {
+    throw new TypeError(`${context} must be a string without null characters`);
+  }
+  const bytes = new TextEncoder().encode(value);
+  if (new TextDecoder("utf-8", { fatal: true }).decode(bytes) !== value) {
+    throw new TypeError(`${context} must contain valid Unicode`);
+  }
+  return bytes;
+}
+
 export function replaceClassicPdbSymbolName(input, { moduleIndex, recordIndex, name } = {}) {
   const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
   if (!Number.isInteger(moduleIndex) || moduleIndex < 0) {
@@ -973,13 +1004,7 @@ export function replaceClassicPdbSymbolName(input, { moduleIndex, recordIndex, n
   if (!Number.isInteger(recordIndex) || recordIndex < 0) {
     throw new RangeError("Classic PDB symbol record index must be a non-negative integer");
   }
-  if (typeof name !== "string" || name.includes("\0")) {
-    throw new TypeError("Classic PDB symbol names must be strings without null characters");
-  }
-  const replacement = new TextEncoder().encode(name);
-  if (new TextDecoder("utf-8", { fatal: true }).decode(replacement) !== name) {
-    throw new TypeError("Classic PDB symbol names must contain valid Unicode");
-  }
+  const replacement = encodeClassicPdbReplacementText(name, "Classic PDB symbol names");
   const pdb = parseClassicPdb(bytes);
   const module = pdb.dbi?.modules[moduleIndex];
   if (!module?.symbols) {
@@ -1001,22 +1026,38 @@ export function replaceClassicPdbSymbolName(input, { moduleIndex, recordIndex, n
   nameSlot.set(replacement);
   nameSlot[replacement.length] = 0;
   if (paddingSize > 0) nameSlot.fill(0xf0 + paddingSize, replacement.length + 1);
-  const stream = pdb.streams[module.streamIndex];
-  if (!stream?.blockIndices?.length) {
-    throw new FormatError("Classic PDB symbol stream has no allocated MSF blocks");
-  }
   const streamOffset = record.offset + 4 + nameOffset;
-  if (streamOffset > stream.size - nameSlot.length) {
-    throw new FormatError("Classic PDB symbol name exceeds its module stream");
+  const output = replaceClassicPdbStreamBytes(
+    bytes, pdb, module.streamIndex, streamOffset, nameSlot
+  );
+  parseClassicPdb(output);
+  return output;
+}
+
+export function replaceClassicPdbStringTableName(input, { nameOffset, name } = {}) {
+  const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
+  if (!Number.isInteger(nameOffset) || nameOffset < 0) {
+    throw new RangeError("Classic PDB string-table offset must be a non-negative integer");
   }
-  const output = Uint8Array.from(bytes);
-  for (let index = 0; index < nameSlot.length; index++) {
-    const position = streamOffset + index;
-    const blockIndex = Math.floor(position / pdb.blockSize);
-    const block = stream.blockIndices[blockIndex];
-    if (block === undefined) throw new FormatError("Classic PDB symbol name exceeds its MSF block list");
-    output[block * pdb.blockSize + position % pdb.blockSize] = nameSlot[index];
+  const replacement = encodeClassicPdbReplacementText(name, "Classic PDB string-table names");
+  const pdb = parseClassicPdb(bytes);
+  const streamIndex = pdb.info.namedStreams.get("/names");
+  if (streamIndex === undefined || !pdb.info.stringTable) {
+    throw new UnsupportedFormatError("Classic PDB has no /names string table");
   }
+  const existingName = pdb.info.stringTable.strings.get(nameOffset);
+  if (existingName === undefined) {
+    throw new RangeError(`Classic PDB string-table offset ${nameOffset} does not exist`);
+  }
+  const existingBytes = new TextEncoder().encode(existingName);
+  if (replacement.length !== existingBytes.length) {
+    throw new UnsupportedFormatError(
+      "Classic PDB string-table replacements must preserve the UTF-8 byte length"
+    );
+  }
+  const output = replaceClassicPdbStreamBytes(
+    bytes, pdb, streamIndex, 12 + nameOffset, replacement
+  );
   parseClassicPdb(output);
   return output;
 }

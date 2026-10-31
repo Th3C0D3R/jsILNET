@@ -5,6 +5,7 @@ import { parseMetadataRoot, MetadataHeaps } from "./metadata/streams.js";
 import { parseTablesStream } from "./metadata/tables.js";
 import {
   parseClassicPdb as parseClassicPdbFile,
+  replaceClassicPdbStringTableName as replaceClassicPdbStringTableNameFile,
   replaceClassicPdbSymbolName as replaceClassicPdbSymbolNameFile
 } from "./metadata/classic-pdb.js";
 import { parseMethodBody } from "./il/body.js";
@@ -1018,6 +1019,7 @@ export {
 export { MetadataHeaps, parseMetadataRoot } from "./metadata/streams.js";
 export {
   parseClassicPdbFile as parseClassicPdb,
+  replaceClassicPdbStringTableNameFile as replaceClassicPdbStringTableName,
   replaceClassicPdbSymbolNameFile as replaceClassicPdbSymbolName
 };
 export {
