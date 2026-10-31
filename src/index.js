@@ -4777,6 +4777,12 @@ export class Assembly {
         `${metadataTableNames[definition.targetTableId]} ownership does not cover every row exactly once`
       );
     }
+    const currentOwnerByRid = new Map();
+    for (let index = 0; index < ownerGroups.length; index++) {
+      for (const rid of ownerGroups[index]) {
+        currentOwnerByRid.set(rid, definition.owners[index].rid);
+      }
+    }
     const assignments = [];
     let offset = 0;
     const recordsByRid = new Map(
@@ -4800,8 +4806,11 @@ export class Assembly {
       if (nextRecords.some((record) => !record)) {
         throw new FormatError(`${metadataTableNames[definition.targetTableId]} ownership has no semantic record`);
       }
+      const movedRecords = nextRecords.filter((record) =>
+        currentOwnerByRid.get(record.rid) !== owner.rid
+      );
       if (allowsCrossOwnerFields) {
-        for (const record of nextRecords) {
+        for (const record of movedRecords) {
           const parsed = parseSignature(record.signature, { counts: this.tables.counts });
           if (parsed.kind !== "field") {
             throw new FormatError(`Field row ${record.rid} has a non-field signature`);
@@ -4847,7 +4856,7 @@ export class Assembly {
             "Pointer reordering cannot move abstract methods to a non-abstract TypeDef"
           );
         }
-        for (const record of nextRecords) {
+        for (const record of movedRecords) {
           if (record.rva !== 0 || (record.flags & 0x0440) !== 0x0440 ||
               record.genericParams.length > 0) {
             throw new UnsupportedFormatError(
@@ -4857,6 +4866,11 @@ export class Assembly {
           const signature = parseSignature(record.signature, { counts: this.tables.counts });
           if (signature.kind !== "method") {
             throw new FormatError(`MethodDef row ${record.rid} has a non-method signature`);
+          }
+          if ((signature.genericParameterCount ?? 0) > 0) {
+            throw new UnsupportedFormatError(
+              "Cross-owner MethodPtr reordering does not support generic methods"
+            );
           }
           validateGenericVariableReferences(
             signature,
@@ -4880,7 +4894,7 @@ export class Assembly {
         }
       }
       if (allowsCrossOwnerEvents && movesRowsAcrossOwners) {
-        for (const record of nextRecords) {
+        for (const record of movedRecords) {
           const hasSemantics = (this.tables.rows.get(24) ?? []).some((row) =>
             row.Association.target?.table === 20 && row.Association.target.rid === record.rid
           );
