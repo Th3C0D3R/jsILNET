@@ -3,7 +3,10 @@ import { FormatError, UnsupportedFormatError } from "./binary/errors.js";
 import { parsePE, parseCliHeader } from "./pe/headers.js";
 import { parseMetadataRoot, MetadataHeaps } from "./metadata/streams.js";
 import { parseTablesStream } from "./metadata/tables.js";
-import { parseClassicPdb as parseClassicPdbFile } from "./metadata/classic-pdb.js";
+import {
+  parseClassicPdb as parseClassicPdbFile,
+  replaceClassicPdbSymbolName as replaceClassicPdbSymbolNameFile
+} from "./metadata/classic-pdb.js";
 import { parseMethodBody } from "./il/body.js";
 import { encodeInstruction, encodeOpcode, formatInstruction, getInstructionSize } from "./il/instructions.js";
 import { listOpcodes } from "./il/opcodes.js";
@@ -1013,7 +1016,10 @@ export {
   tableIndexWidth
 } from "./metadata/tables.js";
 export { MetadataHeaps, parseMetadataRoot } from "./metadata/streams.js";
-export { parseClassicPdbFile as parseClassicPdb };
+export {
+  parseClassicPdbFile as parseClassicPdb,
+  replaceClassicPdbSymbolNameFile as replaceClassicPdbSymbolName
+};
 export {
   encodeCustomAttribute,
   parseCustomAttribute,

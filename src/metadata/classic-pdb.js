@@ -275,6 +275,39 @@ function decodeCodeViewNumeric(data, offset) {
   return { value: format[1](view, valueOffset), size: 2 + format[0] };
 }
 
+function getCodeViewSymbolNameOffset(record) {
+  if (record.kind === 0x1107) {
+    const numeric = decodeCodeViewNumeric(record.data, 4);
+    return numeric ? 4 + numeric.size : null;
+  }
+  return new Map([
+    [0x1101, 4],
+    [0x1102, 21],
+    [0x1103, 18],
+    [0x1104, 18],
+    [0x1105, 7],
+    [0x1106, 6],
+    [0x1108, 4],
+    [0x110b, 8],
+    [0x110c, 10],
+    [0x110d, 10],
+    [0x110e, 10],
+    [0x110f, 35],
+    [0x1110, 35],
+    [0x1111, 10],
+    [0x1112, 10],
+    [0x1113, 10],
+    [0x111c, 10],
+    [0x111d, 10],
+    [0x1124, 0],
+    [0x112a, 37],
+    [0x112b, 37],
+    [0x113e, 6],
+    [0x1146, 35],
+    [0x1147, 35]
+  ]).get(record.kind) ?? null;
+}
+
 function decodeCodeViewSymbol(kind, data) {
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
   if ((kind === 0x0006 || kind === 0x114e) && data.length === 0) {
@@ -802,7 +835,7 @@ export function parseClassicPdb(input) {
   for (let index = 0; index < streamCount; index++) {
     const size = streamSizes[index];
     if (size === absentStream) {
-      streams.push({ index, size: null, bytes: null });
+      streams.push({ index, size: null, bytes: null, blockIndices: [] });
       continue;
     }
     const blockCount = Math.ceil(size / blockSize);
@@ -824,7 +857,7 @@ export function parseClassicPdb(input) {
         start
       );
     }
-    streams.push({ index, size, bytes: streamBytes });
+    streams.push({ index, size, bytes: streamBytes, blockIndices: streamBlocks });
   }
   if (directoryOffset !== directory.length) {
     throw new FormatError("Trailing bytes after classic PDB MSF stream directory");
@@ -921,6 +954,7 @@ export function parseClassicPdb(input) {
       )
     };
   }
+
   return {
     format: "MSF 7.0",
     blockSize,
@@ -929,4 +963,54 @@ export function parseClassicPdb(input) {
     dbi,
     streams
   };
+}
+
+export function replaceClassicPdbSymbolName(input, { moduleIndex, recordIndex, name } = {}) {
+  const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
+  if (!Number.isInteger(moduleIndex) || moduleIndex < 0) {
+    throw new RangeError("Classic PDB module index must be a non-negative integer");
+  }
+  if (!Number.isInteger(recordIndex) || recordIndex < 0) {
+    throw new RangeError("Classic PDB symbol record index must be a non-negative integer");
+  }
+  if (typeof name !== "string" || name.includes("\0")) {
+    throw new TypeError("Classic PDB symbol names must be strings without null characters");
+  }
+  const replacement = new TextEncoder().encode(name);
+  if (new TextDecoder("utf-8", { fatal: true }).decode(replacement) !== name) {
+    throw new TypeError("Classic PDB symbol names must contain valid Unicode");
+  }
+  const pdb = parseClassicPdb(bytes);
+  const module = pdb.dbi?.modules[moduleIndex];
+  if (!module?.symbols) {
+    throw new RangeError(`Classic PDB module ${moduleIndex} has no symbol records`);
+  }
+  const record = module.symbols.records[recordIndex];
+  if (!record) throw new RangeError(`Classic PDB symbol record ${recordIndex} does not exist`);
+  const nameOffset = getCodeViewSymbolNameOffset(record);
+  if (nameOffset === null || typeof record.decoded?.name !== "string") {
+    throw new UnsupportedFormatError("Classic PDB symbol record does not expose a replaceable name");
+  }
+  const originalName = new TextEncoder().encode(record.decoded.name);
+  if (replacement.length !== originalName.length) {
+    throw new UnsupportedFormatError("Classic PDB symbol replacement must preserve the UTF-8 name length");
+  }
+  const stream = pdb.streams[module.streamIndex];
+  if (!stream?.blockIndices?.length) {
+    throw new FormatError("Classic PDB symbol stream has no allocated MSF blocks");
+  }
+  const streamOffset = record.offset + 4 + nameOffset;
+  if (streamOffset > stream.size - replacement.length) {
+    throw new FormatError("Classic PDB symbol name exceeds its module stream");
+  }
+  const output = Uint8Array.from(bytes);
+  for (let index = 0; index < replacement.length; index++) {
+    const position = streamOffset + index;
+    const blockIndex = Math.floor(position / pdb.blockSize);
+    const block = stream.blockIndices[blockIndex];
+    if (block === undefined) throw new FormatError("Classic PDB symbol name exceeds its MSF block list");
+    output[block * pdb.blockSize + position % pdb.blockSize] = replacement[index];
+  }
+  parseClassicPdb(output);
+  return output;
 }

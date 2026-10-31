@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseClassicPdb } from "../src/index.js";
+import { parseClassicPdb, replaceClassicPdbSymbolName } from "../src/index.js";
 import {
   parseCodeViewC13Subsections,
   parseCodeViewSymbolRecords,
@@ -37,6 +37,65 @@ function makeClassicPdb() {
   return bytes;
 }
 
+function makeClassicPdbWithSymbols() {
+  const blockSize = 512;
+  const bytes = new Uint8Array(blockSize * 8);
+  const view = new DataView(bytes.buffer);
+  bytes.set(new TextEncoder().encode("Microsoft C/C++ MSF 7.00\r\n\u001aDS\0\0\0"));
+  view.setUint32(32, blockSize, true);
+  view.setUint32(36, 1, true);
+  view.setUint32(40, 8, true);
+  view.setUint32(44, 36, true);
+  view.setUint32(48, 0, true);
+  view.setUint32(52, 3, true);
+
+  const directoryOffset = blockSize * 4;
+  view.setUint32(blockSize * 3, 4, true);
+  view.setUint32(directoryOffset, 5, true);
+  view.setUint32(directoryOffset + 4, 0xffffffff, true);
+  view.setUint32(directoryOffset + 8, 52, true);
+  view.setUint32(directoryOffset + 12, 0xffffffff, true);
+  view.setUint32(directoryOffset + 16, 144, true);
+  view.setUint32(directoryOffset + 20, 22, true);
+  view.setUint32(directoryOffset + 24, 5, true);
+  view.setUint32(directoryOffset + 28, 6, true);
+  view.setUint32(directoryOffset + 32, 7, true);
+
+  const infoOffset = blockSize * 5;
+  view.setUint32(infoOffset, 20000404, true);
+  view.setUint32(infoOffset + 4, 0x12345678, true);
+  view.setUint32(infoOffset + 8, 3, true);
+  view.setUint32(infoOffset + 36, 8, true);
+  bytes.set(Uint8Array.from([
+    0x04, 0x03, 0x02, 0x01, 0x06, 0x05, 0x08, 0x07,
+    0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10
+  ]), infoOffset + 12);
+
+  const dbiOffset = blockSize * 6;
+  view.setInt32(dbiOffset, -1, true);
+  view.setUint32(dbiOffset + 4, 19990903, true);
+  view.setUint32(dbiOffset + 8, 3, true);
+  view.setUint16(dbiOffset + 12, 0xffff, true);
+  view.setUint16(dbiOffset + 16, 0xffff, true);
+  view.setUint16(dbiOffset + 20, 0xffff, true);
+  view.setUint32(dbiOffset + 24, 80, true);
+  view.setUint16(dbiOffset + 64 + 34, 4, true);
+  view.setUint32(dbiOffset + 64 + 36, 22, true);
+  bytes.set([0x74, 0x65, 0x73, 0x74, 0], dbiOffset + 64 + 64);
+  bytes.set([0x74, 0x65, 0x73, 0x74, 0x2e, 0x6f, 0x62, 0x6a, 0],
+    dbiOffset + 64 + 69);
+
+  const symbolsOffset = blockSize * 7;
+  view.setUint32(symbolsOffset, 4, true);
+  view.setUint16(symbolsOffset + 4, 16, true);
+  view.setUint16(symbolsOffset + 6, 0x110e, true);
+  view.setUint32(symbolsOffset + 8, 1, true);
+  view.setUint32(symbolsOffset + 12, 0x20, true);
+  view.setUint16(symbolsOffset + 16, 1, true);
+  bytes.set([0x70, 0x75, 0x62, 0], symbolsOffset + 18);
+  return bytes;
+}
+
 test("classic PDB parser exposes MSF streams and information-stream identity", () => {
   const pdb = parseClassicPdb(makeClassicPdb());
   assert.equal(pdb.format, "MSF 7.0");
@@ -59,6 +118,31 @@ test("classic PDB parser rejects invalid signatures and overlapping MSF blocks",
   const overlapping = makeClassicPdb();
   new DataView(overlapping.buffer).setUint32(512 * 4 + 12, 4, true);
   assert.throws(() => parseClassicPdb(overlapping), /overlaps another MSF structure/);
+});
+
+test("classic PDB symbol names can be replaced without changing MSF layout", () => {
+  const original = makeClassicPdbWithSymbols();
+  const rewritten = replaceClassicPdbSymbolName(original, {
+    moduleIndex: 0,
+    recordIndex: 0,
+    name: "new"
+  });
+  assert.notEqual(rewritten, original);
+  assert.equal(parseClassicPdb(rewritten).dbi.modules[0].symbols.records[0].decoded.name, "new");
+
+  const expected = Uint8Array.from(original);
+  expected.set([0x6e, 0x65, 0x77], 512 * 7 + 18);
+  assert.deepEqual(rewritten, expected);
+  assert.throws(() => replaceClassicPdbSymbolName(original, {
+    moduleIndex: 0,
+    recordIndex: 0,
+    name: "longer"
+  }), /preserve the UTF-8 name length/);
+  assert.throws(() => replaceClassicPdbSymbolName(original, {
+    moduleIndex: 0,
+    recordIndex: 0,
+    name: "\ud800"
+  }), /valid Unicode/);
 });
 
 test("classic PDB module symbols preserve bounded CodeView record payloads", () => {
