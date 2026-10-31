@@ -15,7 +15,8 @@ import {
   decodePortablePdbCustomDebugInformation,
   decodePortablePdbDocumentName,
   decodePortablePdbSequencePoints,
-  parsePortablePdbTables
+  parsePortablePdbTables,
+  validatePortablePdbAssemblyReferences
 } from "../src/metadata/portable-pdb.js";
 import { resolveMethodParameters, resolveTypes } from "../src/resolution/module.js";
 
@@ -436,6 +437,25 @@ test("Portable PDB document names and sequence points decode bounded blobs", () 
     Uint8Array.from([0, 0, 1, 0x7f, 1, 0]),
     { documentRid: 1, documentCount: 1, localSignatureCount: 0 }
   ), /sequence-point source spans/);
+});
+
+test("Portable PDB type-system counts and entry point match the assembly", () => {
+  const pdb = {
+    rowCounts: new Map([[2, 3], [6, 2]]),
+    entryPointToken: 0x06000002
+  };
+  const assemblyCounts = Array(64).fill(0);
+  assemblyCounts[2] = 3;
+  assemblyCounts[6] = 2;
+  assert.doesNotThrow(() => validatePortablePdbAssemblyReferences(pdb, assemblyCounts));
+  const mismatchedCounts = assemblyCounts.slice();
+  mismatchedCounts[2] = 4;
+  assert.throws(() => validatePortablePdbAssemblyReferences(pdb, mismatchedCounts),
+    /row count.*does not match assembly metadata/);
+  assert.throws(() => validatePortablePdbAssemblyReferences(
+    { ...pdb, entryPointToken: 0x06000003 },
+    assemblyCounts
+  ), /entry point references a missing MethodDef/);
 });
 
 test("Portable PDB rejects partially overlapping local scopes and import cycles", () => {

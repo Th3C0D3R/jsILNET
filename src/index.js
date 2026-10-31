@@ -17,6 +17,7 @@ import { applyPatches, createOperandPatches } from "./writer/patch.js";
 import { serializeStructural } from "./writer/structural.js";
 import { appendBlobHeap, appendStringHeap, appendUserStringHeap } from "./metadata/writer.js";
 import { parseManifestResources } from "./metadata/resources.js";
+import { validatePortablePdbAssemblyReferences } from "./metadata/portable-pdb.js";
 import {
   assertStrongNamePEProfile,
   encodeStrongNamePublicKey,
@@ -1050,6 +1051,14 @@ export class Assembly {
     const tableStream = compressedTables ?? uncompressedTables;
     if (!tableStream) throw new FormatError("Metadata root has neither #~ nor #- table stream");
     this.tables = parseTablesStream(tableStream);
+    const embeddedPortablePdb = this.pe.debugDirectoryEntries
+      .find((entry) => entry.embeddedPortablePdb)?.embeddedPortablePdb;
+    if (embeddedPortablePdb) {
+      validatePortablePdbAssemblyReferences(
+        embeddedPortablePdb,
+        this.tables.counts
+      );
+    }
     if (this.tables.get(0).length !== 1) {
       throw new FormatError("Metadata must contain exactly one Module row");
     }

@@ -6,6 +6,23 @@ const maxEmbeddedSourceSize = 0x10000000;
 const embeddedSourceKind = "0e8a571b-6926-466e-b4ad-8ab04611f5fe";
 const sourceLinkKind = "cc110556-a091-4d38-9fec-25ab9a351a6a";
 
+export function validatePortablePdbAssemblyReferences(pdb, assemblyRowCounts) {
+  if (!pdb || !(pdb.rowCounts instanceof Map) || !Array.isArray(assemblyRowCounts)) {
+    throw new TypeError("Portable PDB validation requires parsed PDB data and assembly row counts");
+  }
+  for (const [table, count] of pdb.rowCounts) {
+    if (assemblyRowCounts[table] !== count) {
+      throw new FormatError(
+        `Portable PDB row count for type-system table ${table} does not match assembly metadata`
+      );
+    }
+  }
+  if (pdb.entryPointToken !== 0 &&
+      (pdb.entryPointToken & 0x00ffffff) > assemblyRowCounts[6]) {
+    throw new FormatError("Portable PDB entry point references a missing MethodDef row");
+  }
+}
+
 function decodeUtf8(bytes, context) {
   try {
     return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
