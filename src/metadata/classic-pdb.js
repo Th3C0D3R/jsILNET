@@ -300,6 +300,18 @@ function decodeCodeViewSymbol(kind, data) {
       name: readCodeViewName(data, 18, "block")
     };
   }
+  if (kind === 0x1104) {
+    if (data.length < 19) throw new FormatError("Classic PDB with-scope symbol is truncated");
+    return {
+      kind: "withScope",
+      parent: view.getUint32(0, true),
+      end: view.getUint32(4, true),
+      codeSize: view.getUint32(8, true),
+      offset: view.getUint32(12, true),
+      segment: view.getUint16(16, true),
+      expression: readCodeViewName(data, 18, "with-scope")
+    };
+  }
   if (kind === 0x110e) {
     if (data.length < 11) throw new FormatError("Classic PDB S_PUB32 record is truncated");
     return {

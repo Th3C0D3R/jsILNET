@@ -65,13 +65,13 @@ test("classic PDB module symbols preserve bounded CodeView record payloads", () 
   const bytes = Uint8Array.from([
     4, 0, 0, 0,
     4, 0, 0x77, 0x77, 0xaa, 0xbb,
-    2, 0, 0x04, 0x11
+    2, 0, 0x76, 0x77
   ]);
   assert.deepEqual(parseCodeViewSymbolRecords(bytes), {
     signature: 4,
     records: [
       { offset: 4, kind: 0x7777, data: Uint8Array.from([0xaa, 0xbb]) },
-      { offset: 10, kind: 0x1104, data: new Uint8Array() }
+      { offset: 10, kind: 0x7776, data: new Uint8Array() }
     ]
   });
   assert.throws(() => parseCodeViewSymbolRecords(Uint8Array.from([4, 0, 0, 0, 1])),
@@ -210,6 +210,17 @@ test("classic PDB symbol decoding exposes public, data, and procedure names", ()
     offset: 0x40,
     segment: 3,
     name: "b"
+  });
+  const withScope = block.slice();
+  withScope.set([0x78, 0], 18);
+  assert.deepEqual(decodeRecord(0x1104, withScope), {
+    kind: "withScope",
+    parent: 1,
+    end: 2,
+    codeSize: 0x30,
+    offset: 0x40,
+    segment: 3,
+    expression: "x"
   });
   assert.deepEqual(decodeRecord(0x0006, new Uint8Array()), { kind: "scopeEnd" });
   assert.deepEqual(decodeRecord(0x114e, new Uint8Array()), { kind: "scopeEnd" });
