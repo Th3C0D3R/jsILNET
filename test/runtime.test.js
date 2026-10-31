@@ -59,7 +59,11 @@ test("classic PDB parser reads a compiler-produced MSF identity", {
     assert.ok(pdb.dbi.modules.some((module) => module.moduleName.length > 0));
     assert.ok(pdb.dbi.modules.some((module) => module.symbols?.records.length > 0));
     assert.ok(pdb.dbi.modules.some((module) =>
-      module.c13?.lines.some((line) => line.blocks.some((block) => block.lines.length > 0))
+      module.c13?.lines.some((line) =>
+        line.blocks.some((block) =>
+          block.lines.length > 0 && block.fileName?.endsWith("Class1.cs")
+        )
+      )
     ));
     assert.ok(pdb.dbi.modules.some((module) =>
       module.sourceFiles.some((file) => file.endsWith("Class1.cs"))

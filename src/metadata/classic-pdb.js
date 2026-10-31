@@ -92,7 +92,7 @@ function parsePdbNamedStreams(infoStream, streams) {
   return { namedStreams, featureSignatures };
 }
 
-function parseDbiModules(dbiStream, moduleInfoSize, streams) {
+function parseDbiModules(dbiStream, moduleInfoSize, streams, pdbStrings) {
   const modules = [];
   let offset = 64;
   const end = offset + moduleInfoSize;
@@ -142,7 +142,8 @@ function parseDbiModules(dbiStream, moduleInfoSize, streams) {
     const c13 = c13Bytes === 0
       ? null
       : parseCodeViewC13Subsections(
-        streams[streamIndex].bytes.subarray(c13Offset, c13Offset + c13Bytes)
+        streams[streamIndex].bytes.subarray(c13Offset, c13Offset + c13Bytes),
+        pdbStrings
       );
     modules.push({
       moduleName,
@@ -321,7 +322,7 @@ function parseCodeViewFileChecksums(data) {
   return checksums;
 }
 
-function parseCodeViewLines(data, fileChecksums) {
+function parseCodeViewLines(data, fileChecksums, pdbStrings) {
   if (data.length < 12) throw new FormatError("Classic PDB line subsection header is truncated");
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
   const relocationOffset = view.getUint32(0, true);
@@ -346,6 +347,10 @@ function parseCodeViewLines(data, fileChecksums) {
     const checksum = fileChecksums.get(fileChecksumOffset);
     if (!checksum) {
       throw new FormatError("Classic PDB line block references a missing file-checksum record");
+    }
+    const fileName = pdbStrings?.get(checksum.fileNameOffset) ?? null;
+    if (pdbStrings && fileName === null) {
+      throw new FormatError("Classic PDB line checksum references a missing string-table name");
     }
     const lines = [];
     let lineOffset = offset + 12;
@@ -373,6 +378,7 @@ function parseCodeViewLines(data, fileChecksums) {
     blocks.push({
       fileChecksumOffset,
       fileNameOffset: checksum.fileNameOffset,
+      fileName,
       checksumKind: checksum.checksumKind,
       checksum: checksum.checksum,
       lines
@@ -382,7 +388,7 @@ function parseCodeViewLines(data, fileChecksums) {
   return { relocationOffset, segment, flags, codeSize, blocks };
 }
 
-export function parseCodeViewC13Subsections(input) {
+export function parseCodeViewC13Subsections(input, pdbStrings = null) {
   const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
   const subsections = [];
   let offset = 0;
@@ -415,8 +421,62 @@ export function parseCodeViewC13Subsections(input) {
     : new Map();
   const lines = subsections
     .filter((subsection) => subsection.kind === 0xf2)
-    .map((subsection) => parseCodeViewLines(subsection.data, fileChecksums));
+    .map((subsection) => parseCodeViewLines(subsection.data, fileChecksums, pdbStrings));
   return { subsections, fileChecksums, lines };
+}
+
+export function parsePdbStringTable(input) {
+  const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
+  if (bytes.length < 16) throw new FormatError("Classic PDB /names stream is truncated");
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const signature = view.getUint32(0, true);
+  const hashVersion = view.getUint32(4, true);
+  const byteSize = view.getUint32(8, true);
+  if (signature !== 0xeffeeffe) {
+    throw new FormatError("Classic PDB /names stream has an invalid signature");
+  }
+  if (hashVersion !== 1 && hashVersion !== 2) {
+    throw new UnsupportedFormatError(`Unsupported classic PDB string-table hash version ${hashVersion}`);
+  }
+  if (byteSize > bytes.length - 16) {
+    throw new FormatError("Classic PDB /names string bytes exceed the stream bounds");
+  }
+  const stringBytes = bytes.subarray(12, 12 + byteSize);
+  const strings = new Map();
+  let stringOffset = 0;
+  while (stringOffset < stringBytes.length) {
+    const terminator = stringBytes.indexOf(0, stringOffset);
+    if (terminator < 0) throw new FormatError("Classic PDB /names string is not null-terminated");
+    let value;
+    try {
+      value = new TextDecoder("utf-8", { fatal: true })
+        .decode(stringBytes.subarray(stringOffset, terminator));
+    } catch (error) {
+      throw new FormatError(`Classic PDB /names string is invalid UTF-8: ${error.message}`);
+    }
+    strings.set(stringOffset, value);
+    stringOffset = terminator + 1;
+  }
+  let offset = 12 + byteSize;
+  if (bytes.length - offset < 8) throw new FormatError("Classic PDB /names hash data is truncated");
+  const hashCount = view.getUint32(offset, true);
+  offset += 4;
+  if (hashCount > Math.floor((bytes.length - offset - 4) / 4)) {
+    throw new FormatError("Classic PDB /names hash table exceeds the stream bounds");
+  }
+  const nameIds = [];
+  for (let index = 0; index < hashCount; index++) {
+    const id = view.getUint32(offset, true);
+    offset += 4;
+    if (id !== 0 && !strings.has(id)) {
+      throw new FormatError("Classic PDB /names hash table references a missing string");
+    }
+    nameIds.push(id);
+  }
+  const nameCount = view.getUint32(offset, true);
+  offset += 4;
+  if (offset !== bytes.length) throw new FormatError("Trailing bytes after classic PDB /names stream");
+  return { signature, hashVersion, byteSize, nameCount, strings, nameIds };
 }
 
 export function parseCodeViewSymbolRecords(input) {
@@ -564,11 +624,16 @@ export function parseClassicPdb(input) {
   const infoView = new DataView(infoStream.buffer, infoStream.byteOffset, infoStream.byteLength);
   const id = infoStream.subarray(12, 28);
   const infoDetails = parsePdbNamedStreams(infoStream, streams);
+  const namesStreamIndex = infoDetails.namedStreams.get("/names");
+  const pdbStringTable = namesStreamIndex === undefined
+    ? null
+    : parsePdbStringTable(streams[namesStreamIndex].bytes);
   const info = {
     version: infoView.getUint32(0, true),
     signature: infoView.getUint32(4, true),
     age: infoView.getUint32(8, true),
     guid: formatGuid(id),
+    stringTable: pdbStringTable,
     ...infoDetails
   };
   let dbi = null;
@@ -620,7 +685,12 @@ export function parseClassicPdb(input) {
         throw new FormatError(`Classic PDB DBI ${name} reference targets a missing stream`);
       }
     }
-    const modules = parseDbiModules(dbiStream, substreamSizes.moduleInfo, streams);
+    const modules = parseDbiModules(
+      dbiStream,
+      substreamSizes.moduleInfo,
+      streams,
+      pdbStringTable?.strings ?? null
+    );
     const fileInfoOffset = 64 + substreamSizes.moduleInfo +
       substreamSizes.sectionContributions + substreamSizes.sectionMap;
     dbi = {

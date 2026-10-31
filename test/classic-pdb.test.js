@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { parseClassicPdb } from "../src/index.js";
 import {
   parseCodeViewC13Subsections,
-  parseCodeViewSymbolRecords
+  parseCodeViewSymbolRecords,
+  parsePdbStringTable
 } from "../src/metadata/classic-pdb.js";
 
 function makeClassicPdb() {
@@ -175,6 +176,7 @@ test("classic PDB C13 line subsections decode bounded line and column records", 
     blocks: [{
       fileChecksumOffset: 0,
       fileNameOffset: 1,
+      fileName: null,
       checksumKind: 0,
       checksum: new Uint8Array(),
       lines: [{
@@ -189,4 +191,23 @@ test("classic PDB C13 line subsections decode bounded line and column records", 
   });
   assert.throws(() => parseCodeViewC13Subsections(c13.subarray(0, 10)),
     /subsection exceeds its module stream/);
+});
+
+test("classic PDB string table resolves file names from checksum offsets", () => {
+  const bytes = new Uint8Array(37);
+  const view = new DataView(bytes.buffer);
+  view.setUint32(0, 0xeffeeffe, true);
+  view.setUint32(4, 1, true);
+  view.setUint32(8, 9, true);
+  bytes.set([0, 0x66, 0x6f, 0x6f, 0, 0x62, 0x61, 0x72, 0], 12);
+  view.setUint32(21, 2, true);
+  view.setUint32(25, 1, true);
+  view.setUint32(29, 5, true);
+  view.setUint32(33, 2, true);
+  const strings = parsePdbStringTable(bytes);
+  assert.equal(strings.strings.get(1), "foo");
+  assert.equal(strings.strings.get(5), "bar");
+  assert.deepEqual(strings.nameIds, [1, 5]);
+  assert.throws(() => parsePdbStringTable(bytes.subarray(0, 20)),
+    /string bytes exceed the stream bounds/);
 });
