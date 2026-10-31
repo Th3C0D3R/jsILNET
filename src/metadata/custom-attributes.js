@@ -28,6 +28,9 @@ function writeSerString(output, value) {
   }
   if (typeof value !== "string") throw new TypeError("Custom-attribute SerString values must be strings or null");
   const bytes = new TextEncoder().encode(value);
+  if (new TextDecoder("utf-8", { fatal: true }).decode(bytes) !== value) {
+    throw new TypeError("Custom-attribute SerString values must contain valid Unicode");
+  }
   for (const byte of appendCompressedUInt(bytes.length)) output.push(byte);
   for (const byte of bytes) output.push(byte);
 }
@@ -159,7 +162,14 @@ function readValue(reader, type, resolveEnum, depth = 0) {
 
 function writeValue(output, type, value, depth = 0) {
   if (depth > maxValueDepth) throw new RangeError("Custom-attribute value nesting exceeds supported depth");
-  if (type.kind === "primitive" || type.kind === "enum") {
+  if (type.kind === "enum") {
+    if (!enumTypes.has(type.elementType)) {
+      throw new UnsupportedFormatError("Unsupported custom-attribute enum underlying type");
+    }
+    writePrimitive(output, type.elementType, value);
+    return;
+  }
+  if (type.kind === "primitive") {
     writePrimitive(output, type.elementType, value);
     return;
   }
@@ -197,14 +207,21 @@ function writeValue(output, type, value, depth = 0) {
 
 function writeFieldOrPropertyType(output, type, depth = 0) {
   if (depth > maxValueDepth) throw new RangeError("Custom-attribute type nesting exceeds supported depth");
-  if (type.kind === "primitive") output.push(type.elementType);
-  else if (type.kind === "string") output.push(0x0e);
+  if (type.kind === "primitive") {
+    if (!primitiveTypes.has(type.elementType)) {
+      throw new UnsupportedFormatError("Unsupported custom-attribute primitive type");
+    }
+    output.push(type.elementType);
+  } else if (type.kind === "string") output.push(0x0e);
   else if (type.kind === "type") output.push(0x50);
   else if (type.kind === "object") output.push(0x51);
   else if (type.kind === "array") {
     output.push(0x1d);
     writeFieldOrPropertyType(output, type.elementType, depth + 1);
   } else if (type.kind === "enum") {
+    if (!enumTypes.has(type.elementType)) {
+      throw new UnsupportedFormatError("Unsupported custom-attribute enum underlying type");
+    }
     output.push(0x55);
     writeSerString(output, type.name);
   } else {

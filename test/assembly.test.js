@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { createHash, generateKeyPairSync } from "node:crypto";
 import {
   encodeCodedIndex,
+  encodeCustomAttribute,
   encodeSignature,
   metadataTableNames,
   parseCliHeader,
@@ -7732,6 +7733,29 @@ test("custom attributes with supported constructor types parse and replace round
     externalEnum
   );
   assert.equal(reparsed.parseCustomAttribute(8).namedArguments[0].value, "Runtime display");
+});
+
+test("custom-attribute encoding rejects invalid Unicode and enum encodings", () => {
+  const encodeNamedString = (name, value) => encodeCustomAttribute({
+    fixedArguments: [],
+    namedArguments: [{
+      kind: "field",
+      type: { kind: "string" },
+      name,
+      value
+    }]
+  }, []);
+  assert.throws(() => encodeNamedString("Text", "\ud800"), /valid Unicode/);
+  assert.throws(() => encodeNamedString("\ud800", "text"), /valid Unicode/);
+  assert.throws(() => encodeCustomAttribute({
+    fixedArguments: [],
+    namedArguments: [{
+      kind: "field",
+      type: { kind: "enum", name: "Example.InvalidEnum", elementType: 0x02 },
+      name: "Value",
+      value: true
+    }]
+  }, []), /enum underlying type/);
 });
 
 test("custom attributes can append when their parent preserves table ordering", () => {
