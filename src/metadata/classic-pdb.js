@@ -277,12 +277,27 @@ function decodeCodeViewNumeric(data, offset) {
 
 function decodeCodeViewSymbol(kind, data) {
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  if ((kind === 0x0006 || kind === 0x114e) && data.length === 0) {
+    return { kind: "scopeEnd" };
+  }
   if (kind === 0x1101) {
     if (data.length < 6) throw new FormatError("Classic PDB object-name symbol is truncated");
     return {
       kind: "objectName",
       signature: view.getUint32(0, true),
       name: readCodeViewName(data, 4, "object-name")
+    };
+  }
+  if (kind === 0x1103) {
+    if (data.length < 19) throw new FormatError("Classic PDB block symbol is truncated");
+    return {
+      kind: "block",
+      parent: view.getUint32(0, true),
+      end: view.getUint32(4, true),
+      codeSize: view.getUint32(8, true),
+      offset: view.getUint32(12, true),
+      segment: view.getUint16(16, true),
+      name: readCodeViewName(data, 18, "block")
     };
   }
   if (kind === 0x110e) {
