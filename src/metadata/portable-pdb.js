@@ -88,6 +88,13 @@ export function decodePortablePdbCustomDebugInformation(row, heaps) {
     if (sourceLink === null || Array.isArray(sourceLink) || typeof sourceLink !== "object") {
       throw new FormatError("Portable PDB SourceLink value must be a JSON object");
     }
+    if (sourceLink.documents === null || Array.isArray(sourceLink.documents) ||
+        typeof sourceLink.documents !== "object") {
+      throw new FormatError("Portable PDB SourceLink documents value must be a JSON object");
+    }
+    if (Object.values(sourceLink.documents).some((mapping) => typeof mapping !== "string")) {
+      throw new FormatError("Portable PDB SourceLink document mappings must be strings");
+    }
     return { kind, sourceLink };
   }
   return { kind };

@@ -519,6 +519,22 @@ test("Portable PDB decodes embedded source and SourceLink custom debug data", ()
   });
   assert.deepEqual(sourceLink.sourceLink, { documents: {} });
 
+  const sourceLinkData = (json) => decodePortablePdbCustomDebugInformation({
+    Kind: 1,
+    Value: 1,
+    Parent: { target: { table: 0 } }
+  }, {
+    getGuid: () => Uint8Array.from([
+      0x56, 0x05, 0x11, 0xcc, 0x91, 0xa0, 0x38, 0x4d,
+      0x9f, 0xec, 0x25, 0xab, 0x9a, 0x35, 0x1a, 0x6a
+    ]),
+    getBlob: () => new TextEncoder().encode(json)
+  });
+  assert.throws(() => sourceLinkData("{\"documents\":null}"),
+    /documents value must be a JSON object/);
+  assert.throws(() => sourceLinkData("{\"documents\":{\"src/*\":1}}"),
+    /mappings must be strings/);
+
   assert.throws(() => decodePortablePdbCustomDebugInformation({
     Kind: 1,
     Value: 1,
