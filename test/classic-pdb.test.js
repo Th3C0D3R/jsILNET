@@ -185,6 +185,15 @@ test("classic PDB symbol decoding exposes public, data, and procedure names", ()
     backEndVersion: { major: 5, minor: 6, build: 7, qfe: 8 },
     version: "cv1"
   });
+  const objectName = new Uint8Array(8);
+  const objectView = new DataView(objectName.buffer);
+  objectView.setUint32(0, 0x12345678, true);
+  objectName.set([0x6f, 0x62, 0x6a, 0], 4);
+  assert.deepEqual(decodeRecord(0x1101, objectName), {
+    kind: "objectName",
+    signature: 0x12345678,
+    name: "obj"
+  });
 
   const procedure = new Uint8Array(4 + 2 + 2 + 35 + 5);
   const procedureView = new DataView(procedure.buffer);

@@ -277,6 +277,14 @@ function decodeCodeViewNumeric(data, offset) {
 
 function decodeCodeViewSymbol(kind, data) {
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  if (kind === 0x1101) {
+    if (data.length < 6) throw new FormatError("Classic PDB object-name symbol is truncated");
+    return {
+      kind: "objectName",
+      signature: view.getUint32(0, true),
+      name: readCodeViewName(data, 4, "object-name")
+    };
+  }
   if (kind === 0x110e) {
     if (data.length < 11) throw new FormatError("Classic PDB S_PUB32 record is truncated");
     return {
