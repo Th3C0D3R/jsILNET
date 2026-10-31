@@ -37,15 +37,18 @@ function makeClassicPdb() {
   return bytes;
 }
 
-function makeClassicPdbWithSymbols() {
+function makeClassicPdbWithSymbols({ crossBlockName = false } = {}) {
   const blockSize = 512;
-  const bytes = new Uint8Array(blockSize * 8);
+  const symbolStream = new Uint8Array(crossBlockName ? 516 : 24);
+  const symbolView = new DataView(symbolStream.buffer);
+  const symbolRecordOffset = crossBlockName ? 496 : 4;
+  const bytes = new Uint8Array(blockSize * (crossBlockName ? 9 : 8));
   const view = new DataView(bytes.buffer);
   bytes.set(new TextEncoder().encode("Microsoft C/C++ MSF 7.00\r\n\u001aDS\0\0\0"));
   view.setUint32(32, blockSize, true);
   view.setUint32(36, 1, true);
-  view.setUint32(40, 8, true);
-  view.setUint32(44, 36, true);
+  view.setUint32(40, bytes.length / blockSize, true);
+  view.setUint32(44, crossBlockName ? 40 : 36, true);
   view.setUint32(48, 0, true);
   view.setUint32(52, 3, true);
 
@@ -56,10 +59,11 @@ function makeClassicPdbWithSymbols() {
   view.setUint32(directoryOffset + 8, 52, true);
   view.setUint32(directoryOffset + 12, 0xffffffff, true);
   view.setUint32(directoryOffset + 16, 144, true);
-  view.setUint32(directoryOffset + 20, 24, true);
+  view.setUint32(directoryOffset + 20, symbolStream.length, true);
   view.setUint32(directoryOffset + 24, 5, true);
   view.setUint32(directoryOffset + 28, 6, true);
   view.setUint32(directoryOffset + 32, 7, true);
+  if (crossBlockName) view.setUint32(directoryOffset + 36, 8, true);
 
   const infoOffset = blockSize * 5;
   view.setUint32(infoOffset, 20000404, true);
@@ -80,19 +84,25 @@ function makeClassicPdbWithSymbols() {
   view.setUint16(dbiOffset + 20, 0xffff, true);
   view.setUint32(dbiOffset + 24, 80, true);
   view.setUint16(dbiOffset + 64 + 34, 4, true);
-  view.setUint32(dbiOffset + 64 + 36, 24, true);
+  view.setUint32(dbiOffset + 64 + 36, symbolStream.length, true);
   bytes.set([0x74, 0x65, 0x73, 0x74, 0], dbiOffset + 64 + 64);
   bytes.set([0x74, 0x65, 0x73, 0x74, 0x2e, 0x6f, 0x62, 0x6a, 0],
     dbiOffset + 64 + 69);
 
-  const symbolsOffset = blockSize * 7;
-  view.setUint32(symbolsOffset, 4, true);
-  view.setUint16(symbolsOffset + 4, 18, true);
-  view.setUint16(symbolsOffset + 6, 0x110e, true);
-  view.setUint32(symbolsOffset + 8, 1, true);
-  view.setUint32(symbolsOffset + 12, 0x20, true);
-  view.setUint16(symbolsOffset + 16, 1, true);
-  bytes.set([0x70, 0x75, 0x62, 0, 0xf2, 0xf2], symbolsOffset + 18);
+  symbolView.setUint32(0, 4, true);
+  if (crossBlockName) {
+    symbolView.setUint16(4, 490, true);
+    symbolView.setUint16(6, 0x7777, true);
+    symbolStream.fill(0xaa, 8, symbolRecordOffset);
+  }
+  symbolView.setUint16(symbolRecordOffset, 18, true);
+  symbolView.setUint16(symbolRecordOffset + 2, 0x110e, true);
+  symbolView.setUint32(symbolRecordOffset + 4, 1, true);
+  symbolView.setUint32(symbolRecordOffset + 8, 0x20, true);
+  symbolView.setUint16(symbolRecordOffset + 12, 1, true);
+  symbolStream.set([0x70, 0x75, 0x62, 0, 0xf2, 0xf2], symbolRecordOffset + 14);
+  bytes.set(symbolStream.subarray(0, blockSize), blockSize * 7);
+  if (crossBlockName) bytes.set(symbolStream.subarray(blockSize), blockSize * 8);
   return bytes;
 }
 
@@ -143,6 +153,18 @@ test("classic PDB symbol names can be replaced without changing MSF layout", () 
     recordIndex: 0,
     name: "\ud800"
   }), /valid Unicode/);
+});
+
+test("classic PDB symbol names can cross MSF stream blocks", () => {
+  const original = makeClassicPdbWithSymbols({ crossBlockName: true });
+  const rewritten = replaceClassicPdbSymbolName(original, {
+    moduleIndex: 0,
+    recordIndex: 1,
+    name: "long"
+  });
+  assert.equal(parseClassicPdb(rewritten).dbi.modules[0].symbols.records[1].decoded.name, "long");
+  assert.deepEqual(rewritten.subarray(512 * 7 + 510, 512 * 8 + 4),
+    Uint8Array.from([0x6c, 0x6f, 0x6e, 0x67, 0, 0xf1]));
 });
 
 test("classic PDB module symbols preserve bounded CodeView record payloads", () => {
