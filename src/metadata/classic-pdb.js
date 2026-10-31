@@ -92,6 +92,129 @@ function parsePdbNamedStreams(infoStream, streams) {
   return { namedStreams, featureSignatures };
 }
 
+function parseDbiModules(dbiStream, moduleInfoSize, streams) {
+  const modules = [];
+  let offset = 64;
+  const end = offset + moduleInfoSize;
+  const view = new DataView(dbiStream.buffer, dbiStream.byteOffset, dbiStream.byteLength);
+  const readName = (context) => {
+    const start = offset;
+    while (offset < end && dbiStream[offset] !== 0) offset++;
+    if (offset >= end) throw new FormatError(`Classic PDB DBI ${context} is not null-terminated`);
+    const bytes = dbiStream.subarray(start, offset++);
+    try {
+      return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    } catch (error) {
+      throw new FormatError(`Classic PDB DBI ${context} is invalid UTF-8: ${error.message}`);
+    }
+  };
+  while (offset < end) {
+    if (end - offset < 64) {
+      throw new FormatError("Classic PDB DBI module-info record is truncated");
+    }
+    const recordStart = offset;
+    const streamIndex = view.getUint16(recordStart + 34, true);
+    const symbolBytes = view.getUint32(recordStart + 36, true);
+    const c11Bytes = view.getUint32(recordStart + 40, true);
+    const c13Bytes = view.getUint32(recordStart + 44, true);
+    const fileCount = view.getUint16(recordStart + 48, true);
+    offset += 64;
+    const moduleName = readName("module name");
+    const objectName = readName("object name");
+    const alignedOffset = (offset + 3) & ~3;
+    if (alignedOffset > end) throw new FormatError("Classic PDB DBI module-info padding exceeds its substream");
+    offset = alignedOffset;
+    if (streamIndex !== 0xffff) {
+      const moduleStream = streams[streamIndex]?.bytes;
+      if (!moduleStream) {
+        throw new FormatError("Classic PDB DBI module references a missing stream");
+      }
+      if (symbolBytes + c11Bytes + c13Bytes > moduleStream.length) {
+        throw new FormatError("Classic PDB DBI module data lengths exceed its module stream");
+      }
+    } else if (symbolBytes !== 0 || c11Bytes !== 0 || c13Bytes !== 0) {
+      throw new FormatError("Classic PDB DBI module has data lengths but no module stream");
+    }
+    modules.push({
+      moduleName,
+      objectName,
+      streamIndex,
+      symbolBytes,
+      c11Bytes,
+      c13Bytes,
+      fileCount
+    });
+  }
+  return modules;
+}
+
+function parseDbiFileInfo(dbiStream, fileInfoOffset, fileInfoSize, modules) {
+  if (fileInfoSize === 0) return modules.map((module) => ({ ...module, sourceFiles: [] }));
+  if (fileInfoSize < 4) throw new FormatError("Classic PDB DBI file-info substream is truncated");
+  const view = new DataView(dbiStream.buffer, dbiStream.byteOffset, dbiStream.byteLength);
+  let offset = fileInfoOffset;
+  const end = fileInfoOffset + fileInfoSize;
+  const moduleCount = view.getUint16(offset, true);
+  offset += 4;
+  if (moduleCount !== modules.length) {
+    throw new FormatError("Classic PDB DBI file-info module count does not match module descriptors");
+  }
+  if (moduleCount > Math.floor((end - offset) / 4)) {
+    throw new FormatError("Classic PDB DBI file-info module arrays exceed their substream");
+  }
+  const moduleIndices = [];
+  for (let index = 0; index < moduleCount; index++) {
+    moduleIndices.push(view.getUint16(offset, true));
+    offset += 2;
+  }
+  const fileCounts = [];
+  let totalFiles = 0;
+  for (let index = 0; index < moduleCount; index++) {
+    const count = view.getUint16(offset, true);
+    offset += 2;
+    fileCounts.push(count);
+    totalFiles += count;
+  }
+  if (totalFiles > Math.floor((end - offset) / 4)) {
+    throw new FormatError("Classic PDB DBI file-name offsets exceed their substream");
+  }
+  const fileNameOffsets = [];
+  for (let index = 0; index < totalFiles; index++) {
+    fileNameOffsets.push(view.getUint32(offset, true));
+    offset += 4;
+  }
+  const names = dbiStream.subarray(offset, end);
+  const filesByModule = modules.map(() => []);
+  let fileIndex = 0;
+  for (let index = 0; index < moduleCount; index++) {
+    if (modules[index].fileCount !== fileCounts[index]) {
+      throw new FormatError("Classic PDB DBI module file count disagrees with file-info data");
+    }
+    for (let count = 0; count < fileCounts[index]; count++) {
+      const nameOffset = fileNameOffsets[fileIndex++];
+      if (nameOffset >= names.length) {
+        throw new FormatError("Classic PDB DBI source-file name offset is out of range");
+      }
+      const terminator = names.indexOf(0, nameOffset);
+      if (terminator < 0) {
+        throw new FormatError("Classic PDB DBI source-file name is not null-terminated");
+      }
+      try {
+        filesByModule[index].push(
+          new TextDecoder("utf-8", { fatal: true }).decode(names.subarray(nameOffset, terminator))
+        );
+      } catch (error) {
+        throw new FormatError(`Classic PDB DBI source-file name is invalid UTF-8: ${error.message}`);
+      }
+    }
+  }
+  return modules.map((module, index) => ({
+    ...module,
+    fileInfoModuleIndex: moduleIndices[index],
+    sourceFiles: filesByModule[index]
+  }));
+}
+
 export function parseClassicPdb(input) {
   const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
   if (bytes.length < 56) throw new FormatError("Classic PDB MSF superblock is truncated");
@@ -261,6 +384,9 @@ export function parseClassicPdb(input) {
         throw new FormatError(`Classic PDB DBI ${name} reference targets a missing stream`);
       }
     }
+    const modules = parseDbiModules(dbiStream, substreamSizes.moduleInfo, streams);
+    const fileInfoOffset = 64 + substreamSizes.moduleInfo +
+      substreamSizes.sectionContributions + substreamSizes.sectionMap;
     dbi = {
       version: dbiVersion,
       age: dbiAge,
@@ -270,7 +396,10 @@ export function parseClassicPdb(input) {
       machine: dbiView.getUint16(58, true),
       flags: dbiView.getUint16(56, true),
       streamReferences,
-      substreamSizes
+      substreamSizes,
+      modules: parseDbiFileInfo(
+        dbiStream, fileInfoOffset, substreamSizes.fileInfo, modules
+      )
     };
   }
   return {

@@ -56,6 +56,10 @@ test("classic PDB parser reads a compiler-produced MSF identity", {
     assert.ok(pdb.dbi);
     assert.equal(pdb.dbi.age, pdb.info.age);
     assert.ok(pdb.dbi.version >= 19990903);
+    assert.ok(pdb.dbi.modules.some((module) => module.moduleName.length > 0));
+    assert.ok(pdb.dbi.modules.some((module) =>
+      module.sourceFiles.some((file) => file.endsWith("Class1.cs"))
+    ));
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
