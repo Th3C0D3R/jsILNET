@@ -2665,6 +2665,102 @@ test("methods append before later empty TypeDef ownership ranges", () => {
   assert.equal(reparsed.types[laterOwner.rid - 1].methods.length, 0);
 });
 
+test("insertMethod supports non-trailing owners and remaps existing and new-body tokens", () => {
+  for (const pointerMode of [false, true]) {
+    const assembly = parseAssembly(withoutDebugDirectory());
+    assembly.tables.sorted &= ~(1n << 12n);
+    if (pointerMode) {
+      usePointerTable(assembly, {
+        pointerId: 5,
+        targetId: 6,
+        column: "Method",
+        listTableId: 2,
+        listColumn: "MethodList",
+        pointerName: "MethodPtr",
+        targetName: "MethodDef"
+      });
+    }
+    const owner = assembly.types.at(-2);
+    const laterOwner = assembly.types.at(-1);
+    const oldOwnerMethodRids = [...owner.methodRids];
+    const referencedMethodToken = 0x06000000 + assembly.methods.at(-1).rid;
+    const oldMethodCount = assembly.tables.counts[6];
+    const insertedRid = pointerMode
+      ? oldMethodCount + 1
+      : oldOwnerMethodRids.at(-1) + 1;
+    const body = Uint8Array.of(
+      0x1e, 0xd0,
+      referencedMethodToken & 0xff,
+      (referencedMethodToken >>> 8) & 0xff,
+      (referencedMethodToken >>> 16) & 0xff,
+      (referencedMethodToken >>> 24) & 0xff,
+      0x26, 0x2a
+    );
+    const result = assembly.insertMethod({
+      owner: { table: "TypeDef", rid: owner.rid },
+      name: "InsertedOwnerMethod",
+      flags: 0x0096,
+      signature: Uint8Array.of(0x00, 0x00, 0x01),
+      body
+    });
+    if (pointerMode) {
+      assert.equal(result.token, 0x06000000 + insertedRid);
+      assert.equal(result.tokenMap.size, 0);
+    } else {
+      assert.equal(result.token, 0x06000000 + insertedRid);
+      assert.equal(result.tokenMap.get(referencedMethodToken), referencedMethodToken + 1);
+    }
+    assert.equal(owner.methods.at(-1).rid, result.token & 0x00ffffff);
+
+    const reparsed = parseAssembly(assembly.serialize());
+    const inserted = reparsed.methods[(result.token & 0x00ffffff) - 1];
+    assert.equal(inserted.name, "InsertedOwnerMethod");
+    assert.equal(inserted.rid, result.token & 0x00ffffff);
+    assert.equal(reparsed.getMethodBody(inserted.rid).instructions[0].operand.value,
+      pointerMode ? referencedMethodToken : referencedMethodToken + 1);
+    assert.equal(reparsed.types[laterOwner.rid - 1].methods.length, laterOwner.methods.length);
+  }
+});
+
+test("insertMethod remaps generic parameter owners with shifted MethodDef RIDs", () => {
+  const assembly = parseAssembly(withoutDebugDirectory());
+  assembly.tables.sorted &= ~(1n << 12n);
+  const insertedOwner = assembly.types.at(-2);
+  const genericOwner = assembly.types.at(-1);
+  for (const owner of [insertedOwner, genericOwner]) {
+    owner.flags |= 0x0080;
+    assembly.tables.row(2, owner.rid).Flags = owner.flags;
+  }
+  const genericMethodRid = assembly.addMethod({
+    owner: { table: "TypeDef", rid: genericOwner.rid },
+    name: "GenericOwnerMethod",
+    flags: 0x0446,
+    signature: Uint8Array.of(0x10, 0x01, 0x00, 0x1e, 0x00)
+  }) & 0x00ffffff;
+  assembly.addGenericParam({
+    owner: { table: "MethodDef", rid: genericMethodRid },
+    name: "T",
+    number: 0
+  });
+  const inserted = assembly.insertMethod({
+    owner: { table: "TypeDef", rid: insertedOwner.rid },
+    name: "InsertedAbstract",
+    flags: 0x0446,
+    signature: Uint8Array.of(0x00, 0x00, 0x01)
+  });
+  const shiftedGenericRid = genericMethodRid + 1;
+  assert.equal(assembly.genericParams.at(-1).owner.rid, shiftedGenericRid);
+  assert.equal(assembly.methods[shiftedGenericRid - 1].genericParams[0].owner.rid,
+    shiftedGenericRid);
+
+  const reparsed = parseAssembly(assembly.serialize());
+  assert.equal(reparsed.genericParams.at(-1).owner.rid, shiftedGenericRid);
+  assert.equal(reparsed.methods[shiftedGenericRid - 1].genericParams[0].owner.rid,
+    shiftedGenericRid);
+  assert.equal(reparsed.types[insertedOwner.rid - 1].methods.at(-1).rid,
+    inserted.token & 0x00ffffff);
+});
+
 test("method append supports validated IL bodies and generic signatures", () => {
   const assembly = parseAssembly(withoutDebugDirectory());
   const owner = assembly.types.at(-1);

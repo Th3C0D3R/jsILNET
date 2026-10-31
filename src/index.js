@@ -3595,6 +3595,20 @@ export class Assembly {
   }
 
   addMethod({ owner, name, flags, implFlags = 0, signature, body: bodyBytes }) {
+    return this.#writeMethod(
+      { owner, name, flags, implFlags, signature, body: bodyBytes },
+      false
+    ).token;
+  }
+
+  insertMethod({ owner, name, flags, implFlags = 0, signature, body: bodyBytes }) {
+    return this.#writeMethod(
+      { owner, name, flags, implFlags, signature, body: bodyBytes },
+      true
+    );
+  }
+
+  #writeMethod({ owner, name, flags, implFlags = 0, signature, body: bodyBytes }, insertIntoOwner) {
     this.#ensureEditable();
     const ownerRid = metadataTableId(owner?.table) === 2 ? owner.rid : 0;
     const ownerType = this.types[ownerRid - 1];
@@ -3645,11 +3659,16 @@ export class Assembly {
     }
 
     const methodRows = this.tables.rows.get(6) ?? [];
+    const originalMethodCount = methodRows.length;
     if (methodRows.length !== this.tables.counts[6] || methodRows.length !== this.methods.length ||
         methodRows.length >= 0x00ffffff) {
       throw new RangeError("MethodDef row count is inconsistent or exceeds the metadata token range");
     }
+    const pointerPresent = (this.tables.valid & (1n << 5n)) !== 0n;
     const pointerRows = getBijectivePointerRows(this, 5, 6, "Method");
+    if (pointerPresent && !pointerRows) {
+      throw new FormatError("MethodPtr must be a one-to-one mapping to MethodDef rows");
+    }
     const typeRows = this.tables.rows.get(2) ?? [];
     if (typeRows.length !== (this.tables.counts[2] ?? 0)) {
       throw new FormatError("TypeDef row count is inconsistent with the metadata table header");
@@ -3667,24 +3686,64 @@ export class Assembly {
         { length: Math.max(0, endRid - ownerRow.MethodList.rid) },
         (_, index) => ownerRow.MethodList.rid + index
       );
-    if (endRid !== methodListRows.length + 1 ||
+    if (endRid > methodListRows.length + 1 ||
         ownedRids.length !== ownerType.methodRids.length ||
         ownedRids.some((methodRid, index) => methodRid !== ownerType.methodRids[index])) {
+      throw new UnsupportedFormatError("Method insertion requires a valid contiguous owner range");
+    }
+    if (!insertIntoOwner && endRid !== methodListRows.length + 1) {
       throw new UnsupportedFormatError("Method append requires the owner's methods to be contiguous at the end");
     }
     const parameterRows = this.tables.rows.get(8) ?? [];
     if (parameterRows.length !== this.tables.counts[8]) {
       throw new FormatError("Param row count is inconsistent with the metadata table header");
     }
+    const parameterPointerPresent = (this.tables.valid & (1n << 7n)) !== 0n;
     const parameterPointerRows = getBijectivePointerRows(this, 7, 8, "Param");
-    const rid = methodRows.length + 1;
+    if (parameterPointerPresent && !parameterPointerRows) {
+      throw new FormatError("ParamPtr must be a one-to-one mapping to Param rows");
+    }
+    const rid = pointerRows ? methodRows.length + 1 : endRid;
+    const pointerInsertionIndex = pointerRows
+      ? ownerRow.MethodList.rid - 1 + ownedRids.length
+      : -1;
+    const pointerRid = pointerInsertionIndex + 1;
+    const nextMethodListRow = methodListRows[endRid - 1];
+    const nextMethodRid = pointerRows
+      ? nextMethodListRow?.Method.rid
+      : nextMethodListRow?.rid;
+    const parameterListRid = pointerRows
+      ? (parameterPointerRows?.length ?? parameterRows.length) + 1
+      : nextMethodRid
+        ? methodRows[nextMethodRid - 1]?.ParamList.rid
+        : (parameterPointerRows?.length ?? parameterRows.length) + 1;
+    if (!Number.isInteger(parameterListRid)) {
+      throw new FormatError("Method insertion could not resolve the next ParamList boundary");
+    }
     if (hasBody) {
       parsedBody = validateNewMethodBody(
         this, bodyBytes, ownerType, rid, parsedSignature.genericParameterCount ?? 0
       );
     }
     const parameterListTable = parameterPointerRows ? 7 : 8;
-    const parameterListRid = (parameterPointerRows?.length ?? parameterRows.length) + 1;
+    const { tokenMap, rowChanges, tokenUpdates, patches } = pointerRows
+      ? { tokenMap: new Map(), rowChanges: [], tokenUpdates: [], patches: [] }
+      : this.#prepareTokenRowInsertion(6, rid, methodRows.length, "MethodDef");
+    const insertedBody = hasBody ? bodyBytes.slice() : null;
+    if (parsedBody && insertedBody) {
+      for (const instruction of parsedBody.instructions) {
+        const token = instruction.operand?.kind === "token" ? instruction.operand.value : 0;
+        if (!tokenMap.has(token)) continue;
+        const replacement = tokenMap.get(token);
+        for (const patch of createOperandPatches(instruction, replacement)) {
+          if (patch.offset < 0 || patch.offset + patch.bytes.length > insertedBody.length) {
+            throw new FormatError("Inserted method token patch is outside its body");
+          }
+          insertedBody.set(patch.bytes, patch.offset);
+        }
+        instruction.operand.value = replacement;
+      }
+    }
 
     const heapStreams = new Map(
       [...(this._heapStreams ?? new Map([...this.metadataRoot.streams].map(([streamName, stream]) =>
@@ -3724,36 +3783,65 @@ export class Assembly {
       genericParams: [],
       row
     };
-    methodRows.push(row);
+    for (const change of rowChanges) change.row[change.columnName] = change.value;
+    for (const existingRow of methodRows) {
+      if (existingRow.rid >= rid) existingRow.rid++;
+    }
+    methodRows.splice(rid - 1, 0, row);
     this.tables.rows.set(6, methodRows);
-    this.tables.counts[6] = rid;
+    this.tables.counts[6] = methodRows.length;
     this.tables.valid |= 1n << 6n;
     if (pointerRows) {
-      const pointerRid = pointerRows.length + 1;
-      pointerRows.push({
+      for (const pointer of pointerRows) {
+        if (pointer.rid >= pointerRid) pointer.rid++;
+      }
+      pointerRows.splice(pointerInsertionIndex, 0, {
         table: 5,
         tableName: metadataTableNames[5],
         rid: pointerRid,
         Method: { raw: rid, table: 6, tableName: metadataTableNames[6], rid }
       });
       this.tables.rows.set(5, pointerRows);
-      this.tables.counts[5] = pointerRid;
+      this.tables.counts[5] = pointerRows.length;
     }
-    for (let index = ownerRid; index < typeRows.length; index++) {
-      typeRows[index].MethodList.rid++;
-      typeRows[index].MethodList.raw++;
+    if (pointerRows || rid > originalMethodCount) {
+      for (let index = ownerRid; index < typeRows.length; index++) {
+        typeRows[index].MethodList.rid++;
+        typeRows[index].MethodList.raw++;
+      }
     }
-    this.methods.push(method);
+    if (!pointerRows) {
+      for (const candidate of this.methods) {
+        if (candidate.rid >= rid) candidate.rid++;
+      }
+      for (const type of this.types) {
+        type.methodRids = type.methodRids.map((methodRid) =>
+          methodRid >= rid ? methodRid + 1 : methodRid
+        );
+      }
+      for (const parameter of this.genericParams) {
+        if (parameter.owner.table === 6 && parameter.owner.rid >= rid) {
+          parameter.owner.rid++;
+        }
+      }
+      this._bodyCache = new Map([...this._bodyCache].map(([methodRid, body]) => [
+        methodRid >= rid ? methodRid + 1 : methodRid,
+        body
+      ]));
+    }
+    this.methods.splice(rid - 1, 0, method);
     if (parsedBody) {
-      this._addedMethodBodies.set(rid, bodyBytes.slice());
+      this._addedMethodBodies.set(rid, insertedBody);
       this._bodyCache.set(rid, parsedBody);
     }
     ownerType.methodRids.push(rid);
     ownerType.methods.push(method);
     this._heapStreams = heapStreams;
     this.#refreshHeaps();
+    for (const update of tokenUpdates) update.instruction.operand.value = update.replacement;
+    this._patches.push(...patches);
     this._metadataDirty = true;
-    return 0x06000000 + rid;
+    return { token: 0x06000000 + rid, tokenMap };
   }
 
   removeMethod(rid) {
