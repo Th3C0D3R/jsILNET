@@ -7,7 +7,10 @@ const tableNames = [
   "FieldLayout", "StandAloneSig", "EventMap", "EventPtr", "Event", "PropertyMap", "PropertyPtr", "Property",
   "MethodSemantics", "MethodImpl", "ModuleRef", "TypeSpec", "ImplMap", "FieldRVA", "ENCLog", "ENCMap",
   "Assembly", "AssemblyProcessor", "AssemblyOS", "AssemblyRef", "AssemblyRefProcessor", "AssemblyRefOS",
-  "File", "ExportedType", "ManifestResource", "NestedClass", "GenericParam", "MethodSpec", "GenericParamConstraint"
+  "File", "ExportedType", "ManifestResource", "NestedClass", "GenericParam", "MethodSpec", "GenericParamConstraint",
+  null, null, null,
+  "Document", "MethodDebugInformation", "LocalScope", "LocalVariable", "LocalConstant", "ImportScope",
+  "StateMachineMethod", "CustomDebugInformation"
 ];
 
 const codedIndexes = {
@@ -23,7 +26,12 @@ const codedIndexes = {
   Implementation: { bits: 2, tables: [38, 35, 39] },
   CustomAttributeType: { bits: 3, tables: [null, null, 6, 10, null] },
   ResolutionScope: { bits: 2, tables: [0, 26, 35, 1] },
-  TypeOrMethodDef: { bits: 1, tables: [2, 6] }
+  TypeOrMethodDef: { bits: 1, tables: [2, 6] },
+  HasCustomDebugInformation: {
+    bits: 5,
+    tables: [6, 4, 1, 2, 8, 9, 10, 0, 14, 23, 20, 17, 26, 27, 32, 35, 38, 39, 40, 42,
+      44, 43, 48, 50, 51, 52, 53]
+  }
 };
 
 const schemas = [
@@ -71,12 +79,24 @@ const schemas = [
   [["table", 2, "NestedClass"], ["table", 2, "EnclosingClass"]],
   [["u2", "Number"], ["u2", "Flags"], ["coded", "TypeOrMethodDef", "Owner"], ["str", "Name"]],
   [["coded", "MethodDefOrRef", "Method"], ["blob", "Instantiation"]],
-  [["table", 42, "Owner"], ["coded", "TypeDefOrRef", "Constraint"]]
+  [["table", 42, "Owner"], ["coded", "TypeDefOrRef", "Constraint"]],
+  null, null, null,
+  [["blob", "Name"], ["guid", "HashAlgorithm"], ["blob", "Hash"], ["guid", "Language"]],
+  [["table", 48, "Document"], ["blob", "SequencePoints"]],
+  [["table", 6, "Method"], ["table", 53, "ImportScope"], ["table", 51, "VariableList", 51],
+    ["table", 52, "ConstantList", 52], ["u4", "StartOffset"], ["u4", "Length"]],
+  [["u2", "Attributes"], ["u2", "Index"], ["str", "Name"]],
+  [["str", "Name"], ["blob", "Signature"]],
+  [["table", 53, "Parent"], ["blob", "Imports"]],
+  [["table", 6, "MoveNextMethod"], ["table", 6, "KickoffMethod"]],
+  [["coded", "HasCustomDebugInformation", "Parent"], ["guid", "Kind"], ["blob", "Value"]]
 ];
 
-const tableIdByName = new Map(tableNames.map((name, id) => [name, id]));
+const tableIdByName = new Map(tableNames.flatMap((name, id) => name === null ? [] : [[name, id]]));
 const pointerTables = new Map([[3, 4], [5, 6], [7, 8], [19, 20], [22, 23]]);
-const listColumns = new Set(["FieldList", "MethodList", "ParamList", "EventList", "PropertyList"]);
+const listColumns = new Set([
+  "FieldList", "MethodList", "ParamList", "EventList", "PropertyList", "VariableList", "ConstantList"
+]);
 
 function fieldWidth(field, counts, heapSizes, present) {
   const [kind, value, , pointer] = field;
@@ -142,7 +162,7 @@ export function tableIndexWidth(rowCount) {
   return rowCount < 0x10000 ? 2 : 4;
 }
 
-export function parseTablesStream(stream) {
+export function parseTablesStream(stream, externalCounts = null) {
   const reader = new BinaryReader(stream.bytes, {
     baseOffset: stream.offset,
     context: `${stream.name} tables stream`
@@ -167,7 +187,7 @@ export function parseTablesStream(stream) {
   const valid = reader.u8();
   const sorted = reader.u8();
   const present = new Set();
-  const counts = new Array(64).fill(0);
+  const counts = Array.from({ length: 64 }, (_, id) => externalCounts?.[id] ?? 0);
   for (let id = 0; id < 64; id++) {
     if ((valid & (1n << BigInt(id))) === 0n) continue;
     if (id >= schemas.length || !schemas[id]) {

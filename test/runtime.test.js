@@ -197,6 +197,9 @@ test("strong-name signed PE32+ assemblies load and execute in .NET", {
       entry.type === 17
     )?.embeddedPortablePdb;
     assert.ok(embeddedPdb);
+    assert.ok(embeddedPdb.tables.counts[48] > 0);
+    assert.ok(embeddedPdb.tables.counts[49] > 0);
+    assert.ok(embeddedPdb.heaps.blobs);
     assembly.replaceStrongNamePublicKey(
       generateKeyPairSync("rsa", { modulusLength: 1024 }).privateKey
     );

@@ -1,7 +1,8 @@
 import { inflateRawSync } from "node:zlib";
 import { BinaryReader } from "../binary/reader.js";
 import { FormatError, UnsupportedFormatError } from "../binary/errors.js";
-import { parseMetadataRoot } from "../metadata/streams.js";
+import { MetadataHeaps, parseMetadataRoot } from "../metadata/streams.js";
+import { parseTablesStream } from "../metadata/tables.js";
 
 const maxEmbeddedPortablePdbSize = 0x10000000;
 
@@ -151,10 +152,16 @@ export function parseEmbeddedPortablePdbData(bytes, offset, size) {
   }
   const metadataRoot = parseMetadataRoot(metadataBytes, 0, metadataBytes.length);
   const pdb = parsePortablePdbStream(metadataRoot);
+  const externalCounts = new Array(64).fill(0);
+  for (const [table, count] of pdb.rowCounts) externalCounts[table] = count;
+  const tables = parseTablesStream(metadataRoot.streams.get("#~"), externalCounts);
+  const heaps = new MetadataHeaps(metadataRoot.streams);
   return {
     uncompressedSize,
     bytes: Uint8Array.from(metadataBytes),
     metadataRoot,
+    tables,
+    heaps,
     ...pdb
   };
 }

@@ -368,6 +368,7 @@ test("embedded Portable PDB data validates and exposes its metadata streams", ()
   view.setUint32(72, 0x06000001, true);
   view.setUint32(76, 1 << 6, true);
   view.setUint32(84, 3, true);
+  metadata[95] = 1;
 
   const compressed = deflateRawSync(metadata);
   const container = new Uint8Array(8 + compressed.length);
@@ -383,6 +384,7 @@ test("embedded Portable PDB data validates and exposes its metadata streams", ()
   assert.equal(pdb.metadataRoot.streams.has("#Pdb"), true);
   assert.equal(pdb.metadataRoot.streams.has("#~"), true);
   assert.deepEqual(pdb.rowCounts, new Map([[6, 3]]));
+  assert.equal(pdb.tables.counts[6], 3);
 
   const invalid = Uint8Array.from(container);
   invalid[0] = 0;

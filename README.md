@@ -17,7 +17,7 @@ This is an early-stage library, not a dnlib-equivalent rewriter. Tier 1 and Tier
 - Validate ordering for ECMA-defined sorted metadata tables and reject duplicate keys in metadata tables with unique keys.
 - Parse and bounds-check debug-directory entries, adjusting their raw pointers if section-header growth shifts file data.
 - Replace RSDS/NB10 CodeView PDB paths in place when the encoded path length is unchanged.
-- Parse embedded Portable PDB containers with a bounded decompression limit and expose their metadata streams and `#Pdb` identity.
+- Parse embedded Portable PDB containers with a bounded decompression limit, decode Portable PDB tables and heaps, and expose `#Pdb` identity and referenced type-system row counts. Sequence-point blobs remain opaque.
 - Read the metadata root, `#~`/`#-` table streams, and the `#Strings`, `#US`, `#GUID`, and `#Blob` heaps.
 - Decode ECMA-335 metadata tables and expose core module, type, field, method, member-reference, and assembly-reference data.
 - Parse and encode method, field, local, property, method-instantiation, and type signatures, including array shapes, generic instances, modifiers, and compressed signed integers.
