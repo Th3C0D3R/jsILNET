@@ -227,14 +227,17 @@ function parseDbiFileInfo(dbiStream, fileInfoOffset, fileInfoSize, modules) {
   }));
 }
 
-function readCodeViewName(bytes, offset, context) {
+function readCodeViewName(bytes, offset, context, allowZeroPadding = false) {
   const end = bytes.indexOf(0, offset);
   if (end < 0) throw new FormatError(`Classic PDB ${context} name is not null-terminated`);
   const padding = bytes.subarray(end + 1);
   if (padding.length > 0) {
     const marker = padding[padding.length - 1];
     const paddingLength = marker - 0xf0;
-    if (paddingLength !== padding.length || padding.some((byte) => byte !== marker)) {
+    const zeroPadding = allowZeroPadding && padding.length <= 3 &&
+      padding.every((byte) => byte === 0);
+    if (!zeroPadding &&
+        (paddingLength !== padding.length || padding.some((byte) => byte !== marker))) {
       throw new FormatError(`Classic PDB ${context} name has invalid CodeView padding`);
     }
   }
@@ -282,6 +285,24 @@ function decodeCodeViewSymbol(kind, data) {
       segment: view.getUint16(32, true),
       flags: data[34],
       name: readCodeViewName(data, 35, "procedure")
+    };
+  }
+  if (kind === 0x112a || kind === 0x112b) {
+    if (data.length < 38) throw new FormatError("Classic PDB managed procedure symbol is truncated");
+    return {
+      kind: "managedProcedure",
+      parent: view.getUint32(0, true),
+      end: view.getUint32(4, true),
+      next: view.getUint32(8, true),
+      codeSize: view.getUint32(12, true),
+      debugStart: view.getUint32(16, true),
+      debugEnd: view.getUint32(20, true),
+      methodToken: view.getUint32(24, true),
+      offset: view.getUint32(28, true),
+      segment: view.getUint16(32, true),
+      flags: data[34],
+      returnRegister: view.getUint16(35, true),
+      name: readCodeViewName(data, 37, "managed procedure", true)
     };
   }
   return null;
