@@ -854,10 +854,10 @@ export function removeEmbeddedPortablePdbMethod(pdb, methodRid, oldCounts, newCo
   }
   const customDebugRows = rows.get(55) ?? [];
   if (customDebugRows.some((record) =>
-    record.Parent.target?.table === 6 && record.Parent.target.rid === methodRid
+    record.Parent.target?.table === 6
   )) {
     throw new UnsupportedFormatError(
-      "Portable PDB method removal cannot discard method-scoped debug records"
+      "Portable PDB method remapping cannot update method-scoped CustomDebugInformation"
     );
   }
   const remappedCustomDebugRows = customDebugRows.map((record) => {

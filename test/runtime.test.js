@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   decodePortablePdbSequencePoints,
+  encodeCodedIndex,
   encodePortablePdbSequencePoints,
   parseAssembly,
   parseClassicPdb,
@@ -100,6 +101,41 @@ test("trailing abstract MethodDef removal updates an embedded Portable PDB", {
     const beforeScopedRemoval = scoped.serialize();
     assert.throws(() => scoped.removeMethod(scopedMethod.rid), /method-scoped debug records/);
     assert.deepEqual(scoped.serialize(), beforeScopedRemoval);
+
+    const methodDebug = parseAssembly(original);
+    const methodDebugPdb = methodDebug.pe.debugDirectoryEntries.find((entry) =>
+      entry.embeddedPortablePdb
+    ).embeddedPortablePdb;
+    const liveMethod = methodDebug.methods.find((item) => item.name === "Before");
+    const document = methodDebugPdb.tables.get(48)[0];
+    assert.ok(liveMethod);
+    assert.ok(document?.Language);
+    const customDebugRows = (methodDebugPdb.tables.rows.get(55) ?? [])
+      .map((row) => ({ ...row }));
+    customDebugRows.push({
+      rid: customDebugRows.length + 1,
+      Parent: {
+        raw: encodeCodedIndex(6, liveMethod.rid, "HasCustomDebugInformation"),
+        target: { table: 6, rid: liveMethod.rid }
+      },
+      Kind: document.Language,
+      Value: 0
+    });
+    customDebugRows.sort((left, right) => left.Parent.raw - right.Parent.raw);
+    customDebugRows.forEach((row, index) => {
+      row.rid = index + 1;
+    });
+    methodDebugPdb.tables.rows.set(55, customDebugRows);
+    methodDebugPdb.tables.counts[55] = customDebugRows.length;
+    methodDebugPdb.tables.valid |= 1n << 55n;
+    const methodToRemove = methodDebug.methods.find((item) => item.name === "Gone");
+    assert.ok(methodToRemove);
+    const beforeCustomDebugRemoval = methodDebug.serialize();
+    assert.throws(
+      () => methodDebug.removeMethod(methodToRemove.rid),
+      /cannot update method-scoped CustomDebugInformation/
+    );
+    assert.deepEqual(methodDebug.serialize(), beforeCustomDebugRemoval);
 
     const tokenMap = assembly.removeMethod(method.rid);
     assert.equal(tokenMap.size, 0);
