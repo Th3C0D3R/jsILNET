@@ -10249,6 +10249,107 @@ export class Assembly {
     return 0x27000000 + rid;
   }
 
+  insertExportedType({ beforeRid, name, namespace = "", flags = 0, typeDefId = 0, implementation }) {
+    this.#ensureEditable();
+    if (typeof name !== "string" || name.length === 0 || name.includes("\0")) {
+      throw new TypeError("ExportedType name must be a non-empty null-free string");
+    }
+    if (typeof namespace !== "string" || namespace.includes("\0")) {
+      throw new TypeError("ExportedType namespace must be a null-free string");
+    }
+    if (!Number.isInteger(flags) || flags < 0 || flags > 0xffffffff) {
+      throw new TypeError("ExportedType flags must be an unsigned 32-bit integer");
+    }
+    if (!Number.isInteger(typeDefId) || typeDefId < 0 || typeDefId > 0xffffffff) {
+      throw new TypeError("ExportedType TypeDefId must be an unsigned 32-bit integer");
+    }
+    const implementationTable = metadataTableId(implementation?.table);
+    if (![35, 38, 39].includes(implementationTable) ||
+        !Number.isInteger(implementation.rid) || implementation.rid < 1 ||
+        implementation.rid > (this.tables.counts[implementationTable] ?? 0)) {
+      throw new RangeError("ExportedType implementation must identify an existing File, AssemblyRef, or ExportedType row");
+    }
+    const rows = this.tables.rows.get(39) ?? [];
+    if (rows.length !== (this.tables.counts[39] ?? 0) || rows.length !== this.exportedTypes.length) {
+      throw new FormatError("ExportedType row count is inconsistent with parsed ExportedType records");
+    }
+    if (!Number.isInteger(beforeRid) || beforeRid < 1 || beforeRid > rows.length + 1) {
+      throw new RangeError(`Invalid ExportedType insertion position ${beforeRid}`);
+    }
+    if (rows.length >= 0x00ffffff) {
+      throw new RangeError("ExportedType token row ID exceeds 24-bit range");
+    }
+
+    const { tokenMap, rowChanges, tokenUpdates, patches } =
+      this.#prepareTokenRowInsertion(39, beforeRid, rows.length, "ExportedType");
+    const heapStreams = new Map(
+      [...(this._heapStreams ?? new Map([...this.metadataRoot.streams].map(([streamName, stream]) =>
+        [streamName, stream.bytes]
+      )))].map(([streamName, bytes]) => [streamName, bytes.slice()])
+    );
+    const nameHeap = appendStringHeap(heapStreams.get("#Strings") ?? new Uint8Array(), name);
+    const namespaceHeap = appendStringHeap(nameHeap.heap, namespace);
+    heapStreams.set("#Strings", namespaceHeap.heap);
+    const implementationRid = implementationTable === 39 && implementation.rid >= beforeRid
+      ? implementation.rid + 1
+      : implementation.rid;
+    const implementationTarget = {
+      table: implementationTable,
+      tableName: metadataTableNames[implementationTable],
+      rid: implementationRid
+    };
+    const rid = beforeRid;
+    const row = {
+      table: 39,
+      tableName: metadataTableNames[39],
+      rid,
+      Flags: flags,
+      TypeDefId: typeDefId,
+      TypeName: nameHeap.index,
+      TypeNamespace: namespaceHeap.index,
+      Implementation: {
+        raw: encodeCodedIndex(implementationTable, implementationRid, "Implementation"),
+        target: implementationTarget
+      }
+    };
+
+    for (const change of rowChanges) change.row[change.columnName] = change.value;
+    rows.splice(rid - 1, 0, row);
+    rows.forEach((exportedTypeRow, index) => {
+      exportedTypeRow.rid = index + 1;
+    });
+    this.tables.rows.set(39, rows);
+    this.tables.valid |= 1n << 39n;
+    this.tables.counts[39] = rows.length;
+
+    this.exportedTypes.splice(rid - 1, 0, {
+      rid,
+      flags,
+      typeDefId,
+      name,
+      namespace,
+      implementation: implementationTarget
+    });
+    this.exportedTypes.forEach((exportedType, index) => {
+      exportedType.rid = index + 1;
+      exportedType.implementation = rows[index].Implementation.target;
+    });
+    for (const resource of this.resources) {
+      if (resource.implementation?.table === 39 && resource.implementation.rid >= rid) {
+        resource.implementation.rid++;
+      }
+    }
+    for (const attribute of this.customAttributes) {
+      attribute.parent = this.tables.row(12, attribute.rid).Parent.target;
+    }
+    for (const update of tokenUpdates) update.instruction.operand.value = update.replacement;
+    patches.forEach((patch) => this._patches.push(patch));
+    this._heapStreams = heapStreams;
+    this.#refreshHeaps();
+    this._metadataDirty = true;
+    return { token: 0x27000000 + rid, tokenMap };
+  }
+
   replaceExportedType(rid, { name, namespace, flags, typeDefId, implementation } = {}) {
     this.#ensureEditable();
     const row = this.tables.row(39, rid);

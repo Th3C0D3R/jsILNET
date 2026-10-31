@@ -6694,6 +6694,52 @@ test("non-trailing ExportedType removal remaps surviving metadata references", (
   );
 });
 
+test("ExportedType rows can be inserted before existing rows with references remapped", () => {
+  const assembly = parseAssembly(withoutDebugDirectory());
+  const implementation = { table: "AssemblyRef", rid: assembly.assemblyRefs[0].rid };
+  const outerToken = assembly.addExportedType({ name: "OuterExport", implementation });
+  const innerToken = assembly.addExportedType({
+    name: "InnerExport",
+    implementation: { table: "ExportedType", rid: outerToken & 0x00ffffff }
+  });
+  assembly.addManifestResource({
+    name: "ExportedResource",
+    implementation: { table: "ExportedType", rid: innerToken & 0x00ffffff }
+  });
+  const inserted = assembly.insertExportedType({
+    beforeRid: 1,
+    name: "InsertedExport",
+    implementation: { table: "ExportedType", rid: outerToken & 0x00ffffff }
+  });
+
+  assert.equal(inserted.token, 0x27000001);
+  assert.deepEqual([...inserted.tokenMap], [
+    [outerToken, 0x27000002],
+    [innerToken, 0x27000003]
+  ]);
+  assert.deepEqual(assembly.exportedTypes.map(({ rid, name, implementation: target }) =>
+    [rid, name, target.table, target.rid]
+  ), [
+    [1, "InsertedExport", 39, 2],
+    [2, "OuterExport", 35, implementation.rid],
+    [3, "InnerExport", 39, 2]
+  ]);
+  assert.equal(assembly.resources[0].implementation.rid, 3);
+
+  const reparsed = parseAssembly(assembly.serialize());
+  assert.equal(reparsed.exportedTypes[0].implementation.rid, 2);
+  assert.equal(reparsed.exportedTypes[2].implementation.rid, 2);
+  assert.equal(reparsed.resources[0].implementation.rid, 3);
+
+  const invalidAssembly = parseAssembly(withoutDebugDirectory());
+  assert.throws(() => invalidAssembly.insertExportedType({
+    beforeRid: 0,
+    name: "InvalidExport",
+    implementation
+  }), /Invalid ExportedType insertion position/);
+  assert.equal(invalidAssembly.modified, false);
+});
+
 test("File replacement updates module identity and hash without changing its token", () => {
   const assembly = parseAssembly(fixture);
   const fileToken = assembly.addFile({ name: "Original.netmodule" });
