@@ -16,7 +16,8 @@ import {
   decodePortablePdbDocumentName,
   decodePortablePdbSequencePoints,
   parsePortablePdbTables,
-  validatePortablePdbAssemblyReferences
+  validatePortablePdbAssemblyReferences,
+  validatePortablePdbCodeViewIdentity
 } from "../src/metadata/portable-pdb.js";
 import { resolveMethodParameters, resolveTypes } from "../src/resolution/module.js";
 
@@ -456,6 +457,22 @@ test("Portable PDB type-system counts and entry point match the assembly", () =>
     { ...pdb, entryPointToken: 0x06000003 },
     assemblyCounts
   ), /entry point references a missing MethodDef/);
+});
+
+test("embedded Portable PDB identity matches its RSDS CodeView record", () => {
+  const id = Uint8Array.from([
+    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20
+  ]);
+  const codeView = { format: "RSDS", guid: "04030201-0605-0807-090a-0b0c0d0e0f10", age: 1 };
+  assert.doesNotThrow(() => validatePortablePdbCodeViewIdentity({ id }, codeView));
+  assert.throws(
+    () => validatePortablePdbCodeViewIdentity({ id }, { ...codeView, guid: "00000000-0000-0000-0000-000000000000" }),
+    /does not match its CodeView GUID/
+  );
+  assert.throws(
+    () => validatePortablePdbCodeViewIdentity({ id }, { ...codeView, age: 2 }),
+    /age must be one/
+  );
 });
 
 test("Portable PDB rejects partially overlapping local scopes and import cycles", () => {

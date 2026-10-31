@@ -18,7 +18,10 @@ import { applyPatches, createOperandPatches } from "./writer/patch.js";
 import { serializeStructural } from "./writer/structural.js";
 import { appendBlobHeap, appendStringHeap, appendUserStringHeap } from "./metadata/writer.js";
 import { parseManifestResources } from "./metadata/resources.js";
-import { validatePortablePdbAssemblyReferences } from "./metadata/portable-pdb.js";
+import {
+  validatePortablePdbAssemblyReferences,
+  validatePortablePdbCodeViewIdentity
+} from "./metadata/portable-pdb.js";
 import {
   assertStrongNamePEProfile,
   encodeStrongNamePublicKey,
@@ -1062,6 +1065,9 @@ export class Assembly {
         embeddedPortablePdb,
         this.tables.counts
       );
+      const codeView = this.pe.debugDirectoryEntries
+        .find((entry) => entry.codeView?.format === "RSDS")?.codeView;
+      if (codeView) validatePortablePdbCodeViewIdentity(embeddedPortablePdb, codeView);
     }
     if (this.tables.get(0).length !== 1) {
       throw new FormatError("Metadata must contain exactly one Module row");

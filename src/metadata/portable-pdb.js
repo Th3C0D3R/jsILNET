@@ -40,6 +40,20 @@ function formatGuid(bytes) {
   return `${first}-${second}-${third}-${tail.slice(0, 4)}-${tail.slice(4)}`;
 }
 
+export function validatePortablePdbCodeViewIdentity(pdb, codeView) {
+  if (!pdb || !(pdb.id instanceof Uint8Array) || !codeView) {
+    throw new TypeError("Portable PDB identity validation requires parsed PDB and CodeView data");
+  }
+  if (codeView.format !== "RSDS") return;
+  const guid = formatGuid(pdb.id.subarray(0, 16));
+  if (codeView.guid !== guid) {
+    throw new FormatError("Embedded Portable PDB identity does not match its CodeView GUID");
+  }
+  if (codeView.age !== 1) {
+    throw new FormatError("Embedded Portable PDB CodeView age must be one");
+  }
+}
+
 export function decodePortablePdbCustomDebugInformation(row, heaps) {
   const kindBytes = heaps.getGuid(row.Kind);
   if (!kindBytes) throw new FormatError("Portable PDB custom debug information has a nil Kind");
