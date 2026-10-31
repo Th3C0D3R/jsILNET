@@ -6822,12 +6822,33 @@ test("MemberRef signatures validate generic variables for external generic TypeR
     memberRef.token & 0x00ffffff,
     { signature: Uint8Array.from([0x10, 0x01, 0x01, 0x01, 0x13, 0x01]) }
   ), /Type generic variable !1 exceeds its declaring type's arity/);
-  assert.throws(() => assembly.replaceTypeRef(
+  assembly.tables.sorted &= ~(1n << 1n);
+  assert.doesNotThrow(() => assembly.replaceTypeRef(
     typeRef.token & 0x00ffffff,
     { name: "External" }
-  ), /Type generic variable !0 exceeds its declaring type's arity/);
-  assert.equal(assembly.typeRefs[(typeRef.token & 0x00ffffff) - 1].name, "External`1");
-  assert.deepEqual(assembly.serialize(), original);
+  ));
+  assert.equal(assembly.typeRefs[(typeRef.token & 0x00ffffff) - 1].name, "External");
+  assert.notDeepEqual(assembly.serialize(), original);
+});
+
+test("MemberRef signatures keep generic variables unknown when TypeRef arity is unknown", () => {
+  const assembly = parseAssembly(withoutDebugDirectory());
+  const typeRef = assembly.insertTypeRefSorted({
+    scope: { table: "Module", rid: 1 },
+    name: "External",
+    namespace: "Tests"
+  });
+  const parent = { table: "TypeRef", rid: typeRef.token & 0x00ffffff };
+  assert.doesNotThrow(() => assembly.insertMemberRefSorted({
+    parent,
+    name: "GetValue",
+    signature: Uint8Array.from([0x10, 0x01, 0x01, 0x01, 0x13, 0x00])
+  }));
+  assert.doesNotThrow(() => assembly.insertMemberRefSorted({
+    parent,
+    name: "Value",
+    signature: Uint8Array.from([0x06, 0x13, 0x00])
+  }));
 });
 
 test("MemberRef append rejects sorted-table order changes before mutating state", () => {

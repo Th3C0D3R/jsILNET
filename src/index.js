@@ -177,7 +177,7 @@ function validateGenericVariableReferences(
   }
 
   function visitType(type, methodArity) {
-    if (type.kind === "typeParameter" && type.index >= typeArity) {
+    if (type.kind === "typeParameter" && typeArity !== null && type.index >= typeArity) {
       throw new FormatError(`Type generic variable !${type.index} exceeds its declaring type's arity`);
     }
     if (type.kind === "methodParameter" && type.index >= methodArity) {
@@ -215,10 +215,10 @@ function validateGenericVariableReferences(
   if (signature.kind === "method") {
     visitMethod(signature);
   } else if (signature.kind === "field") {
-    visitType(signature.type, 0);
+    visitType(signature.type, typeArity);
   } else if (signature.kind === "property") {
-    visitType(signature.returnType, 0);
-    for (const parameter of signature.parameters) visitType(parameter, 0);
+    visitType(signature.returnType, typeArity);
+    for (const parameter of signature.parameters) visitType(parameter, typeArity);
   } else if (signature.kind === "methodInstantiation") {
     for (const argument of signature.arguments) visitType(argument, methodArity);
   } else if (signature.kind === "locals") {
@@ -364,7 +364,7 @@ function validateMemberRefGenericContext(
       ? typeRefOverride
       : assembly.typeRefs[parent.rid - 1];
     if (!typeRef) throw new FormatError(`MemberRef parent references a missing TypeRef row ${parent.rid}`);
-    const typeArity = getTypeRefGenericArity(assembly, parent.rid, typeRefOverride) ?? 0;
+    const typeArity = getTypeRefGenericArity(assembly, parent.rid, typeRefOverride);
     validateGenericVariableReferences(signature, typeArity, assembly, typeSpecOverride);
   } else if (parentTable === 27) {
     const typeSpec = typeSpecOverride?.rid === parent.rid
