@@ -1377,6 +1377,60 @@ test("TypeSpec additions validate signatures and can parent MemberRefs", () => {
   assert.throws(() => assembly.addTypeSpec({ signature: Uint8Array.from([0x12, 0]) }), /cannot be nil/);
 });
 
+test("TypeSpec rows can be inserted before existing rows with signature and metadata remapping", () => {
+  const assembly = parseAssembly(withoutDebugDirectory());
+  assembly.tables.sorted &= ~((1n << 10n) | (1n << 12n));
+  const firstSignature = Uint8Array.of(
+    0x12,
+    ...appendCompressedUInt(encodeCodedIndex(2, 2, "TypeDefOrRef"))
+  );
+  const firstToken = assembly.addTypeSpec({ signature: firstSignature });
+  const firstRid = firstToken & 0x00ffffff;
+  const nestedSignature = Uint8Array.of(
+    0x12,
+    ...appendCompressedUInt(encodeCodedIndex(27, firstRid, "TypeDefOrRef"))
+  );
+  const nestedToken = assembly.addTypeSpec({ signature: nestedSignature });
+  const nestedRid = nestedToken & 0x00ffffff;
+  const memberRefToken = assembly.addMemberRef({
+    parent: { table: "TypeSpec", rid: nestedRid },
+    name: "TypeSpecParent",
+    signature: Uint8Array.of(0x00, 0x00, 0x01)
+  });
+  const inserted = assembly.insertTypeSpec({
+    beforeRid: 1,
+    signature: nestedSignature
+  });
+
+  assert.equal(inserted.token, 0x1b000001);
+  assert.equal(inserted.tokenMap.get(firstToken), firstToken + 1);
+  assert.equal(inserted.tokenMap.get(nestedToken), nestedToken + 1);
+  const insertedSignature = Uint8Array.of(
+    0x12,
+    ...appendCompressedUInt(encodeCodedIndex(27, firstRid + 1, "TypeDefOrRef"))
+  );
+  assert.deepEqual(assembly.typeSpecs[0].signature, insertedSignature);
+  assert.deepEqual(assembly.typeSpecs[firstRid].signature, firstSignature);
+  assert.deepEqual(assembly.typeSpecs[nestedRid].signature, Uint8Array.of(
+    0x12,
+    ...appendCompressedUInt(encodeCodedIndex(27, firstRid + 1, "TypeDefOrRef"))
+  ));
+  assert.equal(assembly.memberRefs.at(-1).parent.rid, nestedRid + 1);
+  assert.equal(memberRefToken, 0x0a000000 + assembly.memberRefs.at(-1).rid);
+
+  const reparsed = parseAssembly(assembly.serialize());
+  assert.deepEqual(reparsed.typeSpecs[0].signature, insertedSignature);
+  assert.equal(reparsed.memberRefs.at(-1).parent.rid, nestedRid + 1);
+  assert.equal(memberRefToken, 0x0a000000 + reparsed.memberRefs.at(-1).rid);
+
+  const invalidAssembly = parseAssembly(withoutDebugDirectory());
+  assert.throws(() => invalidAssembly.insertTypeSpec({
+    beforeRid: 0,
+    signature: firstSignature
+  }), /Invalid TypeSpec insertion position/);
+  assert.equal(invalidAssembly.modified, false);
+});
+
 test("TypeSpec generic contexts validate local arity and MemberRef variables", () => {
   const assembly = parseAssembly(fixture);
   const genericType = assembly.types.find((type) => type.name === "Sample`1");

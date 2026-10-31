@@ -109,7 +109,7 @@ StandAloneSig method/local signatures can be appended, replaced in place without
 
 Module name and generation can be replaced while preserving the MVID.
 MemberRef names, parents, and signatures can be replaced in place when sorted ordering, generic context, and dependent MethodSpec/custom-attribute references remain valid.
-TypeSpec rows can be removed with live-reference checks and supported metadata, signature, and CIL token remapping.
+TypeSpec rows can be inserted or removed with live-reference checks and supported metadata, signature, CIL, and EH catch-token remapping.
 AssemblyRef and File rows can be updated in place while preserving their tokens and linked metadata references. File and ExportedType rows can also be inserted before an existing row; insertion remaps tokens in metadata, IL, and ENC records and synchronizes linked resource, ExportedType, and CustomAttribute semantic records. AssemblyProcessor, AssemblyOS, AssemblyRefProcessor, and AssemblyRefOS rows support add/replace/remove operations with unsigned-width validation and live AssemblyRef RID checks; removals refuse unknown metadata streams that could contain opaque row references.
 Property signatures can be updated after generic-bound checks when getter/setter signatures remain compatible.
 Event names and flags can be updated in place; event-type changes validate associated add/remove accessor signatures.
