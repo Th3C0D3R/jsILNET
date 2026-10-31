@@ -5,7 +5,12 @@ import { spawnSync } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseAssembly, parseClassicPdb, parsePE } from "../src/index.js";
+import {
+  parseAssembly,
+  parseClassicPdb,
+  parsePE,
+  replaceClassicPdbSymbolName
+} from "../src/index.js";
 
 const dotnetVersion = spawnSync("dotnet", ["--version"], { encoding: "utf8" });
 const dotnetAvailable = dotnetVersion.status === 0;
@@ -77,6 +82,24 @@ test("classic PDB parser reads a compiler-produced MSF identity", {
         )
       )
     ));
+    const managedModuleIndex = pdb.dbi.modules.findIndex((module) =>
+      module.symbols?.records.some((record) =>
+        record.decoded?.kind === "managedProcedure" && record.decoded.name === "Answer"
+      )
+    );
+    const managedRecordIndex = pdb.dbi.modules[managedModuleIndex].symbols.records.findIndex(
+      (record) => record.decoded?.kind === "managedProcedure" && record.decoded.name === "Answer"
+    );
+    const renamedPdbBytes = replaceClassicPdbSymbolName(pdbBytes, {
+      moduleIndex: managedModuleIndex,
+      recordIndex: managedRecordIndex,
+      name: "Ansxxx"
+    });
+    const renamedPdb = parseClassicPdb(renamedPdbBytes);
+    assert.equal(
+      renamedPdb.dbi.modules[managedModuleIndex].symbols.records[managedRecordIndex].decoded.name,
+      "Ansxxx"
+    );
     assert.ok(pdb.dbi.modules.some((module) =>
       module.sourceFiles.some((file) => file.endsWith("Class1.cs"))
     ));
