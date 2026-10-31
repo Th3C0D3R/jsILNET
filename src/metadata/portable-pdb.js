@@ -110,6 +110,98 @@ export function decodePortablePdbSequencePoints(blob, { documentRid, documentCou
   return { localSignatureRid, points };
 }
 
+function validateLocalScopes(scopes, variables, constants, heaps) {
+  const variableOwners = new Set();
+  const constantOwners = new Set();
+  const nestedScopes = new Map();
+  let previous = null;
+  for (const scope of scopes) {
+    const key = [scope.Method.rid, scope.StartOffset, -scope.Length];
+    if (previous && (key[0] < previous[0] ||
+        (key[0] === previous[0] && (key[1] < previous[1] ||
+          (key[1] === previous[1] && key[2] < previous[2]))))) {
+      throw new FormatError("Portable PDB LocalScope rows are not ordered");
+    }
+    previous = key;
+    if (scope.Method.rid === 0) {
+      throw new FormatError(`Portable PDB LocalScope row ${scope.rid} has a nil Method`);
+    }
+    const end = scope.StartOffset + scope.Length;
+    if (scope.Length === 0 || scope.StartOffset >= 0x80000000 || end >= 0x80000000) {
+      throw new FormatError(`Portable PDB LocalScope row ${scope.rid} has an invalid IL range`);
+    }
+    const stack = nestedScopes.get(scope.Method.rid) ?? [];
+    while (stack.length > 0 && stack.at(-1).end <= scope.StartOffset) stack.pop();
+    if (stack.length > 0 && end > stack.at(-1).end) {
+      throw new FormatError(`Portable PDB LocalScope row ${scope.rid} partially overlaps another scope`);
+    }
+    stack.push({ start: scope.StartOffset, end });
+    nestedScopes.set(scope.Method.rid, stack);
+  }
+
+  const validateList = (column, rows, owners, kind) => {
+    if (rows.length === 0) return;
+    if (scopes.length === 0 || scopes[0][column].rid !== 1) {
+      throw new FormatError(`Portable PDB ${kind} rows are not owned by a LocalScope`);
+    }
+    for (let index = 0; index < scopes.length; index++) {
+      const scope = scopes[index];
+      const start = scope[column].rid;
+      const end = scopes[index + 1]?.[column].rid ?? rows.length + 1;
+      for (let rid = start; rid < end; rid++) {
+        const row = rows[rid - 1];
+        if (!row || owners.has(rid)) {
+          throw new FormatError(`Portable PDB ${kind} ownership ranges are invalid`);
+        }
+        owners.add(rid);
+        if (kind === "LocalVariable") {
+          if ((row.Attributes & ~1) !== 0) {
+            throw new FormatError(`Portable PDB LocalVariable row ${rid} has invalid attributes`);
+          }
+          const name = heaps.getString(row.Name);
+          const key = `${scope.rid}:${row.Index}`;
+          const namedKey = `${scope.rid}:${name}`;
+          if (owners.has(key) || owners.has(namedKey)) {
+            throw new FormatError(`Portable PDB LocalVariable row ${rid} duplicates a scope variable`);
+          }
+          owners.add(key);
+          owners.add(namedKey);
+        } else {
+          const name = heaps.getString(row.Name);
+          const key = `${scope.rid}:${name}`;
+          if (owners.has(key)) {
+            throw new FormatError(`Portable PDB LocalConstant row ${rid} duplicates a scope constant`);
+          }
+          if (heaps.getBlob(row.Signature).length === 0) {
+            throw new FormatError(`Portable PDB LocalConstant row ${rid} has an empty signature`);
+          }
+          owners.add(key);
+        }
+      }
+    }
+  };
+  validateList("VariableList", variables, variableOwners, "LocalVariable");
+  validateList("ConstantList", constants, constantOwners, "LocalConstant");
+}
+
+function validateImportScopes(scopes) {
+  const states = new Uint8Array(scopes.length + 1);
+  for (let rid = 1; rid <= scopes.length; rid++) {
+    if (states[rid] === 2) continue;
+    const path = [];
+    let current = rid;
+    while (current !== 0 && states[current] !== 2) {
+      if (states[current] === 1) {
+        throw new FormatError("Portable PDB ImportScope parent relationships contain a cycle");
+      }
+      states[current] = 1;
+      path.push(current);
+      current = scopes[current - 1].Parent.rid;
+    }
+    for (const item of path) states[item] = 2;
+  }
+}
+
 export function parsePortablePdbTables(tables, heaps, typeSystemCounts) {
   const documentRows = tables.get(48);
   const documents = [];
@@ -142,5 +234,34 @@ export function parsePortablePdbTables(tables, heaps, typeSystemCounts) {
     });
     return { ...row, ...parsed, sequencePoints: parsed.points };
   });
-  return { documents, methodDebugInformation };
+  validateLocalScopes(
+    tables.get(50),
+    tables.get(51),
+    tables.get(52),
+    heaps
+  );
+  const importScopes = tables.get(53);
+  validateImportScopes(importScopes);
+  for (const row of importScopes) heaps.getBlob(row.Imports);
+  const stateMachineMethods = tables.get(54);
+  const kickoffMethods = new Set();
+  let previousMoveNext = 0;
+  for (const row of stateMachineMethods) {
+    if (row.MoveNextMethod.rid <= previousMoveNext ||
+        kickoffMethods.has(row.KickoffMethod.rid)) {
+      throw new FormatError("Portable PDB StateMachineMethod rows are unsorted or duplicated");
+    }
+    previousMoveNext = row.MoveNextMethod.rid;
+    kickoffMethods.add(row.KickoffMethod.rid);
+  }
+  let previousCustomDebugParent = 0;
+  for (const row of tables.get(55)) {
+    if (row.Parent.raw < previousCustomDebugParent || row.Kind === 0) {
+      throw new FormatError("Portable PDB CustomDebugInformation rows are unsorted or have a nil Kind");
+    }
+    previousCustomDebugParent = row.Parent.raw;
+    heaps.getGuid(row.Kind);
+    heaps.getBlob(row.Value);
+  }
+  return { documents, methodDebugInformation, stateMachineMethods };
 }

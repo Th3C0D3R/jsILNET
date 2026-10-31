@@ -13,7 +13,8 @@ import {
 import { parseEmbeddedPortablePdbData } from "../src/pe/headers.js";
 import {
   decodePortablePdbDocumentName,
-  decodePortablePdbSequencePoints
+  decodePortablePdbSequencePoints,
+  parsePortablePdbTables
 } from "../src/metadata/portable-pdb.js";
 import { resolveMethodParameters, resolveTypes } from "../src/resolution/module.js";
 
@@ -421,4 +422,33 @@ test("Portable PDB document names and sequence points decode bounded blobs", () 
     Uint8Array.from([0, 0, 1, 0x7f, 1, 0]),
     { documentRid: 1, documentCount: 1, localSignatureCount: 0 }
   ), /sequence-point source spans/);
+});
+
+test("Portable PDB rejects partially overlapping local scopes and import cycles", () => {
+  const rows = new Map([
+    [48, []],
+    [49, []],
+    [50, [
+      { rid: 1, Method: { rid: 1 }, StartOffset: 0, Length: 10, VariableList: { rid: 1 }, ConstantList: { rid: 1 } },
+      { rid: 2, Method: { rid: 1 }, StartOffset: 5, Length: 10, VariableList: { rid: 1 }, ConstantList: { rid: 1 } }
+    ]],
+    [51, []],
+    [52, []],
+    [53, []],
+    [54, []],
+    [55, []]
+  ]);
+  const tables = { get: (id) => rows.get(id) ?? [] };
+  const heaps = {
+    getBlob: () => new Uint8Array(),
+    getGuid: () => null,
+    getString: () => ""
+  };
+  assert.throws(() => parsePortablePdbTables(tables, heaps, new Array(64).fill(0)),
+    /partially overlaps/);
+
+  rows.set(50, []);
+  rows.set(53, [{ Parent: { rid: 2 } }, { Parent: { rid: 1 } }]);
+  assert.throws(() => parsePortablePdbTables(tables, heaps, new Array(64).fill(0)),
+    /parent relationships contain a cycle/);
 });
