@@ -1354,6 +1354,30 @@ test("AssemblyRef rows can be inserted before existing rows and remap references
   assert.equal(invalidAssembly.modified, false);
 });
 
+test("AssemblyRef insertion refuses to invalidate sorted TypeRef scope order", () => {
+  const assembly = parseAssembly(withoutDebugDirectory());
+  const rows = assembly.tables.rows.get(1);
+  assert.ok(rows.length >= 2);
+  rows.forEach((row, index) => {
+    const target = index === 0
+      ? { table: 35, tableName: "AssemblyRef", rid: 1 }
+      : { table: 1, tableName: "TypeRef", rid: 1 };
+    row.ResolutionScope = {
+      raw: encodeCodedIndex(target.table, target.rid, "ResolutionScope"),
+      target
+    };
+  });
+  assembly.tables.sorted |= 1n << 1n;
+  const originalScopes = rows.map((row) => row.ResolutionScope.raw);
+
+  assert.throws(() => assembly.insertAssemblyRef({
+    beforeRid: 1,
+    name: "Inserted.Before.Scope"
+  }), /sorted TypeRef order/);
+  assert.deepEqual(rows.map((row) => row.ResolutionScope.raw), originalScopes);
+  assert.equal(assembly.modified, false);
+});
+
 test("assembly processor and OS tables support validated CRUD and round trips", () => {
   const assembly = parseAssembly(withoutDebugDirectory());
   const processorOne = assembly.addAssemblyProcessor({ processor: 0x14c });

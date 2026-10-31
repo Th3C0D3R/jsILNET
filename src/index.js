@@ -9865,6 +9865,58 @@ export class Assembly {
     return this.#writeGenericParamConstraint({ ownerRid, constraint }, true);
   }
 
+  #validateSortedRowRemapping(rowChanges, tableName) {
+    const changesByRow = new Map();
+    for (const change of rowChanges) {
+      if (!changesByRow.has(change.row)) changesByRow.set(change.row, new Map());
+      changesByRow.get(change.row).set(change.columnName, change.value);
+    }
+    const valueOf = (row, columnName) =>
+      changesByRow.get(row)?.get(columnName) ?? row[columnName];
+    const sortedKeys = new Map([
+      [1, (row) => [valueOf(row, "ResolutionScope").raw]],
+      [9, (row) => [valueOf(row, "Class").rid]],
+      [10, (row) => [valueOf(row, "Class").raw]],
+      [11, (row) => [valueOf(row, "Parent").raw]],
+      [12, (row) => [valueOf(row, "Parent").raw]],
+      [13, (row) => [valueOf(row, "Parent").raw]],
+      [14, (row) => [valueOf(row, "Parent").raw]],
+      [15, (row) => [valueOf(row, "Parent").rid]],
+      [16, (row) => [valueOf(row, "Field").rid]],
+      [18, (row) => [valueOf(row, "Parent").rid]],
+      [21, (row) => [valueOf(row, "Parent").rid]],
+      [24, (row) => [valueOf(row, "Association").raw]],
+      [25, (row) => [valueOf(row, "Class").rid]],
+      [28, (row) => [valueOf(row, "MemberForwarded").raw]],
+      [29, (row) => [valueOf(row, "Field").rid]],
+      [41, (row) => [valueOf(row, "NestedClass").rid]],
+      [42, (row) => [valueOf(row, "Owner").raw, row.Number]],
+      [43, (row) => [valueOf(row, "Method").raw]],
+      [44, (row) => [valueOf(row, "Owner").rid]]
+    ]);
+    for (const [tableId, keyOf] of sortedKeys) {
+      if ((this.tables.sorted & (1n << BigInt(tableId))) === 0n) continue;
+      let previous = null;
+      for (const row of this.tables.rows.get(tableId) ?? []) {
+        const current = keyOf(row);
+        let outOfOrder = false;
+        if (previous) {
+          for (let index = 0; index < current.length; index++) {
+            if (current[index] === previous[index]) continue;
+            outOfOrder = current[index] < previous[index];
+            break;
+          }
+        }
+        if (outOfOrder) {
+          throw new FormatError(
+            `${tableName} token remapping would violate sorted ${metadataTableNames[tableId]} order`
+          );
+        }
+        previous = current;
+      }
+    }
+  }
+
   #prepareTokenRowInsertion(tableId, insertionRid, rowCount, tableName) {
     const tokenMap = new Map();
     const rowChanges = [];
@@ -9946,21 +9998,7 @@ export class Assembly {
         patches.push(...createOperandPatches(instruction, replacement));
       }
     }
-    if ((this.tables.sorted & (1n << 12n)) !== 0n) {
-      const changedParents = new Map(rowChanges
-        .filter((change) => change.columnName === "Parent")
-        .map((change) => [change.row, change.value]));
-      let previous = -1;
-      for (const row of this.tables.get(12)) {
-        const parent = changedParents.get(row) ?? row.Parent;
-        if (parent.raw < previous) {
-          throw new FormatError(
-            `${tableName} token remapping would violate sorted CustomAttribute order`
-          );
-        }
-        previous = parent.raw;
-      }
-    }
+    this.#validateSortedRowRemapping(rowChanges, tableName);
     return { tokenMap, rowChanges, tokenUpdates, patches };
   }
 
@@ -10056,21 +10094,7 @@ export class Assembly {
         }
       }
     }
-    if ((this.tables.sorted & (1n << 12n)) !== 0n) {
-      const changedParents = new Map(rowChanges
-        .filter((change) => change.columnName === "Parent")
-        .map((change) => [change.row, change.value]));
-      let previous = -1;
-      for (const row of this.tables.get(12)) {
-        const parent = changedParents.get(row) ?? row.Parent;
-        if (parent.raw < previous) {
-          throw new FormatError(
-            `${tableName} token remapping would violate sorted CustomAttribute order`
-          );
-        }
-        previous = parent.raw;
-      }
-    }
+    this.#validateSortedRowRemapping(rowChanges, tableName);
     return { tokenMap, rowChanges, tokenUpdates, patches };
   }
 
