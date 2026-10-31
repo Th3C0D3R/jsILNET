@@ -7077,6 +7077,64 @@ export class Assembly {
     return 0x1a000000 + rid;
   }
 
+  insertModuleRef({ beforeRid, name }) {
+    this.#ensureEditable();
+    if (typeof name !== "string" || name.length === 0 || name.includes("\0")) {
+      throw new TypeError("ModuleRef name must be a non-empty null-free string");
+    }
+    const rows = this.tables.rows.get(26) ?? [];
+    if (rows.length !== (this.tables.counts[26] ?? 0) || rows.length !== this.moduleRefs.length) {
+      throw new FormatError("ModuleRef row count is inconsistent with parsed ModuleRef records");
+    }
+    if (!Number.isInteger(beforeRid) || beforeRid < 1 || beforeRid > rows.length + 1) {
+      throw new RangeError(`Invalid ModuleRef insertion position ${beforeRid}`);
+    }
+    if (rows.length >= 0x00ffffff) {
+      throw new RangeError("ModuleRef token row ID exceeds 24-bit range");
+    }
+    const { tokenMap, rowChanges, tokenUpdates, patches } =
+      this.#prepareTokenRowInsertion(26, beforeRid, rows.length, "ModuleRef");
+    const heapStreams = new Map(
+      [...(this._heapStreams ?? new Map([...this.metadataRoot.streams].map(([streamName, stream]) =>
+        [streamName, stream.bytes]
+      )))].map(([streamName, bytes]) => [streamName, bytes.slice()])
+    );
+    const stringHeap = appendStringHeap(heapStreams.get("#Strings") ?? new Uint8Array(), name);
+    heapStreams.set("#Strings", stringHeap.heap);
+    const rid = beforeRid;
+    const row = {
+      table: 26,
+      tableName: metadataTableNames[26],
+      rid,
+      Name: stringHeap.index
+    };
+
+    for (const change of rowChanges) change.row[change.columnName] = change.value;
+    rows.splice(rid - 1, 0, row);
+    rows.forEach((moduleRefRow, index) => {
+      moduleRefRow.rid = index + 1;
+    });
+    this.tables.rows.set(26, rows);
+    this.tables.valid |= 1n << 26n;
+    this.tables.counts[26] = rows.length;
+    this.moduleRefs.splice(rid - 1, 0, { rid, name });
+    this.moduleRefs.forEach((moduleRef, index) => {
+      moduleRef.rid = index + 1;
+    });
+    for (const typeRef of this.typeRefs) {
+      typeRef.resolutionScope = this.tables.row(1, typeRef.rid).ResolutionScope.target;
+    }
+    for (const attribute of this.customAttributes) {
+      attribute.parent = this.tables.row(12, attribute.rid).Parent.target;
+    }
+    for (const update of tokenUpdates) update.instruction.operand.value = update.replacement;
+    this._patches.push(...patches);
+    this._heapStreams = heapStreams;
+    this.#refreshHeaps();
+    this._metadataDirty = true;
+    return { token: 0x1a000000 + rid, tokenMap };
+  }
+
   replaceModuleRef(rid, name) {
     this.#ensureEditable();
     const row = this.tables.row(26, rid);

@@ -1130,6 +1130,51 @@ test("ModuleRef rows can be appended and used as TypeRef scopes", () => {
   assert.equal(type.token >>> 24, 0x01);
 });
 
+test("ModuleRef rows can be inserted before existing rows and remap TypeRef scopes", () => {
+  const assembly = parseAssembly(withoutDebugDirectory());
+  assembly.tables.sorted &= ~(1n << 1n);
+  const firstToken = assembly.addModuleRef({ name: "FirstModule" });
+  const secondToken = assembly.addModuleRef({ name: "SecondModule" });
+  assembly.addTypeRef({
+    scope: { table: "ModuleRef", rid: secondToken & 0x00ffffff },
+    name: "ScopedToSecondModule",
+    namespace: "Native"
+  });
+  const inserted = assembly.insertModuleRef({
+    beforeRid: 1,
+    name: "InsertedModule"
+  });
+
+  assert.equal(inserted.token, 0x1a000001);
+  assert.deepEqual([...inserted.tokenMap], [
+    [firstToken, 0x1a000002],
+    [secondToken, 0x1a000003]
+  ]);
+  assert.deepEqual(assembly.moduleRefs.map(({ rid, name }) => [rid, name]), [
+    [1, "InsertedModule"],
+    [2, "FirstModule"],
+    [3, "SecondModule"]
+  ]);
+  assert.deepEqual(assembly.typeRefs.at(-1).resolutionScope, {
+    table: 26,
+    tableName: "ModuleRef",
+    rid: 3
+  });
+  const reparsed = parseAssembly(assembly.serialize());
+  assert.deepEqual(reparsed.typeRefs.at(-1).resolutionScope, {
+    table: 26,
+    tableName: "ModuleRef",
+    rid: 3
+  });
+
+  const invalidAssembly = parseAssembly(withoutDebugDirectory());
+  assert.throws(() => invalidAssembly.insertModuleRef({
+    beforeRid: 0,
+    name: "InvalidModule"
+  }), /Invalid ModuleRef insertion position/);
+  assert.equal(invalidAssembly.modified, false);
+});
+
 test("ModuleRef removal rejects live scopes and remaps surviving scope RIDs", () => {
   const assembly = parseAssembly(withoutDebugDirectory());
   assembly.tables.sorted &= ~(1n << 1n);

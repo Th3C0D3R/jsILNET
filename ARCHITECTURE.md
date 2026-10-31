@@ -108,6 +108,7 @@ ManifestResource metadata supports identity/flags replacement, linked implementa
 StandAloneSig method/local signatures can be appended, replaced in place without changing kind, and removed with reference checking/remapping of metadata, CIL, and fat method-header local-signature tokens.
 
 Module name and generation can be replaced while preserving the MVID.
+ModuleRef rows can be inserted before existing rows with ModuleRef token and TypeRef scope remapping.
 MemberRef names, parents, and signatures can be replaced in place when sorted ordering, generic context, and dependent MethodSpec/custom-attribute references remain valid.
 TypeSpec rows can be inserted or removed with live-reference checks and supported metadata, signature, CIL, and EH catch-token remapping.
 AssemblyRef and File rows can be updated in place while preserving their tokens and linked metadata references. File and ExportedType rows can also be inserted before an existing row; insertion remaps tokens in metadata, IL, and ENC records and synchronizes linked resource, ExportedType, and CustomAttribute semantic records. AssemblyProcessor, AssemblyOS, AssemblyRefProcessor, and AssemblyRefOS rows support add/replace/remove operations with unsigned-width validation and live AssemblyRef RID checks; removals refuse unknown metadata streams that could contain opaque row references.
