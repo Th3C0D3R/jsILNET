@@ -5,6 +5,7 @@ import {
   codedIndexWidth,
   decodeCodedIndex,
   encodeCodedIndex,
+  encodePortablePdbSequencePoints,
   MetadataHeaps,
   parseMetadataRoot,
   parseTablesStream,
@@ -434,6 +435,36 @@ test("Portable PDB document names and sequence points decode bounded blobs", () 
     { offset: 4, documentRid: 1, hidden: false, startLine: 11, startColumn: 1, endLine: 12, endColumn: 3 },
     { offset: 7, documentRid: 2, hidden: true, startLine: 0xfeefee, startColumn: 0, endLine: 0xfeefee, endColumn: 0 }
   ]);
+  const sequencePointContext = { documentRid: 1, documentCount: 2, localSignatureCount: 0 };
+  const encoded = encodePortablePdbSequencePoints(decoded, sequencePointContext);
+  assert.deepEqual(
+    decodePortablePdbSequencePoints(encoded, sequencePointContext),
+    decoded
+  );
+  const nilDocumentPoints = {
+    localSignatureRid: 0,
+    points: [{
+      offset: 0,
+      documentRid: 2,
+      hidden: true,
+      startLine: 0xfeefee,
+      startColumn: 0,
+      endLine: 0xfeefee,
+      endColumn: 0
+    }]
+  };
+  const nilDocumentContext = { documentRid: 0, documentCount: 2, localSignatureCount: 0 };
+  assert.deepEqual(
+    decodePortablePdbSequencePoints(
+      encodePortablePdbSequencePoints(nilDocumentPoints, nilDocumentContext),
+      nilDocumentContext
+    ),
+    nilDocumentPoints
+  );
+  assert.throws(() => encodePortablePdbSequencePoints({
+    localSignatureRid: 0,
+    points: []
+  }, nilDocumentContext), /require an initial document/);
   assert.throws(() => decodePortablePdbSequencePoints(
     Uint8Array.from([0, 0, 1, 0x7f, 1, 0]),
     { documentRid: 1, documentCount: 1, localSignatureCount: 0 }

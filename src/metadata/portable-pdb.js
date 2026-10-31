@@ -1,6 +1,7 @@
 import { inflateRawSync } from "node:zlib";
 import { BinaryReader, readCompressedInt, readCompressedUInt } from "../binary/reader.js";
 import { FormatError, UnsupportedFormatError } from "../binary/errors.js";
+import { appendCompressedInt, appendCompressedUInt } from "./writer.js";
 
 const maxEmbeddedSourceSize = 0x10000000;
 const embeddedSourceKind = "0e8a571b-6926-466e-b4ad-8ab04611f5fe";
@@ -213,6 +214,96 @@ export function decodePortablePdbSequencePoints(blob, { documentRid, documentCou
     previousOffset = offset;
   }
   return { localSignatureRid, points };
+}
+
+export function encodePortablePdbSequencePoints(
+  sequencePoints,
+  { documentRid, documentCount, localSignatureCount } = {}
+) {
+  if (!sequencePoints || !Array.isArray(sequencePoints.points)) {
+    throw new TypeError("Portable PDB sequence points require a points array");
+  }
+  if (![documentRid, documentCount, localSignatureCount].every((value) =>
+    Number.isInteger(value) && value >= 0
+  )) {
+    throw new TypeError("Portable PDB sequence-point context counts must be non-negative integers");
+  }
+  const { localSignatureRid, points } = sequencePoints;
+  if (!Number.isInteger(localSignatureRid) || localSignatureRid < 0 ||
+      localSignatureRid > localSignatureCount) {
+    throw new RangeError("Portable PDB sequence points reference a missing StandAloneSig row");
+  }
+  if (documentRid > documentCount) {
+    throw new RangeError("Portable PDB sequence points reference a missing Document row");
+  }
+  const initialDocumentRid = documentRid === 0
+    ? points[0]?.documentRid
+    : documentRid;
+  if (initialDocumentRid === undefined) {
+    throw new RangeError("Portable PDB sequence points with a nil Document require an initial document");
+  }
+  if (!Number.isInteger(initialDocumentRid) || initialDocumentRid < 1 ||
+      initialDocumentRid > documentCount) {
+    throw new RangeError("Portable PDB sequence points reference a missing Document row");
+  }
+
+  const output = [...appendCompressedUInt(localSignatureRid)];
+  if (documentRid === 0) output.push(...appendCompressedUInt(initialDocumentRid));
+  let currentDocumentRid = initialDocumentRid;
+  let previousOffset = 0;
+  let previousStartLine = null;
+  let previousStartColumn = null;
+  for (let index = 0; index < points.length; index++) {
+    const point = points[index];
+    if (!point || !Number.isInteger(point.documentRid) ||
+        point.documentRid < 1 || point.documentRid > documentCount) {
+      throw new RangeError("Portable PDB sequence point references a missing Document row");
+    }
+    if (index === 0 && point.documentRid !== initialDocumentRid) {
+      throw new FormatError("First Portable PDB sequence point does not match its initial Document");
+    }
+    if (index > 0 && point.documentRid !== currentDocumentRid) {
+      output.push(0, ...appendCompressedUInt(point.documentRid));
+      currentDocumentRid = point.documentRid;
+    }
+    if (!Number.isInteger(point.offset) || point.offset < 0 || point.offset >= 0x20000000 ||
+        (index > 0 && point.offset <= previousOffset)) {
+      throw new RangeError("Portable PDB sequence-point IL offsets must be increasing and in range");
+    }
+    output.push(...appendCompressedUInt(index === 0 ? point.offset : point.offset - previousOffset));
+    if (typeof point.hidden !== "boolean") {
+      throw new TypeError("Portable PDB sequence points require a hidden flag");
+    }
+    if (point.hidden) {
+      output.push(0, 0);
+    } else {
+      const { startLine, startColumn, endLine, endColumn } = point;
+      if (![startLine, startColumn, endLine, endColumn].every(Number.isInteger) ||
+          startLine < 0 || startLine >= 0x20000000 || startLine === 0xfeefee ||
+          endLine < startLine || endLine >= 0x20000000 || endLine === 0xfeefee ||
+          startColumn < 0 || startColumn >= 0x10000 ||
+          endColumn < 0 || endColumn >= 0x10000 ||
+          (startLine === endLine && endColumn <= startColumn)) {
+        throw new FormatError("Portable PDB sequence-point source spans are invalid");
+      }
+      const deltaLines = endLine - startLine;
+      const deltaColumns = endColumn - startColumn;
+      output.push(...appendCompressedUInt(deltaLines));
+      output.push(...(deltaLines === 0
+        ? appendCompressedUInt(deltaColumns)
+        : appendCompressedInt(deltaColumns)));
+      output.push(...(previousStartLine === null
+        ? appendCompressedUInt(startLine)
+        : appendCompressedInt(startLine - previousStartLine)));
+      output.push(...(previousStartColumn === null
+        ? appendCompressedUInt(startColumn)
+        : appendCompressedInt(startColumn - previousStartColumn)));
+      previousStartLine = startLine;
+      previousStartColumn = startColumn;
+    }
+    previousOffset = point.offset;
+  }
+  return Uint8Array.from(output);
 }
 
 function validateLocalScopes(scopes, variables, constants, heaps) {
