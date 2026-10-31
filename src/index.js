@@ -2318,6 +2318,7 @@ export class Assembly {
     if (this._structuralBodies.size > 0) {
       throw new UnsupportedFormatError("Field removal cannot be combined with structural method edits");
     }
+    this.#ensureAddedMethodBodiesSafe("Field removal");
     this.#ensureTokenRemappingSafe("Field");
     const rows = this.tables.rows.get(4) ?? [];
     if (rows.length !== this.tables.counts[4]) {
@@ -4949,6 +4950,7 @@ export class Assembly {
     if (this._structuralBodies.size > 0) {
       throw new UnsupportedFormatError("MemberRef removal cannot be combined with structural method edits");
     }
+    this.#ensureAddedMethodBodiesSafe("MemberRef removal");
     this.#ensureTokenRemappingSafe("MemberRef");
     const rows = this.tables.rows.get(10) ?? [];
     if (!Number.isInteger(rid) || rid < 1 || rid > rows.length) {
@@ -5131,7 +5133,10 @@ export class Assembly {
     const tokenMap = new Map([...remappedRids].flatMap(([oldRid, newRid]) =>
       oldRid === newRid ? [] : [[0x0a000000 + oldRid, 0x0a000000 + newRid]]
     ));
-    if (tokenMap.size > 0) this.#ensureTokenRemappingSafe("MemberRef");
+    if (tokenMap.size > 0) {
+      this.#ensureAddedMethodBodiesSafe("MemberRef remapping");
+      this.#ensureTokenRemappingSafe("MemberRef");
+    }
     const remappedCodedRaw = (column, kind) => {
       const target = column?.target;
       return target?.table === 10
@@ -5591,9 +5596,7 @@ export class Assembly {
       oldRid === newRid ? [] : [[0x01000000 + oldRid, 0x01000000 + newRid]]
     ));
     if (tokenMap.size > 0) {
-      if (this._addedMethodBodies.size > 0) {
-        throw new UnsupportedFormatError("TypeRef remapping cannot be combined with added method bodies");
-      }
+      this.#ensureAddedMethodBodiesSafe("TypeRef remapping");
       this.#ensureTokenRemappingSafe("TypeRef");
     }
     if (scopeTarget?.table === 1 && remappedRid(scopeTarget.rid) !== scopeTarget.rid) {
@@ -5898,9 +5901,7 @@ export class Assembly {
     if (this._structuralBodies.size > 0) {
       throw new UnsupportedFormatError("TypeRef removal cannot be combined with structural method edits");
     }
-    if (this._addedMethodBodies.size > 0) {
-      throw new UnsupportedFormatError("TypeRef removal cannot be combined with added method bodies");
-    }
+    this.#ensureAddedMethodBodiesSafe("TypeRef removal");
     this.#ensureTokenRemappingSafe("TypeRef");
     const rows = this.tables.rows.get(1) ?? [];
     if (!Number.isInteger(rid) || rid < 1 || rid > rows.length) {
@@ -6629,9 +6630,7 @@ export class Assembly {
     if (this._structuralBodies.size > 0) {
       throw new UnsupportedFormatError("TypeSpec removal cannot be combined with structural method edits");
     }
-    if (this._addedMethodBodies.size > 0) {
-      throw new UnsupportedFormatError("TypeSpec removal cannot be combined with added method bodies");
-    }
+    this.#ensureAddedMethodBodiesSafe("TypeSpec removal");
     this.#ensureTokenRemappingSafe("TypeSpec");
     const rows = this.tables.rows.get(27) ?? [];
     if (!Number.isInteger(rid) || rid < 1 || rid > rows.length) {
@@ -7070,6 +7069,7 @@ export class Assembly {
         "StandAloneSig removal cannot be combined with structural method edits"
       );
     }
+    this.#ensureAddedMethodBodiesSafe("StandAloneSig removal");
     this.#ensureTokenRemappingSafe("StandAloneSig");
     const rows = this.tables.rows.get(17) ?? [];
     if (rows.length !== this.tables.counts[17]) {
@@ -7311,7 +7311,10 @@ export class Assembly {
     const tokenMap = new Map([...remappedRids].flatMap(([oldRid, newRid]) =>
       oldRid === newRid ? [] : [[0x2b000000 + oldRid, 0x2b000000 + newRid]]
     ));
-    if (tokenMap.size > 0) this.#ensureTokenRemappingSafe("MethodSpec");
+    if (tokenMap.size > 0) {
+      this.#ensureAddedMethodBodiesSafe("MethodSpec remapping");
+      this.#ensureTokenRemappingSafe("MethodSpec");
+    }
 
     const rowChanges = [];
     for (const [tableId, rows] of this.tables.rows) {
@@ -7422,6 +7425,7 @@ export class Assembly {
     if (this._structuralBodies.size > 0) {
       throw new UnsupportedFormatError("MethodSpec removal cannot be combined with structural method edits");
     }
+    this.#ensureAddedMethodBodiesSafe("MethodSpec removal");
     this.#ensureTokenRemappingSafe("MethodSpec");
     const rows = this.tables.rows.get(43) ?? [];
     if (!Number.isInteger(rid) || rid < 1 || rid > rows.length) {
@@ -9020,6 +9024,12 @@ export class Assembly {
       throw new UnsupportedFormatError(
         `${tableName} token remapping is unsupported while a PE debug directory is present`
       );
+    }
+  }
+
+  #ensureAddedMethodBodiesSafe(operation) {
+    if (this._addedMethodBodies.size > 0) {
+      throw new UnsupportedFormatError(`${operation} cannot be combined with added method bodies`);
     }
   }
 

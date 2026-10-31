@@ -4325,6 +4325,45 @@ test("sorted TypeRef insertion remaps metadata references and signature blobs", 
   assert.equal(reparsed.typeSpecs.at(-1).parsedSignature.type.rid, expectedTypeSpecRid);
 });
 
+test("metadata token remapping refuses added method bodies", () => {
+  const assembly = parseAssembly(withoutDebugDirectory());
+  const owner = assembly.types.at(-1);
+  assembly.addMethod({
+    owner: { table: "TypeDef", rid: owner.rid },
+    name: "AddedBody",
+    flags: 0x0096,
+    signature: Uint8Array.of(0x00, 0x00, 0x01),
+    body: Uint8Array.of(0x06, 0x2a)
+  });
+  const typeSpecCount = assembly.typeSpecs.length;
+  const typeSpec = assembly.addTypeSpec({ signature: Uint8Array.of(0x08) });
+  const typeRef = assembly.addTypeRef({
+    scope: assembly.typeRefs.at(-1).resolutionScope,
+    name: "AddedBodyReference",
+    namespace: "Example"
+  });
+  const typeRefCount = assembly.typeRefs.length;
+  assert.throws(() => assembly.insertTypeRefSorted({
+    scope: { table: "TypeRef", rid: 3 },
+    name: "InsertedTypeRef",
+    namespace: "Example"
+  }), /added method bodies/);
+  assert.equal(assembly.typeRefs.length, typeRefCount);
+  assert.throws(
+    () => assembly.removeTypeRef(typeRef & 0x00ffffff),
+    /added method bodies/
+  );
+  assert.throws(
+    () => assembly.removeTypeSpec(typeSpec & 0x00ffffff),
+    /added method bodies/
+  );
+  assert.equal(assembly.typeSpecs.length, typeSpecCount + 1);
+  assert.throws(() => assembly.removeField(1), /added method bodies/);
+  assert.throws(() => assembly.removeMemberRef(1), /added method bodies/);
+  assert.throws(() => assembly.removeStandAloneSig(1), /added method bodies/);
+  assert.throws(() => assembly.removeMethodSpec(1), /added method bodies/);
+});
+
 test("TypeRef removal rejects live references and remaps surviving tokens", () => {
   const referencedAssembly = parseAssembly(withoutDebugDirectory());
   const referenced = referencedAssembly.typeRefs.find((type) => type.name === "IDisposable");
