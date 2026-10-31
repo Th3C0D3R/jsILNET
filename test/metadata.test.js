@@ -12,6 +12,7 @@ import {
 } from "../src/index.js";
 import { parseEmbeddedPortablePdbData } from "../src/pe/headers.js";
 import {
+  decodePortablePdbCustomDebugInformation,
   decodePortablePdbDocumentName,
   decodePortablePdbSequencePoints,
   parsePortablePdbTables
@@ -464,4 +465,49 @@ test("Portable PDB rejects partially overlapping local scopes and import cycles"
   rows.set(53, [{ Parent: { rid: 2 } }, { Parent: { rid: 1 } }]);
   assert.throws(() => parsePortablePdbTables(tables, heaps, new Array(64).fill(0)),
     /parent relationships contain a cycle/);
+});
+
+test("Portable PDB decodes embedded source and SourceLink custom debug data", () => {
+  const source = Uint8Array.from([0x61, 0x62, 0x63]);
+  const compressedSource = deflateRawSync(source);
+  const embeddedSourceValue = new Uint8Array(4 + compressedSource.length);
+  new DataView(embeddedSourceValue.buffer).setInt32(0, source.length, true);
+  embeddedSourceValue.set(compressedSource, 4);
+  const embeddedSource = decodePortablePdbCustomDebugInformation({
+    Kind: 1,
+    Value: 1,
+    Parent: { target: { table: 48 } }
+  }, {
+    getGuid: () => Uint8Array.from([
+      0x1b, 0x57, 0x8a, 0x0e, 0x26, 0x69, 0x6e, 0x46,
+      0xb4, 0xad, 0x8a, 0xb0, 0x46, 0x11, 0xf5, 0xfe
+    ]),
+    getBlob: () => embeddedSourceValue
+  });
+  assert.deepEqual(embeddedSource.embeddedSource, source);
+
+  const sourceLink = decodePortablePdbCustomDebugInformation({
+    Kind: 1,
+    Value: 1,
+    Parent: { target: { table: 0 } }
+  }, {
+    getGuid: () => Uint8Array.from([
+      0x56, 0x05, 0x11, 0xcc, 0x91, 0xa0, 0x38, 0x4d,
+      0x9f, 0xec, 0x25, 0xab, 0x9a, 0x35, 0x1a, 0x6a
+    ]),
+    getBlob: () => new TextEncoder().encode("{\"documents\":{}}")
+  });
+  assert.deepEqual(sourceLink.sourceLink, { documents: {} });
+
+  assert.throws(() => decodePortablePdbCustomDebugInformation({
+    Kind: 1,
+    Value: 1,
+    Parent: { target: { table: 48 } }
+  }, {
+    getGuid: () => Uint8Array.from([
+      0x1b, 0x57, 0x8a, 0x0e, 0x26, 0x69, 0x6e, 0x46,
+      0xb4, 0xad, 0x8a, 0xb0, 0x46, 0x11, 0xf5, 0xfe
+    ]),
+    getBlob: () => Uint8Array.of(0xff, 0xff, 0xff, 0xff)
+  }), /reserved content format/);
 });

@@ -1,5 +1,10 @@
+import { inflateRawSync } from "node:zlib";
 import { BinaryReader, readCompressedInt, readCompressedUInt } from "../binary/reader.js";
-import { FormatError } from "../binary/errors.js";
+import { FormatError, UnsupportedFormatError } from "../binary/errors.js";
+
+const maxEmbeddedSourceSize = 0x10000000;
+const embeddedSourceKind = "0e8a571b-6926-466e-b4ad-8ab04611f5fe";
+const sourceLinkKind = "cc110556-a091-4d38-9fec-25ab9a351a6a";
 
 function decodeUtf8(bytes, context) {
   try {
@@ -7,6 +12,68 @@ function decodeUtf8(bytes, context) {
   } catch (error) {
     throw new FormatError(`Invalid UTF-8 data: ${error.message}`, { context });
   }
+}
+
+function formatGuid(bytes) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const first = view.getUint32(0, true).toString(16).padStart(8, "0");
+  const second = view.getUint16(4, true).toString(16).padStart(4, "0");
+  const third = view.getUint16(6, true).toString(16).padStart(4, "0");
+  const tail = [...bytes.subarray(8)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `${first}-${second}-${third}-${tail.slice(0, 4)}-${tail.slice(4)}`;
+}
+
+export function decodePortablePdbCustomDebugInformation(row, heaps) {
+  const kindBytes = heaps.getGuid(row.Kind);
+  if (!kindBytes) throw new FormatError("Portable PDB custom debug information has a nil Kind");
+  const kind = formatGuid(kindBytes);
+  const value = heaps.getBlob(row.Value);
+  if (kind === embeddedSourceKind) {
+    if (row.Parent.target?.table !== 48) {
+      throw new FormatError("EmbeddedSource custom debug information must belong to a Document");
+    }
+    if (value.length < 4) {
+      throw new FormatError("EmbeddedSource custom debug information is truncated");
+    }
+    const format = new DataView(value.buffer, value.byteOffset, 4).getInt32(0, true);
+    if (format < 0) {
+      throw new UnsupportedFormatError("EmbeddedSource uses a reserved content format");
+    }
+    const content = value.subarray(4);
+    if (format === 0) return { kind, embeddedSource: content.slice() };
+    if (format > maxEmbeddedSourceSize) {
+      throw new UnsupportedFormatError(
+        `EmbeddedSource exceeds the ${maxEmbeddedSourceSize}-byte decompression limit`
+      );
+    }
+    let decompressed;
+    try {
+      decompressed = inflateRawSync(content, { maxOutputLength: format });
+    } catch (error) {
+      throw new FormatError(`EmbeddedSource deflate stream is invalid: ${error.message}`);
+    }
+    if (decompressed.length !== format) {
+      throw new FormatError("EmbeddedSource decompressed size does not match its header");
+    }
+    return { kind, embeddedSource: Uint8Array.from(decompressed) };
+  }
+  if (kind === sourceLinkKind) {
+    if (row.Parent.target?.table !== 0) {
+      throw new FormatError("SourceLink custom debug information must belong to the Module");
+    }
+    let sourceLink;
+    try {
+      sourceLink = JSON.parse(decodeUtf8(value, "Portable PDB SourceLink"));
+    } catch (error) {
+      if (error instanceof FormatError) throw error;
+      throw new FormatError(`Portable PDB SourceLink JSON is invalid: ${error.message}`);
+    }
+    if (sourceLink === null || Array.isArray(sourceLink) || typeof sourceLink !== "object") {
+      throw new FormatError("Portable PDB SourceLink value must be a JSON object");
+    }
+    return { kind, sourceLink };
+  }
+  return { kind };
 }
 
 export function decodePortablePdbDocumentName(blob, heaps) {
@@ -263,5 +330,9 @@ export function parsePortablePdbTables(tables, heaps, typeSystemCounts) {
     heaps.getGuid(row.Kind);
     heaps.getBlob(row.Value);
   }
-  return { documents, methodDebugInformation, stateMachineMethods };
+  const customDebugInformation = tables.get(55).map((row) => ({
+    ...row,
+    ...decodePortablePdbCustomDebugInformation(row, heaps)
+  }));
+  return { documents, methodDebugInformation, stateMachineMethods, customDebugInformation };
 }
