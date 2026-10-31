@@ -1,7 +1,11 @@
 import { inflateRawSync } from "node:zlib";
 import { BinaryReader, readCompressedInt, readCompressedUInt } from "../binary/reader.js";
 import { FormatError, UnsupportedFormatError } from "../binary/errors.js";
-import { appendCompressedInt, appendCompressedUInt } from "./writer.js";
+import {
+  appendBlobHeap,
+  appendCompressedInt,
+  appendCompressedUInt
+} from "./writer.js";
 
 const maxEmbeddedSourceSize = 0x10000000;
 const embeddedSourceKind = "0e8a571b-6926-466e-b4ad-8ab04611f5fe";
@@ -170,6 +174,39 @@ export function encodePortablePdbDocumentName(separator, partBlobIndices) {
     output.push(...appendCompressedUInt(index));
   }
   return Uint8Array.from(output);
+}
+
+export function appendPortablePdbDocumentName(blobHeap, name, separator) {
+  if (!(blobHeap instanceof Uint8Array)) {
+    throw new TypeError("Portable PDB document-name encoding requires a Blob heap");
+  }
+  if (typeof name !== "string") {
+    throw new TypeError("Portable PDB document names must be strings");
+  }
+  if (typeof separator !== "string" ||
+      (separator !== "" && [...separator].length !== 1) ||
+      separator.includes("\0")) {
+    throw new TypeError("Portable PDB document-name separator must be empty or one Unicode character");
+  }
+  const parts = separator === "" ? [name] : name.split(separator);
+  let updatedHeap = Uint8Array.from(blobHeap);
+  const partBlobIndices = parts.map((part) => {
+    if (part === "") return 0;
+    const bytes = new TextEncoder().encode(part);
+    if (new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes) !== part) {
+      throw new TypeError("Portable PDB document-name parts must contain valid Unicode");
+    }
+    const appended = appendBlobHeap(updatedHeap, bytes);
+    updatedHeap = appended.heap;
+    return appended.index;
+  });
+  const blob = encodePortablePdbDocumentName(separator, partBlobIndices);
+  const appended = appendBlobHeap(updatedHeap, blob);
+  return {
+    heap: appended.heap,
+    nameBlobIndex: appended.index,
+    nameBlob: blob
+  };
 }
 
 export function decodePortablePdbSequencePoints(blob, { documentRid, documentCount, localSignatureCount }) {

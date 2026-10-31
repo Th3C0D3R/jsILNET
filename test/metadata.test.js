@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { deflateRawSync } from "node:zlib";
 import {
+  appendPortablePdbDocumentName,
   codedIndexWidth,
   decodeCodedIndex,
   encodeCodedIndex,
@@ -440,6 +441,21 @@ test("Portable PDB document names and sequence points round-trip bounded blobs",
   );
   assert.throws(() => encodePortablePdbDocumentName("::", [1, 2]), /separator/);
   assert.throws(() => encodePortablePdbDocumentName("\ud800", [1, 2]), /valid Unicode/);
+  const appendedDocumentName = appendPortablePdbDocumentName(
+    Uint8Array.of(0),
+    "src\\\ufeffa.cs",
+    "\\"
+  );
+  const appendedHeaps = new MetadataHeaps(new Map([
+    ["#Blob", { bytes: appendedDocumentName.heap }]
+  ]));
+  assert.equal(
+    decodePortablePdbDocumentName(
+      appendedHeaps.getBlob(appendedDocumentName.nameBlobIndex),
+      appendedHeaps
+    ),
+    "src\\\ufeffa.cs"
+  );
 
   const decoded = decodePortablePdbSequencePoints(
     Uint8Array.from([0, 0, 0, 5, 10, 2, 4, 1, 4, 2, 0x7f, 0, 2, 3, 0, 0]),
