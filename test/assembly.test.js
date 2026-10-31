@@ -3676,6 +3676,40 @@ test("MethodSemantics rows validate owners and round-trip add/replace/remove", (
   assert.equal(parseAssembly(reparsed.serialize()).tables.counts[24], originalCount);
 });
 
+test("sorted MethodSemantics insertion remaps later ENC tokens", () => {
+  const assembly = parseAssembly(withoutDebugDirectory());
+  const properties = assembly.types.flatMap((type) => type.methodRids.length > 0
+    ? type.propertyRids.map((rid) => ({ rid, type }))
+    : []);
+  const lower = properties[0];
+  const higher = properties.at(-1);
+  assert.ok(lower);
+  assert.ok(higher);
+  assert.ok(lower.rid < higher.rid);
+  assembly.tables.rows.set(24, []);
+  assembly.tables.counts[24] = 0;
+  assembly.tables.valid &= ~(1n << 24n);
+  assembly.tables.sorted |= 1n << 24n;
+  const later = assembly.insertMethodSemantics({
+    methodRid: higher.type.methodRids[0],
+    association: { table: "Property", rid: higher.rid },
+    semantics: 0x04
+  });
+  addEncToken(assembly, 31, 0x18000000 + later.rid);
+  const earlier = assembly.insertMethodSemantics({
+    methodRid: lower.type.methodRids[0],
+    association: { table: "Property", rid: lower.rid },
+    semantics: 0x04
+  });
+
+  assert.equal(earlier.rid, 1);
+  assert.equal(earlier.tokenMap.get(0x18000000 + later.rid), 0x18000000 + later.rid + 1);
+  assert.equal(assembly.tables.get(31).at(-1).Token, 0x18000000 + later.rid + 1);
+  const reparsed = parseAssembly(assembly.serialize());
+  assert.equal(reparsed.tables.get(31).at(-1).Token, 0x18000000 + later.rid + 1);
+  assert.equal(reparsed.tables.row(24, 1).Association.target.rid, lower.rid);
+});
+
 test("NestedClass rows preserve ordering and reject cyclic TypeDef relationships", () => {
   const assembly = parseAssembly(fixture);
   const rid = assembly.addNestedClass({

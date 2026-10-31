@@ -4818,6 +4818,14 @@ export class Assembly {
   }
 
   addMethodSemantics({ methodRid, association, semantics }) {
+    return this.#writeMethodSemantics({ methodRid, association, semantics }, false).rid;
+  }
+
+  insertMethodSemantics({ methodRid, association, semantics }) {
+    return this.#writeMethodSemantics({ methodRid, association, semantics }, true);
+  }
+
+  #writeMethodSemantics({ methodRid, association, semantics }, insertSorted) {
     this.#ensureEditable();
     const associationTable = metadataTableId(association?.table);
     if (![20, 23].includes(associationTable) || !Number.isInteger(association.rid) ||
@@ -4829,16 +4837,31 @@ export class Assembly {
     }
     const associationRaw = encodeCodedIndex(associationTable, association.rid, "HasSemantics");
     const rows = this.tables.rows.get(24) ?? [];
-    if (rows.length !== (this.tables.counts[24] ?? 0) || rows.length >= 0xffffffff) {
+    if (rows.length !== (this.tables.counts[24] ?? 0) || rows.length >= 0x00ffffff) {
       throw new RangeError("MethodSemantics row count is inconsistent or exceeds the metadata table limit");
     }
     if (rows.some((row) => row.Association.raw === associationRaw && row.Semantics === semantics)) {
       throw new FormatError("MethodSemantics association already has this semantic");
     }
-    if ((this.tables.sorted & (1n << 24n)) !== 0n && rows.at(-1)?.Association.raw > associationRaw) {
+    let insertionIndex = rows.length;
+    if (insertSorted) {
+      for (let index = 1; index < rows.length; index++) {
+        if (rows[index - 1].Association.raw > rows[index].Association.raw) {
+          throw new UnsupportedFormatError(
+            "Sorted MethodSemantics insertion requires rows already ordered by Association"
+          );
+        }
+      }
+      const laterAssociation = rows.findIndex((row) => row.Association.raw > associationRaw);
+      if (laterAssociation !== -1) insertionIndex = laterAssociation;
+    } else if ((this.tables.sorted & (1n << 24n)) !== 0n &&
+        rows.at(-1)?.Association.raw > associationRaw) {
       throw new UnsupportedFormatError("MethodSemantics append would violate declared Association ordering");
     }
-    const rid = rows.length + 1;
+    const rid = insertionIndex + 1;
+    const { tokenMap, rowChanges, tokenUpdates, patches } = insertSorted
+      ? this.#prepareTokenRowInsertion(24, rid, rows.length, "MethodSemantics")
+      : { tokenMap: new Map(), rowChanges: [], tokenUpdates: [], patches: [] };
     const candidate = {
       table: 24,
       tableName: metadataTableNames[24],
@@ -4850,16 +4873,23 @@ export class Assembly {
         target: { table: associationTable, tableName: metadataTableNames[associationTable], rid: association.rid }
       }
     };
-    const stagedRows = [...rows, candidate];
+    const stagedRows = [...rows];
+    stagedRows.splice(insertionIndex, 0, candidate);
     validateMethodSemanticsRecord(
       this, semantics, methodRid, associationTable, association.rid, stagedRows
     );
-    rows.push(candidate);
+    for (const change of rowChanges) change.row[change.columnName] = change.value;
+    for (const row of rows) {
+      if (row.rid >= rid) row.rid++;
+    }
+    rows.splice(insertionIndex, 0, candidate);
     this.tables.rows.set(24, rows);
-    this.tables.counts[24] = rid;
+    this.tables.counts[24] = rows.length;
     this.tables.valid |= 1n << 24n;
+    for (const update of tokenUpdates) update.instruction.operand.value = update.replacement;
+    this._patches.push(...patches);
     this._metadataDirty = true;
-    return rid;
+    return { rid, tokenMap };
   }
 
   replaceMethodSemantics(rid, { methodRid, association, semantics } = {}) {
