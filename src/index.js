@@ -5112,6 +5112,14 @@ export class Assembly {
   }
 
   addInterfaceImplementation({ owner, interfaceType }) {
+    return this.#writeInterfaceImplementation({ owner, interfaceType }, false).rid;
+  }
+
+  insertInterfaceImplementation({ owner, interfaceType }) {
+    return this.#writeInterfaceImplementation({ owner, interfaceType }, true);
+  }
+
+  #writeInterfaceImplementation({ owner, interfaceType }, insertSorted) {
     this.#ensureEditable();
     const ownerRid = metadataTableId(owner?.table) === 2 ? owner.rid : 0;
     if (!Number.isInteger(ownerRid) || ownerRid < 1 ||
@@ -5148,17 +5156,33 @@ export class Assembly {
     )) {
       throw new FormatError("InterfaceImpl row already exists for this TypeDef and interface");
     }
-    if ((this.tables.sorted & (1n << 9n)) !== 0n &&
+    let insertionIndex = rows.length;
+    if (insertSorted) {
+      for (let index = 1; index < rows.length; index++) {
+        if (rows[index - 1].Class.rid > rows[index].Class.rid) {
+          throw new UnsupportedFormatError(
+            "Sorted InterfaceImpl insertion requires rows already ordered by Class"
+          );
+        }
+      }
+      const laterOwner = rows.findIndex((row) => row.Class.rid > ownerRid);
+      if (laterOwner !== -1) insertionIndex = laterOwner;
+    } else if ((this.tables.sorted & (1n << 9n)) !== 0n &&
         rows.at(-1)?.Class.rid > ownerRid) {
       throw new FormatError("Appending this InterfaceImpl would violate the table's sorted Class order");
     }
-    const rid = rows.length + 1;
+    const rid = insertionIndex + 1;
+    if (rid > 0x00ffffff) {
+      throw new RangeError("InterfaceImpl token row ID exceeds 24-bit range");
+    }
+    const { tokenMap, rowChanges, tokenUpdates, patches } =
+      this.#prepareTokenRowInsertion(9, rid, rows.length, "InterfaceImpl");
     const target = {
       table: interfaceTable,
       tableName: metadataTableNames[interfaceTable],
       rid: interfaceRid
     };
-    rows.push({
+    const newRow = {
       table: 9,
       tableName: metadataTableNames[9],
       rid,
@@ -5169,12 +5193,24 @@ export class Assembly {
         rid: ownerRid
       },
       Interface: { raw: interfaceValue, target }
-    });
+    };
+    for (const change of rowChanges) change.row[change.columnName] = change.value;
+    for (const row of rows) {
+      if (row.rid >= rid) row.rid++;
+    }
+    rows.splice(insertionIndex, 0, newRow);
     this.tables.rows.set(9, rows);
-    this.tables.counts[9] = rid;
+    this.tables.counts[9] = rows.length;
     this.tables.valid |= 1n << 9n;
+    for (const attribute of this.customAttributes) {
+      const row = this.tables.row(12, attribute.rid);
+      attribute.parent = row.Parent.target;
+      attribute.constructor = row.Type.target;
+    }
+    for (const update of tokenUpdates) update.instruction.operand.value = update.replacement;
+    this._patches.push(...patches);
     this._metadataDirty = true;
-    return rid;
+    return { rid, tokenMap };
   }
 
   replaceInterfaceImplementation(rid, { interfaceType } = {}) {
@@ -8192,6 +8228,105 @@ export class Assembly {
     return this.#writeGenericParamConstraint({ ownerRid, constraint }, true);
   }
 
+  #prepareTokenRowInsertion(tableId, insertionRid, rowCount, tableName) {
+    const tokenMap = new Map();
+    const rowChanges = [];
+    const tokenUpdates = [];
+    const patches = [];
+    if (insertionRid > rowCount) {
+      return { tokenMap, rowChanges, tokenUpdates, patches };
+    }
+    if (this._structuralBodies.size > 0 || this._addedMethodBodies.size > 0) {
+      throw new UnsupportedFormatError(
+        `Sorted ${tableName} insertion cannot be combined with method-body edits`
+      );
+    }
+    this.#ensureTokenRemappingSafe(tableName);
+    for (let oldRid = insertionRid; oldRid <= rowCount; oldRid++) {
+      tokenMap.set(
+        (tableId << 24) + oldRid,
+        (tableId << 24) + oldRid + 1
+      );
+    }
+    for (const [sourceTableId, rows] of this.tables.rows) {
+      const schema = metadataTableSchemas[sourceTableId];
+      if (!schema) {
+        throw new UnsupportedFormatError(
+          `Cannot remap ${tableName} tokens through unknown table ${sourceTableId}`
+        );
+      }
+      for (const row of rows) {
+        for (const [kind, value, name, pointer] of schema) {
+          const columnName = name ?? value;
+          const column = row[columnName];
+          if (kind === "coded" && column?.target?.table === tableId &&
+              column.target.rid >= insertionRid) {
+            const target = { ...column.target, rid: column.target.rid + 1 };
+            rowChanges.push({
+              row,
+              columnName,
+              value: {
+                raw: encodeCodedIndex(tableId, target.rid, value),
+                target
+              }
+            });
+          } else if (kind === "table") {
+            const targetTable = pointer !== undefined &&
+              (this.tables.valid & (1n << BigInt(pointer))) !== 0n ? pointer : value;
+            if (targetTable === tableId && column?.rid >= insertionRid) {
+              rowChanges.push({
+                row,
+                columnName,
+                value: {
+                  ...column,
+                  raw: column.rid + 1,
+                  rid: column.rid + 1
+                }
+              });
+            }
+          } else if (kind === "u4" &&
+              (sourceTableId === 30 || sourceTableId === 31) &&
+              columnName === "Token" && row[columnName] >>> 24 === tableId) {
+            const oldToken = row[columnName];
+            const targetRid = oldToken & 0x00ffffff;
+            if (targetRid >= insertionRid) {
+              rowChanges.push({
+                row,
+                columnName,
+                value: (tableId << 24) | (targetRid + 1)
+              });
+            }
+          }
+        }
+      }
+    }
+    for (const method of this.methods) {
+      for (const instruction of this.getMethodBody(method.rid)?.instructions ?? []) {
+        const token = instruction.operand?.kind === "token" ? instruction.operand.value : 0;
+        if ((token >>> 24) !== tableId || (token & 0x00ffffff) < insertionRid) continue;
+        const replacement = token + 1;
+        tokenUpdates.push({ instruction, replacement });
+        patches.push(...createOperandPatches(instruction, replacement));
+      }
+    }
+    if ((this.tables.sorted & (1n << 12n)) !== 0n) {
+      const changedParents = new Map(rowChanges
+        .filter((change) => change.columnName === "Parent")
+        .map((change) => [change.row, change.value]));
+      let previous = -1;
+      for (const row of this.tables.get(12)) {
+        const parent = changedParents.get(row) ?? row.Parent;
+        if (parent.raw < previous) {
+          throw new FormatError(
+            `${tableName} token remapping would violate sorted CustomAttribute order`
+          );
+        }
+        previous = parent.raw;
+      }
+    }
+    return { tokenMap, rowChanges, tokenUpdates, patches };
+  }
+
   #writeGenericParamConstraint({ ownerRid, constraint }, insertSorted) {
     this.#ensureEditable();
     if (!Number.isInteger(ownerRid) || ownerRid < 1 ||
@@ -8247,89 +8382,8 @@ export class Assembly {
     if (rid > 0x00ffffff) {
       throw new RangeError("GenericParamConstraint token row ID exceeds 24-bit range");
     }
-    const tokenMap = new Map();
-    const rowChanges = [];
-    const tokenUpdates = [];
-    const patches = [];
-    if (insertionIndex < constraintRows.length) {
-      if (this._structuralBodies.size > 0 || this._addedMethodBodies.size > 0) {
-        throw new UnsupportedFormatError(
-          "Sorted GenericParamConstraint insertion cannot be combined with method-body edits"
-        );
-      }
-      this.#ensureTokenRemappingSafe("GenericParamConstraint");
-      for (let oldRid = rid; oldRid <= constraintRows.length; oldRid++) {
-        tokenMap.set(0x2c000000 + oldRid, 0x2c000000 + oldRid + 1);
-      }
-      for (const [tableId, rows] of this.tables.rows) {
-        const schema = metadataTableSchemas[tableId];
-        if (!schema) {
-          throw new UnsupportedFormatError(
-            `Cannot remap GenericParamConstraint tokens through unknown table ${tableId}`
-          );
-        }
-        for (const row of rows) {
-          for (const [kind, value, name] of schema) {
-            const columnName = name ?? value;
-            const column = row[columnName];
-            if (kind === "coded" && column?.target?.table === 44 &&
-                column.target.rid >= rid) {
-              const target = { ...column.target, rid: column.target.rid + 1 };
-              rowChanges.push({
-                row,
-                columnName,
-                value: {
-                  raw: encodeCodedIndex(44, target.rid, value),
-                  target
-                }
-              });
-            } else if (kind === "table" && value === 44 &&
-                column?.rid >= rid) {
-              rowChanges.push({
-                row,
-                columnName,
-                value: { ...column, raw: column.rid + 1, rid: column.rid + 1 }
-              });
-            } else if (kind === "u4" && (tableId === 30 || tableId === 31) &&
-                columnName === "Token" && row[columnName] >>> 24 === 44) {
-              const oldToken = row[columnName];
-              const targetRid = oldToken & 0x00ffffff;
-              if (targetRid >= rid) {
-                rowChanges.push({
-                  row,
-                  columnName,
-                  value: 0x2c000000 | (targetRid + 1)
-                });
-              }
-            }
-          }
-        }
-      }
-      for (const method of this.methods) {
-        for (const instruction of this.getMethodBody(method.rid)?.instructions ?? []) {
-          const token = instruction.operand?.kind === "token" ? instruction.operand.value : 0;
-          if ((token >>> 24) !== 44 || (token & 0x00ffffff) < rid) continue;
-          const replacement = token + 1;
-          tokenUpdates.push({ instruction, replacement });
-          patches.push(...createOperandPatches(instruction, replacement));
-        }
-      }
-      if ((this.tables.sorted & (1n << 12n)) !== 0n) {
-        const changedParents = new Map(rowChanges
-          .filter((change) => change.columnName === "Parent")
-          .map((change) => [change.row, change.value]));
-        let previous = -1;
-        for (const row of this.tables.get(12)) {
-          const parent = changedParents.get(row) ?? row.Parent;
-          if (parent.raw < previous) {
-            throw new FormatError(
-              "GenericParamConstraint token remapping would violate sorted CustomAttribute order"
-            );
-          }
-          previous = parent.raw;
-        }
-      }
-    }
+    const { tokenMap, rowChanges, tokenUpdates, patches } =
+      this.#prepareTokenRowInsertion(44, rid, constraintRows.length, "GenericParamConstraint");
     const target = {
       table: constraintTable,
       tableName: metadataTableNames[constraintTable],

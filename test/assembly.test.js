@@ -4308,6 +4308,48 @@ test("InterfaceImpl rows can append to any TypeDef when the table is unsorted", 
   assert.equal(reparsed.tables.row(9, rid).Class.rid, owner.rid);
 });
 
+test("sorted InterfaceImpl insertion remaps CustomAttribute and ENC references", () => {
+  const assembly = parseAssembly(withoutDebugDirectory());
+  const earlierOwner = assembly.addTypeDef({
+    name: "EarlierInterfaceOwner",
+    flags: 0x0080
+  }) & 0x00ffffff;
+  const laterOwner = assembly.addTypeDef({
+    name: "LaterInterfaceOwner",
+    flags: 0x0080
+  }) & 0x00ffffff;
+  const firstInterface = assembly.typeRefs.find((type) => type.name === "EventArgs");
+  const secondInterface = assembly.typeRefs.find((type) => type.name === "EventHandler");
+  assert.ok(firstInterface && secondInterface);
+  assembly.tables.sorted |= 1n << 9n;
+  const laterRid = assembly.addInterfaceImplementation({
+    owner: { table: "TypeDef", rid: laterOwner },
+    interfaceType: { table: "TypeRef", rid: secondInterface.rid }
+  });
+  assembly.tables.sorted &= ~(1n << 12n);
+  const attributeTemplate = assembly.customAttributes[1];
+  assembly.addCustomAttribute({
+    parent: { table: "InterfaceImpl", rid: laterRid },
+    constructor: attributeTemplate.constructor,
+    value: assembly.parseCustomAttribute(attributeTemplate.rid)
+  });
+  addEncToken(assembly, 31, 0x09000000 + laterRid);
+
+  const { rid, tokenMap } = assembly.insertInterfaceImplementation({
+    owner: { table: "TypeDef", rid: earlierOwner },
+    interfaceType: { table: "TypeRef", rid: firstInterface.rid }
+  });
+  assert.equal(rid, laterRid);
+  assert.equal(tokenMap.get(0x09000000 + laterRid), 0x09000000 + laterRid + 1);
+  assert.equal(assembly.tables.row(9, rid).Class.rid, earlierOwner);
+  assert.equal(assembly.customAttributes.at(-1).parent.rid, laterRid + 1);
+  assert.equal(assembly.tables.get(31).at(-1).Token, 0x09000000 + laterRid + 1);
+
+  const reparsed = parseAssembly(assembly.serialize());
+  assert.equal(reparsed.tables.row(9, rid + 1).Class.rid, laterOwner);
+  assert.equal(reparsed.customAttributes.at(-1).parent.rid, laterRid + 1);
+});
+
 test("InterfaceImpl rows append and remove with validation and reference remapping", () => {
   const assembly = parseAssembly(withoutDebugDirectory());
   const owner = assembly.types.at(-1);
