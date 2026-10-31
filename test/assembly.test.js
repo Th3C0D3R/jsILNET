@@ -5542,6 +5542,33 @@ test("custom attributes can append when their parent preserves table ordering", 
   assert.deepEqual(reparsed.parseCustomAttribute(originalCount + 1), value);
 });
 
+test("sorted CustomAttribute insertion remaps later ENC tokens", () => {
+  const assembly = parseAssembly(withoutDebugDirectory());
+  const attributeTemplate = assembly.customAttributes[1];
+  const value = assembly.parseCustomAttribute(attributeTemplate.rid);
+  const oldFirstToken = 0x0c000001;
+  assert.ok(encodeCodedIndex(6, 1, "HasCustomAttribute") <
+    assembly.tables.row(12, 1).Parent.raw);
+  addEncToken(assembly, 31, oldFirstToken);
+
+  const { token, rid, tokenMap } = assembly.insertCustomAttribute({
+    parent: { table: "MethodDef", rid: 1 },
+    constructor: attributeTemplate.constructor,
+    value
+  });
+  assert.equal(token, 0x0c000001);
+  assert.equal(rid, 1);
+  assert.equal(tokenMap.get(oldFirstToken), oldFirstToken + 1);
+  assert.equal(assembly.customAttributes[1].rid, 2);
+  assert.equal(assembly.tables.get(31).at(-1).Token, oldFirstToken + 1);
+  assert.deepEqual(assembly.parseCustomAttribute(rid), value);
+
+  const reparsed = parseAssembly(assembly.serialize());
+  assert.equal(reparsed.customAttributes[0].rid, rid);
+  assert.deepEqual(reparsed.parseCustomAttribute(rid), value);
+  assert.equal(reparsed.tables.get(31).at(-1).Token, oldFirstToken + 1);
+});
+
 test("CustomAttribute removal compacts rows and rejects live CIL references", () => {
   const assembly = parseAssembly(withoutDebugDirectory());
   const originalCount = assembly.customAttributes.length;

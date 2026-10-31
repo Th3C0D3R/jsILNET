@@ -1418,6 +1418,20 @@ export class Assembly {
   }
 
   addCustomAttribute({ parent, constructor, value, resolveEnum }) {
+    return this.#writeCustomAttribute(
+      { parent, constructor, value, resolveEnum },
+      false
+    ).token;
+  }
+
+  insertCustomAttribute({ parent, constructor, value, resolveEnum }) {
+    return this.#writeCustomAttribute(
+      { parent, constructor, value, resolveEnum },
+      true
+    );
+  }
+
+  #writeCustomAttribute({ parent, constructor, value, resolveEnum }, insertSorted) {
     this.#ensureEditable();
     const parentTable = metadataTableId(parent?.table);
     if (!parent || parentTable < 0 || !Number.isInteger(parent.rid) || parent.rid < 1 ||
@@ -1435,14 +1449,31 @@ export class Assembly {
     }
     const parentRaw = encodeCodedIndex(parentTable, parent.rid, "HasCustomAttribute");
     const constructorRaw = encodeCodedIndex(constructorTable, constructor.rid, "CustomAttributeType");
-    if ((this.tables.sorted & (1n << 12n)) !== 0n &&
+    let insertionIndex = customRows.length;
+    if (insertSorted) {
+      for (let index = 1; index < customRows.length; index++) {
+        if (customRows[index - 1].Parent.raw > customRows[index].Parent.raw) {
+          throw new UnsupportedFormatError(
+            "Sorted CustomAttribute insertion requires rows already ordered by Parent"
+          );
+        }
+      }
+      const laterParent = customRows.findIndex((row) => row.Parent.raw > parentRaw);
+      if (laterParent !== -1) insertionIndex = laterParent;
+    } else if ((this.tables.sorted & (1n << 12n)) !== 0n &&
         customRows.at(-1)?.Parent.raw > parentRaw) {
       throw new FormatError("Appending this CustomAttribute would violate the table's sorted Parent order");
     }
+    const rid = insertionIndex + 1;
+    if (rid > 0x00ffffff) {
+      throw new RangeError("CustomAttribute token row ID exceeds 24-bit range");
+    }
+    const { tokenMap, rowChanges, tokenUpdates, patches } =
+      this.#prepareTokenRowInsertion(12, rid, customRows.length, "CustomAttribute");
 
     const enumResolver = getCustomAttributeEnumResolver(this, resolveEnum);
     const newAttribute = {
-      rid: customRows.length + 1,
+      rid,
       parent: { table: parentTable, tableName: metadataTableNames[parentTable], rid: parent.rid },
       constructor: {
         table: constructorTable,
@@ -1462,25 +1493,34 @@ export class Assembly {
     const blob = appendBlobHeap(heapStreams.get("#Blob") ?? new Uint8Array(), encoded);
     heapStreams.set("#Blob", blob.heap);
 
-    const rid = newAttribute.rid;
-    customRows.push({
+    const newRow = {
       table: 12,
       tableName: metadataTableNames[12],
       rid,
       Parent: { raw: parentRaw, target: newAttribute.parent },
       Type: { raw: constructorRaw, target: newAttribute.constructor },
       Value: blob.index
-    });
+    };
+    for (const change of rowChanges) change.row[change.columnName] = change.value;
+    for (const row of customRows) {
+      if (row.rid >= rid) row.rid++;
+    }
+    customRows.splice(insertionIndex, 0, newRow);
     this.tables.rows.set(12, customRows);
     this.tables.valid |= 1n << 12n;
-    this.tables.counts[12] = rid;
+    this.tables.counts[12] = customRows.length;
     newAttribute.value = encoded.slice();
     newAttribute.parsedValue = parsed;
-    this.customAttributes.push(newAttribute);
+    for (const attribute of this.customAttributes) {
+      if (attribute.rid >= rid) attribute.rid++;
+    }
+    this.customAttributes.splice(insertionIndex, 0, newAttribute);
     this._heapStreams = heapStreams;
     this.#refreshHeaps();
+    for (const update of tokenUpdates) update.instruction.operand.value = update.replacement;
+    this._patches.push(...patches);
     this._metadataDirty = true;
-    return 0x0c000000 + rid;
+    return { token: 0x0c000000 + rid, rid, tokenMap };
   }
 
   removeCustomAttribute(rid) {

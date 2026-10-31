@@ -62,6 +62,7 @@ MethodDef rows can be appended to the last TypeDef with a complete validated tin
 MethodDef removal is supported when no live metadata or CIL references remain. Owned Param and method-owned GenericParam rows can be removed with the method when their row ranges are contiguous; surviving Param and GenericParam references and tokens are remapped. Non-trailing RID remapping is refused when debug data, unknown streams, or added method bodies make it unsafe. Bijective MethodPtr/ParamPtr ownership and TypeDef list boundaries are updated.
 GenericParamConstraint rows owned by a removed method's GenericParam rows are removed with them when no metadata, CIL, or ENC references target those constraints; surviving constraint owners and tokens are remapped.
 `insertGenericParamConstraint` inserts by Owner into an already Owner-ordered table, remapping later constraint references in metadata, custom attributes, CIL operands, and ENC tokens; it returns the inserted RID and token map.
+`insertCustomAttribute` inserts by Parent into an already Parent-ordered table and remaps shifted CustomAttribute tokens in CIL operands and ENC records.
 
 MethodDef names, flags, and implementation flags can be replaced without changing row identity.
 

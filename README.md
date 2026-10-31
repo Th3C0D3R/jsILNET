@@ -51,6 +51,7 @@ Invalid or unsupported structures and edits raise `FormatError` or `UnsupportedF
 
 `addInterfaceImplementation` appends an InterfaceImpl row to any existing TypeDef when table ordering permits, with duplicate, sort-order, and TypeSpec-context checks. `replaceInterfaceImplementation` changes the interface type without changing its row ID and rejects duplicates or invalid TypeSpec contexts. `removeInterfaceImplementation` rejects live CustomAttribute references, compacts later row references, and returns a row-RID map.
 `insertInterfaceImplementation` inserts by Class into an already Class-ordered InterfaceImpl table and returns `{ rid, tokenMap }`, remapping affected CustomAttribute, CIL, and ENC references.
+`insertCustomAttribute` inserts by Parent into an already Parent-ordered table and returns `{ token, rid, tokenMap }`, remapping later CustomAttribute tokens in CIL and ENC references.
 
 `replaceTypeRef` updates a TypeRef name, namespace, or resolution scope without changing its token; `removeTypeRef` rejects live references and remaps surviving metadata, signature, and CIL references.
 
