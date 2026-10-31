@@ -31,7 +31,8 @@ import {
   validatePortablePdbAssemblyReferences,
   validatePortablePdbCodeViewIdentity,
   replaceEmbeddedPortablePdbDocumentName as replacePortablePdbDocumentName,
-  replaceEmbeddedPortablePdbSequencePoints as replacePortablePdbSequencePoints
+  replaceEmbeddedPortablePdbSequencePoints as replacePortablePdbSequencePoints,
+  replaceEmbeddedPortablePdbSource as replacePortablePdbSource
 } from "./metadata/portable-pdb.js";
 import {
   assertStrongNamePEProfile,
@@ -1057,6 +1058,7 @@ export {
   encodePortablePdbSequencePoints,
   replaceEmbeddedPortablePdbDocumentName,
   replaceEmbeddedPortablePdbSequencePoints,
+  replaceEmbeddedPortablePdbSource,
   serializeEmbeddedPortablePdb
 } from "./metadata/portable-pdb.js";
 export {
@@ -2766,6 +2768,25 @@ export class Assembly {
       entry.embeddedPortablePdb,
       methodRid,
       sequencePoints
+    );
+    return this.replaceEmbeddedPortablePdb(debugEntryIndex, data);
+  }
+
+  replaceEmbeddedPortablePdbSource(debugEntryIndex, documentRid, source, options) {
+    this.#ensureEditable();
+    if (!Number.isInteger(debugEntryIndex) || debugEntryIndex < 0 ||
+        debugEntryIndex >= this.pe.debugDirectoryEntries.length) {
+      throw new RangeError(`Invalid debug-directory entry index ${debugEntryIndex}`);
+    }
+    const entry = this.pe.debugDirectoryEntries[debugEntryIndex];
+    if (entry.type !== 17 || !entry.embeddedPortablePdb) {
+      throw new UnsupportedFormatError("Debug-directory entry is not an embedded Portable PDB");
+    }
+    const data = replacePortablePdbSource(
+      entry.embeddedPortablePdb,
+      documentRid,
+      source,
+      options
     );
     return this.replaceEmbeddedPortablePdb(debugEntryIndex, data);
   }

@@ -638,3 +638,62 @@ export function replaceEmbeddedPortablePdbSequencePoints(pdb, methodRid, sequenc
     tables: { ...pdb.tables, rows }
   });
 }
+
+export function replaceEmbeddedPortablePdbSource(pdb, documentRid, source, { compress = true } = {}) {
+  if (!pdb?.metadataRoot?.streams || !(pdb.tables?.rows instanceof Map) ||
+      !Array.isArray(pdb.tables.counts) || !Array.isArray(pdb.customDebugInformation)) {
+    throw new TypeError("Portable PDB EmbeddedSource editing requires parsed PDB data");
+  }
+  if (!Number.isInteger(documentRid) || documentRid < 1 ||
+      documentRid > pdb.tables.counts[48]) {
+    throw new RangeError(`Invalid Portable PDB Document row ID ${documentRid}`);
+  }
+  if (!(source instanceof Uint8Array)) {
+    throw new TypeError("Portable PDB embedded source must be a Uint8Array");
+  }
+  if (source.length > maxEmbeddedSourceSize) {
+    throw new UnsupportedFormatError(
+      `EmbeddedSource exceeds the ${maxEmbeddedSourceSize}-byte size limit`
+    );
+  }
+  if (typeof compress !== "boolean") {
+    throw new TypeError("Portable PDB EmbeddedSource compression option must be a boolean");
+  }
+  const debugInfo = pdb.customDebugInformation.find((row) =>
+    row.kind === embeddedSourceKind &&
+    row.Parent.target?.table === 48 &&
+    row.Parent.target.rid === documentRid
+  );
+  if (!debugInfo) {
+    throw new UnsupportedFormatError(
+      `Portable PDB Document row ${documentRid} has no EmbeddedSource record`
+    );
+  }
+  const rawSource = Uint8Array.from(source);
+  const compressed = compress && rawSource.length > 0
+    ? Uint8Array.from(deflateRawSync(rawSource))
+    : null;
+  const useCompressed = compressed !== null && compressed.length < rawSource.length;
+  const payload = useCompressed ? compressed : rawSource;
+  const value = new Uint8Array(4 + payload.length);
+  new DataView(value.buffer).setUint32(0, useCompressed ? rawSource.length : 0, true);
+  value.set(payload, 4);
+
+  const streams = new Map([...pdb.metadataRoot.streams].map(([streamName, stream]) =>
+    [streamName, { ...stream, bytes: Uint8Array.from(stream.bytes) }]
+  ));
+  const blobStream = streams.get("#Blob");
+  if (!blobStream) throw new FormatError("Portable PDB metadata is missing its #Blob heap");
+  const appended = appendBlobHeap(blobStream.bytes, value);
+  blobStream.bytes = appended.heap;
+  const rows = new Map(pdb.tables.rows);
+  const debugRows = pdb.tables.rows.get(55) ?? [];
+  rows.set(55, debugRows.map((row) =>
+    row.rid === debugInfo.rid ? { ...row, Value: appended.index } : { ...row }
+  ));
+  return serializeEmbeddedPortablePdb({
+    ...pdb,
+    metadataRoot: { ...pdb.metadataRoot, streams },
+    tables: { ...pdb.tables, rows }
+  });
+}

@@ -15,6 +15,7 @@ import {
   replaceClassicPdbStringTableName,
   replaceClassicPdbSymbolName,
   replaceEmbeddedPortablePdbSequencePoints,
+  replaceEmbeddedPortablePdbSource,
   serializeEmbeddedPortablePdb
 } from "../src/index.js";
 import { parseEmbeddedPortablePdbData } from "../src/pe/headers.js";
@@ -291,6 +292,7 @@ test("strong-name signed PE32+ assemblies load and execute in .NET", {
       `    <TargetFramework>${targetFramework}</TargetFramework>`,
       "    <PlatformTarget>x64</PlatformTarget>",
       "    <DebugType>embedded</DebugType>",
+      "    <EmbedAllSources>true</EmbedAllSources>",
       "  </PropertyGroup>",
       "</Project>"
     ].join("\n"));
@@ -375,6 +377,46 @@ test("strong-name signed PE32+ assemblies load and execute in .NET", {
     assert.deepEqual(reparsedPdb.methodDebugInformation, embeddedPdb.methodDebugInformation);
     assert.deepEqual(reparsedPdb.stateMachineMethods, embeddedPdb.stateMachineMethods);
     assert.deepEqual(reparsedPdb.customDebugInformation, embeddedPdb.customDebugInformation);
+    const embeddedSourceRecord = embeddedPdb.customDebugInformation.find((record) =>
+      record.embeddedSource instanceof Uint8Array
+    );
+    assert.ok(embeddedSourceRecord);
+    const changedSource = Uint8Array.from(embeddedSourceRecord.embeddedSource);
+    changedSource[0] ^= 1;
+    const changedSourcePdbBytes = replaceEmbeddedPortablePdbSource(
+      embeddedPdb,
+      embeddedSourceRecord.Parent.target.rid,
+      changedSource
+    );
+    const changedSourcePdb = parseEmbeddedPortablePdbData(
+      changedSourcePdbBytes,
+      0,
+      changedSourcePdbBytes.length
+    );
+    assert.deepEqual(
+      changedSourcePdb.customDebugInformation.find((record) =>
+        record.rid === embeddedSourceRecord.rid
+      ).embeddedSource,
+      changedSource
+    );
+    let expectedCustomDebugInformation = embeddedPdb.customDebugInformation;
+    if (changedSourcePdbBytes.length <= embeddedPdbEntry.sizeOfData) {
+      assembly.replaceEmbeddedPortablePdbSource(
+        embeddedPdbDebugIndex,
+        embeddedSourceRecord.Parent.target.rid,
+        changedSource
+      );
+      expectedCustomDebugInformation = changedSourcePdb.customDebugInformation;
+    } else {
+      assert.throws(
+        () => assembly.replaceEmbeddedPortablePdbSource(
+          embeddedPdbDebugIndex,
+          embeddedSourceRecord.Parent.target.rid,
+          changedSource
+        ),
+        /existing data slot/
+      );
+    }
     const originalDocumentName = embeddedPdb.documents[0].name;
     const renamedDocument = replaceEmbeddedPortablePdbDocumentName(
       embeddedPdb,
@@ -494,6 +536,7 @@ test("strong-name signed PE32+ assemblies load and execute in .NET", {
     assert.deepEqual(rewrittenPdb?.id, embeddedPdb.id);
     assert.deepEqual(rewrittenPdb?.documents, embeddedPdb.documents);
     assert.deepEqual(rewrittenPdb?.methodDebugInformation, expectedMethodDebugInformation);
+    assert.deepEqual(rewrittenPdb?.customDebugInformation, expectedCustomDebugInformation);
     await writeFile(assemblyPath, signedBytes);
 
     const harnessProject = join(directory, "RuntimeHarness.csproj");
