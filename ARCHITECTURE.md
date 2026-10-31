@@ -69,6 +69,7 @@ GenericParamConstraint rows owned by a removed method's GenericParam rows are re
 `insertConstant` inserts by Parent into an already Parent-ordered table and remaps shifted Constant tokens in metadata, CIL operands, and ENC records.
 `insertFieldMarshal` inserts by Parent into an already Parent-ordered table and remaps shifted FieldMarshal tokens in ENC records.
 `insertMethodSemantics` inserts by Association into an already Association-ordered table and remaps shifted MethodSemantics tokens in ENC records.
+`insertClassLayout` inserts by Parent into an already Parent-ordered table and remaps shifted ClassLayout tokens in ENC records.
 
 MethodDef names, flags, and implementation flags can be replaced without changing row identity.
 

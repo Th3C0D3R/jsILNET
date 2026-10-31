@@ -2817,6 +2817,14 @@ export class Assembly {
   }
 
   addClassLayout({ owner, packingSize = 0, classSize = 0 }) {
+    return this.#writeClassLayout({ owner, packingSize, classSize }, false).rid;
+  }
+
+  insertClassLayout({ owner, packingSize = 0, classSize = 0 }) {
+    return this.#writeClassLayout({ owner, packingSize, classSize }, true);
+  }
+
+  #writeClassLayout({ owner, packingSize, classSize }, insertSorted) {
     this.#ensureEditable();
     const ownerRid = metadataTableId(owner?.table) === 2 ? owner.rid : 0;
     if (!Number.isInteger(ownerRid) || ownerRid < 1 || ownerRid > this.tables.counts[2]) {
@@ -2829,23 +2837,45 @@ export class Assembly {
       throw new RangeError("ClassLayout class size must be an unsigned 32-bit integer");
     }
     const rows = this.tables.rows.get(15) ?? [];
-    if (rows.length !== this.tables.counts[15] || rows.length >= 0xffffffff) {
+    if (rows.length !== this.tables.counts[15] || rows.length >= 0x00ffffff) {
       throw new RangeError("ClassLayout row count is inconsistent or exceeds the metadata table limit");
     }
     if (rows.some((row) => row.Parent.rid === ownerRid)) {
       throw new FormatError("The ClassLayout table already has a row for this TypeDef");
     }
-    if ((this.tables.sorted & (1n << 15n)) !== 0n && rows.at(-1)?.Parent.rid > ownerRid) {
+    let insertionIndex = rows.length;
+    if (insertSorted) {
+      for (let index = 1; index < rows.length; index++) {
+        if (rows[index - 1].Parent.rid > rows[index].Parent.rid) {
+          throw new UnsupportedFormatError(
+            "Sorted ClassLayout insertion requires rows already ordered by Parent"
+          );
+        }
+      }
+      const laterParent = rows.findIndex((row) => row.Parent.rid > ownerRid);
+      if (laterParent !== -1) insertionIndex = laterParent;
+    } else if ((this.tables.sorted & (1n << 15n)) !== 0n &&
+        rows.at(-1)?.Parent.rid > ownerRid) {
       throw new UnsupportedFormatError("ClassLayout append would violate declared Parent ordering");
     }
-    const rid = rows.length + 1;
-    rows.push({ table: 15, tableName: metadataTableNames[15], rid, PackingSize: packingSize,
-      ClassSize: classSize, Parent: { rid: ownerRid } });
+    const rid = insertionIndex + 1;
+    const { tokenMap, rowChanges, tokenUpdates, patches } = insertSorted
+      ? this.#prepareTokenRowInsertion(15, rid, rows.length, "ClassLayout")
+      : { tokenMap: new Map(), rowChanges: [], tokenUpdates: [], patches: [] };
+    const candidate = { table: 15, tableName: metadataTableNames[15], rid, PackingSize: packingSize,
+      ClassSize: classSize, Parent: { rid: ownerRid } };
+    for (const change of rowChanges) change.row[change.columnName] = change.value;
+    for (const row of rows) {
+      if (row.rid >= rid) row.rid++;
+    }
+    rows.splice(insertionIndex, 0, candidate);
     this.tables.rows.set(15, rows);
-    this.tables.counts[15] = rid;
+    this.tables.counts[15] = rows.length;
     this.tables.valid |= 1n << 15n;
+    for (const update of tokenUpdates) update.instruction.operand.value = update.replacement;
+    this._patches.push(...patches);
     this._metadataDirty = true;
-    return rid;
+    return { rid, tokenMap };
   }
 
   replaceClassLayout(rid, { packingSize, classSize } = {}) {
