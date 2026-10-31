@@ -557,3 +557,44 @@ export function serializeEmbeddedPortablePdb(pdb) {
   output.set(compressed, 8);
   return output;
 }
+
+export function replaceEmbeddedPortablePdbDocumentName(pdb, documentRid, name, separator) {
+  if (!pdb?.metadataRoot?.streams || !(pdb.tables?.rows instanceof Map) ||
+      !Array.isArray(pdb.tables.counts) || !pdb.heaps?.getBlob ||
+      !Array.isArray(pdb.documents)) {
+    throw new TypeError("Portable PDB document editing requires parsed PDB data");
+  }
+  if (!Number.isInteger(documentRid) || documentRid < 1 ||
+      documentRid > pdb.documents.length) {
+    throw new RangeError(`Invalid Portable PDB Document row ID ${documentRid}`);
+  }
+  if (typeof name !== "string" || name.length === 0 || name.includes("\0")) {
+    throw new TypeError("Portable PDB document names must be nonempty null-free strings");
+  }
+  const documentRows = pdb.tables.rows.get(48) ?? [];
+  const documentRow = documentRows[documentRid - 1];
+  if (!documentRow || documentRow.rid !== documentRid) {
+    throw new FormatError(`Portable PDB Document row ${documentRid} is missing`);
+  }
+  const streams = new Map([...pdb.metadataRoot.streams].map(([streamName, stream]) =>
+    [streamName, { ...stream, bytes: Uint8Array.from(stream.bytes) }]
+  ));
+  const blobStream = streams.get("#Blob");
+  if (!blobStream) throw new FormatError("Portable PDB metadata is missing its #Blob heap");
+  const documentName = appendPortablePdbDocumentName(blobStream.bytes, name, separator);
+  blobStream.bytes = documentName.heap;
+  for (const document of pdb.documents) {
+    if (document.rid !== documentRid && document.name === name) {
+      throw new FormatError(`Portable PDB Document name ${JSON.stringify(name)} already exists`);
+    }
+  }
+  const rows = new Map(pdb.tables.rows);
+  rows.set(48, documentRows.map((row) =>
+    row.rid === documentRid ? { ...row, Name: documentName.nameBlobIndex } : { ...row }
+  ));
+  return serializeEmbeddedPortablePdb({
+    ...pdb,
+    metadataRoot: { ...pdb.metadataRoot, streams },
+    tables: { ...pdb.tables, rows }
+  });
+}

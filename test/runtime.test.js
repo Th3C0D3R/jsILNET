@@ -11,6 +11,7 @@ import {
   parseAssembly,
   parseClassicPdb,
   parsePE,
+  replaceEmbeddedPortablePdbDocumentName,
   replaceClassicPdbStringTableName,
   replaceClassicPdbSymbolName,
   serializeEmbeddedPortablePdb
@@ -351,6 +352,46 @@ test("strong-name signed PE32+ assemblies load and execute in .NET", {
     assert.deepEqual(reparsedPdb.methodDebugInformation, embeddedPdb.methodDebugInformation);
     assert.deepEqual(reparsedPdb.stateMachineMethods, embeddedPdb.stateMachineMethods);
     assert.deepEqual(reparsedPdb.customDebugInformation, embeddedPdb.customDebugInformation);
+    const originalDocumentName = embeddedPdb.documents[0].name;
+    const renamedDocument = replaceEmbeddedPortablePdbDocumentName(
+      embeddedPdb,
+      embeddedPdb.documents[0].rid,
+      "renamed-source.cs",
+      "\\"
+    );
+    const renamedPdb = parseEmbeddedPortablePdbData(
+      renamedDocument,
+      0,
+      renamedDocument.length
+    );
+    assert.equal(renamedPdb.documents[0].name, "renamed-source.cs");
+    assert.deepEqual(renamedPdb.id, embeddedPdb.id);
+    assert.deepEqual(renamedPdb.methodDebugInformation, embeddedPdb.methodDebugInformation);
+    assert.equal(embeddedPdb.documents[0].name, originalDocumentName);
+    assert.throws(
+      () => replaceEmbeddedPortablePdbDocumentName(embeddedPdb, 0, "source.cs", "\\"),
+      /Invalid Portable PDB Document row ID/
+    );
+    assert.throws(
+      () => replaceEmbeddedPortablePdbDocumentName(embeddedPdb, 1, "\ud800", "\\"),
+      /valid Unicode/
+    );
+    assert.throws(
+      () => replaceEmbeddedPortablePdbDocumentName(
+        {
+          ...embeddedPdb,
+          documents: [
+            ...embeddedPdb.documents,
+            { ...embeddedPdb.documents[0], rid: embeddedPdb.documents.length + 1,
+              name: "duplicate.cs" }
+          ]
+        },
+        embeddedPdb.documents[0].rid,
+        "duplicate.cs",
+        "\\"
+      ),
+      /already exists/
+    );
     assert.ok(embeddedPdb.tables.counts[48] > 0);
     assert.ok(embeddedPdb.tables.counts[49] > 0);
     assert.ok(embeddedPdb.heaps.blobs);
