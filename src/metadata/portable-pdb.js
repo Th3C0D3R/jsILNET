@@ -159,6 +159,9 @@ export function encodePortablePdbDocumentName(separator, partBlobIndices) {
     throw new TypeError("Portable PDB document names require at least one blob index");
   }
   const separatorBytes = new TextEncoder().encode(separator);
+  if (new TextDecoder("utf-8", { fatal: true }).decode(separatorBytes) !== separator) {
+    throw new TypeError("Portable PDB document-name separator must contain valid Unicode");
+  }
   const output = [...(separatorBytes.length === 0 ? [0] : separatorBytes)];
   for (const index of partBlobIndices) {
     if (!Number.isInteger(index) || index < 0 || index >= 0x20000000) {

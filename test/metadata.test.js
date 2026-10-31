@@ -418,7 +418,7 @@ test("embedded Portable PDB data validates and exposes its metadata streams", ()
   ), /non-type-system metadata table/);
 });
 
-test("Portable PDB document names and sequence points decode bounded blobs", () => {
+test("Portable PDB document names and sequence points round-trip bounded blobs", () => {
   const heaps = {
     getBlob(index) {
       return new Map([[1, new TextEncoder().encode("src")], [2, new TextEncoder().encode("a.cs")]]).get(index);
@@ -432,6 +432,7 @@ test("Portable PDB document names and sequence points decode bounded blobs", () 
     "src🧭a.cs"
   );
   assert.throws(() => encodePortablePdbDocumentName("::", [1, 2]), /separator/);
+  assert.throws(() => encodePortablePdbDocumentName("\ud800", [1, 2]), /valid Unicode/);
 
   const decoded = decodePortablePdbSequencePoints(
     Uint8Array.from([0, 0, 0, 5, 10, 2, 4, 1, 4, 2, 0x7f, 0, 2, 3, 0, 0]),
