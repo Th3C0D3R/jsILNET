@@ -10110,6 +10110,82 @@ export class Assembly {
     return 0x26000000 + rid;
   }
 
+  insertFile({ beforeRid, name, flags = 0, hashValue = new Uint8Array() }) {
+    this.#ensureEditable();
+    if (typeof name !== "string" || name.length === 0 || name.includes("\0")) {
+      throw new TypeError("File name must be a non-empty null-free string");
+    }
+    if (!Number.isInteger(flags) || flags < 0 || flags > 1) {
+      throw new RangeError("File flags may only specify ContainsNoMetaData");
+    }
+    if (!(hashValue instanceof Uint8Array)) {
+      throw new TypeError("File hash value must be a Uint8Array");
+    }
+    const rows = this.tables.rows.get(38) ?? [];
+    if (rows.length !== (this.tables.counts[38] ?? 0) || rows.length !== this.files.length) {
+      throw new FormatError("File row count is inconsistent with parsed File records");
+    }
+    if (!Number.isInteger(beforeRid) || beforeRid < 1 || beforeRid > rows.length + 1) {
+      throw new RangeError(`Invalid File insertion position ${beforeRid}`);
+    }
+    if (rows.length >= 0x00ffffff) throw new RangeError("File token row ID exceeds 24-bit range");
+
+    const { tokenMap, rowChanges, tokenUpdates, patches } =
+      this.#prepareTokenRowInsertion(38, beforeRid, rows.length, "File");
+    const heapStreams = new Map(
+      [...(this._heapStreams ?? new Map([...this.metadataRoot.streams].map(([streamName, stream]) =>
+        [streamName, stream.bytes]
+      )))].map(([streamName, bytes]) => [streamName, bytes.slice()])
+    );
+    const stringHeap = appendStringHeap(heapStreams.get("#Strings") ?? new Uint8Array(), name);
+    const blobHeap = appendBlobHeap(heapStreams.get("#Blob") ?? new Uint8Array(), hashValue);
+    heapStreams.set("#Strings", stringHeap.heap);
+    heapStreams.set("#Blob", blobHeap.heap);
+    const rid = beforeRid;
+    const row = {
+      table: 38,
+      tableName: metadataTableNames[38],
+      rid,
+      Flags: flags,
+      Name: stringHeap.index,
+      HashValue: blobHeap.index
+    };
+
+    for (const change of rowChanges) change.row[change.columnName] = change.value;
+    rows.splice(rid - 1, 0, row);
+    rows.forEach((fileRow, index) => {
+      fileRow.rid = index + 1;
+    });
+    this.tables.rows.set(38, rows);
+    this.tables.valid |= 1n << 38n;
+    this.tables.counts[38] = rows.length;
+
+    const file = { rid, flags, name, hashValue: hashValue.slice() };
+    this.files.splice(rid - 1, 0, file);
+    this.files.forEach((record, index) => {
+      record.rid = index + 1;
+    });
+    for (const exportedType of this.exportedTypes) {
+      if (exportedType.implementation?.table === 38 && exportedType.implementation.rid >= rid) {
+        exportedType.implementation.rid++;
+      }
+    }
+    for (const resource of this.resources) {
+      if (resource.implementation?.table === 38 && resource.implementation.rid >= rid) {
+        resource.implementation.rid++;
+      }
+    }
+    for (const attribute of this.customAttributes) {
+      attribute.parent = this.tables.row(12, attribute.rid).Parent.target;
+    }
+    for (const update of tokenUpdates) update.instruction.operand.value = update.replacement;
+    patches.forEach((patch) => this._patches.push(patch));
+    this._heapStreams = heapStreams;
+    this.#refreshHeaps();
+    this._metadataDirty = true;
+    return { token: 0x26000000 + rid, tokenMap };
+  }
+
   addExportedType({ name, namespace = "", flags = 0, typeDefId = 0, implementation }) {
     this.#ensureEditable();
     if (typeof name !== "string" || name.length === 0 || name.includes("\0")) {

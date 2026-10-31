@@ -6505,6 +6505,58 @@ test("File rows can be appended and link manifest resources", () => {
   assert.equal(invalidAssembly.modified, false);
 });
 
+test("File rows can be inserted before existing rows and remap references", () => {
+  const assembly = parseAssembly(withoutDebugDirectory());
+  const firstToken = assembly.addFile({ name: "First.netmodule" });
+  const secondToken = assembly.addFile({ name: "Second.netmodule" });
+  const resourceToken = assembly.addManifestResource({
+    name: "LinkedToFirst",
+    implementation: { table: "File", rid: firstToken & 0x00ffffff }
+  });
+  const exportedToken = assembly.addExportedType({
+    name: "ForwardedFromSecond",
+    implementation: { table: "File", rid: secondToken & 0x00ffffff }
+  });
+  const inserted = assembly.insertFile({
+    beforeRid: 1,
+    name: "Inserted.netmodule",
+    hashValue: Uint8Array.of(4, 2)
+  });
+
+  assert.equal(inserted.token, 0x26000001);
+  assert.deepEqual([...inserted.tokenMap], [
+    [firstToken, 0x26000002],
+    [secondToken, 0x26000003]
+  ]);
+  assert.deepEqual(assembly.files.map(({ rid, name }) => [rid, name]), [
+    [1, "Inserted.netmodule"],
+    [2, "First.netmodule"],
+    [3, "Second.netmodule"]
+  ]);
+  assert.equal(assembly.resources[0].implementation.rid, 2);
+  assert.equal(assembly.exportedTypes[0].implementation.rid, 3);
+
+  const reparsed = parseAssembly(assembly.serialize());
+  assert.deepEqual(reparsed.resources[0].implementation, {
+    table: 38,
+    tableName: "File",
+    rid: 2
+  });
+  assert.deepEqual(reparsed.exportedTypes[0].implementation, {
+    table: 38,
+    tableName: "File",
+    rid: 3
+  });
+  assert.deepEqual(reparsed.files[0].hashValue, Uint8Array.of(4, 2));
+  assert.equal(resourceToken, 0x28000001);
+  assert.equal(exportedToken, 0x27000001);
+
+  const invalidAssembly = parseAssembly(withoutDebugDirectory());
+  assert.throws(() => invalidAssembly.insertFile({ beforeRid: 0, name: "Invalid.netmodule" }),
+    /Invalid File insertion position/);
+  assert.equal(invalidAssembly.modified, false);
+});
+
 test("ManifestResource metadata edits preserve embedded data and update linked targets", () => {
   const assembly = parseAssembly(withoutDebugDirectory());
   const payload = Uint8Array.of(9, 8, 7);
