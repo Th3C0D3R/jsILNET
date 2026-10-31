@@ -212,6 +212,8 @@ test("strong-name signed PE32+ assemblies load and execute in .NET", {
       entry.type === 17
     )?.embeddedPortablePdb;
     assert.deepEqual(rewrittenPdb?.id, embeddedPdb.id);
+    assert.deepEqual(rewrittenPdb?.documents, embeddedPdb.documents);
+    assert.deepEqual(rewrittenPdb?.methodDebugInformation, embeddedPdb.methodDebugInformation);
     await writeFile(assemblyPath, signedBytes);
 
     const harnessProject = join(directory, "RuntimeHarness.csproj");

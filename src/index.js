@@ -334,17 +334,7 @@ function getGenericParameterOwnerContext(assembly, parameter) {
 }
 
 function validateMethodSpecUseAtCallSite(assembly, methodRid, methodSpec, typeSpecOverride = null) {
-  const method = assembly.methods[methodRid - 1];
-  if (!method) throw new FormatError(`CIL call site references missing MethodDef row ${methodRid}`);
-  const methodSignature = parseSignature(method.signature, { counts: assembly.tables.counts });
-  if (methodSignature.kind !== "method") {
-    throw new FormatError(`MethodDef row ${methodRid} has an invalid method signature`);
-  }
-  const declaringType = assembly.types.find((type) => type.methodRids.includes(methodRid));
-  const typeArity = declaringType
-    ? getGenericParameterArity(assembly.genericParams, 2, declaringType.rid)
-    : 0;
-  const methodArity = methodSignature.generic ? methodSignature.genericParameterCount : 0;
+  const { typeArity, methodArity } = getMethodGenericArities(assembly, methodRid);
   validateGenericVariableReferences(
     methodSpec.parsedInstantiation,
     typeArity,
@@ -354,9 +344,23 @@ function validateMethodSpecUseAtCallSite(assembly, methodRid, methodSpec, typeSp
   );
 }
 
-function validateStandAloneSigCallSite(assembly, methodRid, signatureRid) {
+function getMethodGenericArities(assembly, methodRid) {
   const method = assembly.methods[methodRid - 1];
   if (!method) throw new FormatError(`CIL call site references missing MethodDef row ${methodRid}`);
+  const signature = parseSignature(method.signature, { counts: assembly.tables.counts });
+  if (signature.kind !== "method") {
+    throw new FormatError(`MethodDef row ${methodRid} has an invalid method signature`);
+  }
+  const declaringType = assembly.types.find((type) => type.methodRids.includes(methodRid));
+  return {
+    typeArity: declaringType
+      ? getGenericParameterArity(assembly.genericParams, 2, declaringType.rid)
+      : 0,
+    methodArity: signature.generic ? signature.genericParameterCount : 0
+  };
+}
+
+function validateStandAloneSigCallSite(assembly, methodRid, signatureRid) {
   const row = assembly.tables.row(17, signatureRid);
   if (!row) throw new FormatError(`CIL references missing StandAloneSig row ${signatureRid}`);
   const signature = parseSignature(assembly.heaps.getBlob(row.Signature), {
@@ -365,15 +369,28 @@ function validateStandAloneSigCallSite(assembly, methodRid, signatureRid) {
   if (signature.kind !== "method") {
     throw new FormatError("calli operand must identify a StandAloneSig method signature");
   }
-  const methodSignature = parseSignature(method.signature, { counts: assembly.tables.counts });
-  const declaringType = assembly.types.find((type) => type.methodRids.includes(methodRid));
+  const { typeArity, methodArity } = getMethodGenericArities(assembly, methodRid);
   validateGenericVariableReferences(
     signature,
-    declaringType ? getGenericParameterArity(assembly.genericParams, 2, declaringType.rid) : 0,
+    typeArity,
     assembly,
     null,
-    methodSignature.generic ? methodSignature.genericParameterCount : 0
+    methodArity
   );
+  return signature;
+}
+
+function validateLocalSignatureCallSite(assembly, methodRid, signatureRid) {
+  const row = assembly.tables.row(17, signatureRid);
+  if (!row) throw new FormatError(`Method body references missing StandAloneSig row ${signatureRid}`);
+  const signature = parseSignature(assembly.heaps.getBlob(row.Signature), {
+    counts: assembly.tables.counts
+  });
+  if (signature.kind !== "locals") {
+    throw new FormatError("Method local signature token must identify a local-variable signature");
+  }
+  const { typeArity, methodArity } = getMethodGenericArities(assembly, methodRid);
+  validateGenericVariableReferences(signature, typeArity, assembly, null, methodArity);
   return signature;
 }
 
@@ -386,13 +403,13 @@ function validateMethodSpecUseSites(
   for (const method of assembly.methods) {
     const body = assembly.getMethodBody(method.rid);
     if (!body) continue;
-    validateMethodSpecUsesInBody(
+    validateGenericUsesInBody(
       assembly, method, body, methodSpecRid, typeSpecOverride, methodSpecOverride
     );
   }
 }
 
-function validateMethodSpecUsesInBody(
+function validateGenericUsesInBody(
   assembly,
   method,
   body,
@@ -400,9 +417,24 @@ function validateMethodSpecUsesInBody(
   typeSpecOverride = null,
   methodSpecOverride = null
 ) {
+  if (body.localVarSigToken !== 0) {
+    const table = body.localVarSigToken >>> 24;
+    const rid = body.localVarSigToken & 0x00ffffff;
+    if (table !== 0x11 || rid === 0) {
+      throw new FormatError(`MethodDef row ${method.rid} has an invalid local signature token`);
+    }
+    validateLocalSignatureCallSite(assembly, method.rid, rid);
+  }
   for (const instruction of body.instructions) {
     const token = instruction.operand?.kind === "token" ? instruction.operand.value : 0;
     const currentRid = token & 0x00ffffff;
+    if (instruction.opcode.name === "calli") {
+      if ((token >>> 24) !== 0x11 || currentRid === 0) {
+        throw new FormatError("calli operand must identify a StandAloneSig method signature");
+      }
+      validateStandAloneSigCallSite(assembly, method.rid, currentRid);
+      continue;
+    }
     if ((token >>> 24) !== 0x2b ||
         (methodSpecRid !== null && currentRid !== methodSpecRid)) continue;
     const methodSpec = methodSpecOverride?.rid === currentRid
@@ -1411,7 +1443,7 @@ export class Assembly {
     if (method.rva === 0) return null;
     const offset = this.pe.rvaToOffset(method.rva, 1);
     const body = parseMethodBody(this.#bytes, offset, method.rva);
-    validateMethodSpecUsesInBody(this, method, body);
+    validateGenericUsesInBody(this, method, body);
     this._bodyCache.set(methodRid, body);
     return body;
   }

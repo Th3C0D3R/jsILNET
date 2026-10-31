@@ -17,6 +17,7 @@ import { MetadataHeaps } from "../src/metadata/streams.js";
 import { appendBlobHeap, appendCompressedUInt } from "../src/metadata/writer.js";
 import { encodeStrongNamePublicKey } from "../src/metadata/strong-name.js";
 import { listOpcodes } from "../src/il/opcodes.js";
+import { parseMethodBody } from "../src/il/body.js";
 
 const fixture = readFileSync(new URL("./fixtures/Fixture.dll", import.meta.url));
 
@@ -2220,6 +2221,62 @@ test("method-body parsing validates MethodSpec generic variables at CIL call sit
   );
 });
 
+test("lazy method-body parsing validates local and calli generic-variable contexts", () => {
+  const localAssembly = parseAssembly(withoutDebugDirectory());
+  const localMethod = localAssembly.methods.find((candidate) =>
+    candidate.rva !== 0 &&
+    parseSignature(candidate.signature).generic !== true &&
+    localAssembly.getMethodBody(candidate.rid)?.format === "fat"
+  );
+  assert.ok(localMethod);
+  const localBody = localAssembly.getMethodBody(localMethod.rid);
+  const localToken = localAssembly.addStandAloneSig({
+    signature: Uint8Array.of(0x07, 0x01, 0x1e, 0x00)
+  });
+  localBody.localVarSigToken = localToken;
+  const localOutput = Uint8Array.from(localAssembly.serialize());
+  const localOutputAssembly = parseAssembly(localOutput);
+  const localOutputBody = localOutputAssembly.getMethodBody(localMethod.rid);
+  new DataView(localOutput.buffer, localOutput.byteOffset, localOutput.byteLength)
+    .setUint32(localOutputBody.headerOffset + 8, localToken, true);
+  assert.throws(
+    () => parseAssembly(localOutput).getMethodBody(localMethod.rid),
+    /Method generic variable !!0 exceeds its method's arity/
+  );
+
+  const calliAssembly = parseAssembly(withoutDebugDirectory());
+  const callSite = calliAssembly.methods.map((method) => ({
+    method,
+    body: calliAssembly.getMethodBody(method.rid),
+    instruction: calliAssembly.getInstructions(method.rid)
+      .find((item) => item.opcode.name === "call")
+  })).find((entry) => entry.body?.format === "fat" && entry.instruction);
+  assert.ok(callSite);
+  const callSiteToken = calliAssembly.addStandAloneSig({
+    signature: Uint8Array.of(0x00, 0x00, 0x1e, 0x00)
+  });
+  const calli = listOpcodes().find((opcode) => opcode.name === "calli");
+  assert.ok(calli);
+  callSite.instruction.opcode = calli;
+  callSite.instruction.operand.value = callSiteToken;
+  calliAssembly._patches.push({
+    offset: callSite.instruction.opcodeOffset,
+    bytes: Uint8Array.of(calli.code)
+  });
+  const calliOutput = Uint8Array.from(calliAssembly.serialize());
+  const outputPe = parsePE(calliOutput);
+  const outputBodyOffset = outputPe.rvaToOffset(callSite.method.rva, 1);
+  const outputBody = parseMethodBody(calliOutput, outputBodyOffset, callSite.method.rva);
+  const parsedCall = outputBody.instructions
+    .find((instruction) => instruction.offset === callSite.instruction.offset);
+  new DataView(calliOutput.buffer, calliOutput.byteOffset, calliOutput.byteLength)
+    .setUint32(parsedCall.operandOffset, callSiteToken, true);
+  assert.throws(
+    () => parseAssembly(calliOutput).getMethodBody(callSite.method.rid),
+    /Method generic variable !!0 exceeds its method's arity/
+  );
+});
+
 test("MethodSpec removal remaps later metadata and CIL tokens and rejects live targets", () => {
   const assembly = parseAssembly(withoutDebugDirectory());
   const initialMethodSpecCount = assembly.methodSpecs.length;
@@ -2424,6 +2481,10 @@ test("StandAloneSig removal remaps local-signature tokens and reparses", () => {
   assert.ok(method);
   const body = assembly.getMethodBody(method.rid);
   body.localVarSigToken = 0x11000002;
+  assembly.replaceStandAloneSig(2, { signature: Uint8Array.of(0x07, 0x00) });
+  const callSiteToken = assembly.addStandAloneSig({
+    signature: Uint8Array.of(0x00, 0x00, 0x01)
+  });
   const callSite = assembly.methods.map((item) => ({
     method: item,
     instruction: assembly.getInstructions(item.rid)
@@ -2433,22 +2494,11 @@ test("StandAloneSig removal remaps local-signature tokens and reparses", () => {
   const calli = listOpcodes().find((opcode) => opcode.name === "calli");
   assert.ok(calli);
   callSite.instruction.opcode = calli;
-  callSite.instruction.operand.value = 0x11000002;
+  callSite.instruction.operand.value = callSiteToken;
   assembly._patches.push({
     offset: callSite.instruction.opcodeOffset,
     bytes: Uint8Array.of(calli.code)
   });
-  const heapStreams = new Map([...assembly.metadataRoot.streams].map(([name, stream]) =>
-    [name, stream.bytes.slice()]
-  ));
-  const callSiteSignature = appendBlobHeap(
-    heapStreams.get("#Blob"),
-    Uint8Array.of(0x00, 0x00, 0x01)
-  );
-  heapStreams.set("#Blob", callSiteSignature.heap);
-  assembly._heapStreams = heapStreams;
-  assembly.tables.row(17, 2).Signature = callSiteSignature.index;
-  assembly._metadataDirty = true;
   const attributeRow = assembly.tables.row(12, 1);
   assembly.tables.sorted &= ~(1n << 12n);
   attributeRow.Parent = {
@@ -2460,25 +2510,27 @@ test("StandAloneSig removal remaps local-signature tokens and reparses", () => {
     table: 31,
     tableName: "ENCMap",
     rid: 1,
-    Token: 0x11000002
+    Token: callSiteToken
   }]);
   assembly.tables.counts[31] = 1;
   assembly.tables.valid |= 1n << 31n;
-  const survivingSignature = Uint8Array.of(0x00, 0x00, 0x01);
+  const survivingSignature = Uint8Array.of(0x07, 0x00);
   const tokenMap = assembly.removeStandAloneSig(1);
 
   assert.equal(tokenMap.get(0x11000002), 0x11000001);
-  assert.equal(assembly.tables.counts[17], 1);
-  assert.equal(assembly.standAloneSigs.length, 1);
+  assert.equal(tokenMap.get(callSiteToken), callSiteToken - 1);
+  assert.equal(assembly.tables.counts[17], 2);
+  assert.equal(assembly.standAloneSigs.length, 2);
   assert.equal(assembly.standAloneSigs[0].rid, 1);
-  assert.equal(assembly.tables.row(31, 1).Token, 0x11000001);
+  assert.equal(assembly.tables.row(31, 1).Token, callSiteToken - 1);
   const reparsed = parseAssembly(assembly.serialize());
-  assert.equal(reparsed.tables.row(31, 1).Token, 0x11000001);
+  assert.equal(reparsed.tables.row(31, 1).Token, callSiteToken - 1);
   assert.equal(reparsed.getMethodBody(method.rid).localVarSigToken, 0x11000001);
   assert.equal(reparsed.getInstructions(callSite.method.rid)
     .find((instruction) => instruction.offset === callSite.instruction.offset).opcode.name, "calli");
   assert.equal(reparsed.getInstructions(callSite.method.rid)
-    .find((instruction) => instruction.offset === callSite.instruction.offset).operand.value, 0x11000001);
+    .find((instruction) => instruction.offset === callSite.instruction.offset).operand.value,
+  callSiteToken - 1);
   assert.deepEqual(reparsed.customAttributes[0].parent, {
     table: 17,
     tableName: "StandAloneSig",
