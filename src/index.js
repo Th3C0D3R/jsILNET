@@ -4740,6 +4740,7 @@ export class Assembly {
       throw new TypeError("Pointer table must be FieldPtr, MethodPtr, ParamPtr, EventPtr, or PropertyPtr");
     }
     const allowsCrossOwnerFields = pointerTableId === 3;
+    const allowsCrossOwnerParameters = pointerTableId === 7;
     if ((this.tables.valid & (1n << BigInt(pointerTableId))) === 0n) {
       throw new UnsupportedFormatError(`${metadataTableNames[pointerTableId]} is not present`);
     }
@@ -4786,7 +4787,8 @@ export class Assembly {
       const nextGroup = newRids.slice(offset, offset + oldGroup.length);
       offset += oldGroup.length;
       const oldSet = new Set(oldGroup);
-      if (!allowsCrossOwnerFields && nextGroup.some((rid) => !oldSet.has(rid))) {
+      const movesRowsAcrossOwners = nextGroup.some((rid) => !oldSet.has(rid));
+      if (!allowsCrossOwnerFields && !allowsCrossOwnerParameters && movesRowsAcrossOwners) {
         throw new UnsupportedFormatError("Pointer reordering cannot change row ownership");
       }
       const nextRecords = nextGroup.map((rid) => recordsByRid.get(rid));
@@ -4804,6 +4806,27 @@ export class Assembly {
             getGenericParameterArity(this.genericParams, 2, owner.rid),
             this
           );
+        }
+      }
+      if (allowsCrossOwnerParameters && movesRowsAcrossOwners) {
+        const signature = parseSignature(owner.signature, { counts: this.tables.counts });
+        if (signature.kind !== "method") {
+          throw new FormatError(`MethodDef row ${owner.rid} has a non-method signature`);
+        }
+        const sequences = new Set();
+        for (const record of nextRecords) {
+          if (!Number.isInteger(record.sequence) || record.sequence < 0 ||
+              record.sequence > signature.parameters.length) {
+            throw new FormatError(
+              `Param row ${record.rid} sequence exceeds MethodDef row ${owner.rid}'s signature`
+            );
+          }
+          if (sequences.has(record.sequence)) {
+            throw new FormatError(
+              `MethodDef row ${owner.rid} would have duplicate Param sequence ${record.sequence}`
+            );
+          }
+          sequences.add(record.sequence);
         }
       }
       assignments.push({ owner, nextGroup, nextRecords });

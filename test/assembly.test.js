@@ -5299,6 +5299,51 @@ test("FieldPtr reordering can move fields across TypeDefs", () => {
   assert.deepEqual(invalidAssembly.tables.get(3).map((row) => row.Field.rid), before);
 });
 
+test("ParamPtr reordering can move parameters across methods with valid sequences", () => {
+  const assembly = parseAssembly(fixture);
+  usePointerTable(assembly, {
+    pointerId: 7,
+    targetId: 8,
+    column: "Param",
+    listTableId: 6,
+    listColumn: "ParamList",
+    pointerName: "ParamPtr",
+    targetName: "Param"
+  });
+  const order = assembly.tables.get(7).map((row) => row.Param.rid);
+  [order[0], order[1]] = [order[1], order[0]];
+  assembly.reorderPointerTable("ParamPtr", order);
+  assert.deepEqual(assembly.methods[0].parameterRids, [2]);
+  assert.deepEqual(assembly.methods[2].parameterRids, [1]);
+  const reparsed = parseAssembly(assembly.serialize());
+  assert.deepEqual(reparsed.methods[0].parameterRids, [2]);
+  assert.deepEqual(reparsed.methods[2].parameterRids, [1]);
+
+  const invalidAssembly = parseAssembly(fixture);
+  usePointerTable(invalidAssembly, {
+    pointerId: 7,
+    targetId: 8,
+    column: "Param",
+    listTableId: 6,
+    listColumn: "ParamList",
+    pointerName: "ParamPtr",
+    targetName: "Param"
+  });
+  const sourceMethod = invalidAssembly.methods[2];
+  const sourceSignature = parseSignature(sourceMethod.signature);
+  invalidAssembly.replaceMethodSignature(sourceMethod.rid, encodeSignature({
+    ...sourceSignature,
+    parameters: [...sourceSignature.parameters, sourceSignature.parameters[0]]
+  }));
+  invalidAssembly.tables.row(8, 2).Sequence = 2;
+  sourceMethod.parameters[0].sequence = 2;
+  const invalidOrder = invalidAssembly.tables.get(7).map((row) => row.Param.rid);
+  [invalidOrder[0], invalidOrder[1]] = [invalidOrder[1], invalidOrder[0]];
+  assert.throws(() => invalidAssembly.reorderPointerTable("ParamPtr", invalidOrder),
+    /Param row 2 sequence exceeds MethodDef row 1's signature/);
+  assert.deepEqual(invalidAssembly.tables.get(7).map((row) => row.Param.rid), [1, 2, 3, 4, 5, 6]);
+});
+
 test("Property and Event removal rejects live references and remaps surviving rows", () => {
   const assembly = parseAssembly(withoutDebugDirectory());
   const owner = assembly.types.at(-1);
