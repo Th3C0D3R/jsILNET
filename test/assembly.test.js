@@ -550,13 +550,20 @@ test("strong-name signing rejects optional headers with additional directories",
   const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 1024 });
   const input = addExtraPEDataDirectory(withoutDebugDirectory());
   assert.equal(parseAssembly(input).pe.directories.length, 17);
-  const assembly = parseAssembly(addStrongNameSignatureSlot(input, 128));
-  setStrongNameAssemblyKey(assembly, privateKey, 0x00008004);
+  const original = addStrongNameSignatureSlot(input, 128);
+  const assembly = parseAssembly(original);
 
   assert.throws(
-    () => assembly.signStrongName(privateKey).serialize(),
+    () => assembly.signStrongName(privateKey),
     /standard PE optional header with 15 or 16 declared data directories/
   );
+  assert.equal(assembly.modified, false);
+  assert.throws(
+    () => assembly.replaceStrongNamePublicKey(privateKey),
+    /standard PE optional header with 15 or 16 declared data directories/
+  );
+  assert.equal(assembly.modified, false);
+  assert.deepEqual(assembly.serialize(), original);
 });
 
 test("strong-name signing supports SHA-256, SHA-384, and SHA-512 hash IDs", () => {

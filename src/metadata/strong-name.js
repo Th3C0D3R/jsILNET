@@ -141,7 +141,7 @@ export function decodeStrongNamePublicKey(bytes) {
   };
 }
 
-function getStrongNameRanges(bytes, pe, cli) {
+export function assertStrongNamePEProfile(pe) {
   const fixedOptionalHeaderSize = pe.optionalHeaderMagic === 0x10b ? 96 : 112;
   if (pe.optionalHeaderSize !== fixedOptionalHeaderSize + 16 * 8 ||
       pe.directories.length < 15 || pe.directories.length > 16) {
@@ -149,6 +149,11 @@ function getStrongNameRanges(bytes, pe, cli) {
       "Strong-name signing requires the standard PE optional header with 15 or 16 declared data directories"
     );
   }
+  return fixedOptionalHeaderSize;
+}
+
+function getStrongNameRanges(bytes, pe, cli) {
+  const fixedOptionalHeaderSize = assertStrongNamePEProfile(pe);
   const signature = cli.strongNameSignature;
   if (signature.rva === 0 || signature.size === 0) {
     throw new UnsupportedFormatError("Strong-name signing requires a reserved signature directory");

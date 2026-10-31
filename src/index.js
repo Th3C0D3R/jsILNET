@@ -18,6 +18,7 @@ import { serializeStructural } from "./writer/structural.js";
 import { appendBlobHeap, appendStringHeap, appendUserStringHeap } from "./metadata/writer.js";
 import { parseManifestResources } from "./metadata/resources.js";
 import {
+  assertStrongNamePEProfile,
   encodeStrongNamePublicKey,
   getStrongNameHashName,
   importStrongNamePrivateKey,
@@ -12406,6 +12407,7 @@ export class Assembly {
 
   replaceStrongNamePublicKey(privateKeyInput, { hashAlgorithm } = {}) {
     this.#ensureEditable();
+    assertStrongNamePEProfile(this.pe);
     const privateKey = importStrongNamePrivateKey(privateKeyInput);
     const assemblyRow = this.tables.row(32, 1);
     if (!assemblyRow) {
@@ -12453,6 +12455,7 @@ export class Assembly {
 
   signStrongName(privateKeyInput) {
     this.#ensureEditable();
+    assertStrongNamePEProfile(this.pe);
     const privateKey = importStrongNamePrivateKey(privateKeyInput);
     const assemblyRow = this.tables.row(32, 1);
     if (!assemblyRow) {
