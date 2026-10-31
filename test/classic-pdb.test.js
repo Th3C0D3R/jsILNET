@@ -182,7 +182,7 @@ test("classic PDB parser rejects invalid signatures and overlapping MSF blocks",
   assert.throws(() => parseClassicPdb(overlapping), /overlaps another MSF structure/);
 });
 
-test("classic PDB symbol names can be resized within existing MSF allocations", () => {
+test("classic PDB symbol names resize across MSF block allocations", () => {
   const original = makeClassicPdbWithSymbols();
   const rewritten = replaceClassicPdbSymbolName(original, {
     moduleIndex: 0,
@@ -224,11 +224,14 @@ test("classic PDB symbol names can be resized within existing MSF allocations", 
   const shrunkPdb = parseClassicPdb(shrunk);
   assert.equal(shrunkPdb.dbi.modules[0].symbols.records[0].decoded.name, "x");
   assert.equal(shrunkPdb.dbi.modules[0].symbolBytes, 20);
-  assert.throws(() => replaceClassicPdbSymbolName(original, {
+  const acrossBlocks = replaceClassicPdbSymbolName(original, {
     moduleIndex: 0,
     recordIndex: 0,
     name: "x".repeat(500)
-  }), /preserve the module stream's MSF block count/);
+  });
+  const acrossBlocksPdb = parseClassicPdb(acrossBlocks);
+  assert.equal(acrossBlocksPdb.dbi.modules[0].symbols.records[0].decoded.name, "x".repeat(500));
+  assert.ok(acrossBlocksPdb.streams[4].blockIndices.length > 1);
 });
 
 test("classic PDB symbol resizing preserves trailing C13 module data", () => {
@@ -243,6 +246,27 @@ test("classic PDB symbol resizing preserves trailing C13 module data", () => {
   assert.equal(module.symbolBytes, 28);
   assert.equal(module.c13Bytes, 12);
   assert.equal(pdb.streams[module.streamIndex].size, 40);
+  const originalPdb = parseClassicPdb(original);
+  const originalModule = originalPdb.dbi.modules[0];
+  const originalC13 = originalPdb.streams[originalModule.streamIndex].bytes.subarray(
+    originalModule.symbolBytes + originalModule.c11Bytes
+  );
+  const acrossBlocks = replaceClassicPdbSymbolName(original, {
+    moduleIndex: 0,
+    recordIndex: 0,
+    name: "x".repeat(500)
+  });
+  const acrossBlocksPdb = parseClassicPdb(acrossBlocks);
+  const enlargedModule = acrossBlocksPdb.dbi.modules[0];
+  assert.equal(enlargedModule.symbolBytes, 520);
+  assert.equal(enlargedModule.c13Bytes, 12);
+  assert.deepEqual(
+    acrossBlocksPdb.streams[enlargedModule.streamIndex].bytes.subarray(
+      enlargedModule.symbolBytes + enlargedModule.c11Bytes
+    ),
+    originalC13
+  );
+  assert.ok(acrossBlocksPdb.streams[enlargedModule.streamIndex].blockIndices.length > 1);
   assert.deepEqual(module.c13.subsections, [{
     kind: 0x77777777,
     data: Uint8Array.from([1, 2, 3])

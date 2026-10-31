@@ -1015,6 +1015,100 @@ function writeClassicPdbStream(bytes, pdb, streamIndex, streamBytes) {
   return output;
 }
 
+function rebuildClassicPdbStreams(pdb, streamReplacements) {
+  const blockSize = pdb.blockSize;
+  const streams = pdb.streams.map((stream) => ({
+    bytes: stream.bytes === null
+      ? null
+      : Uint8Array.from(streamReplacements.get(stream.index) ?? stream.bytes)
+  }));
+  const streamBlockCounts = streams.map(({ bytes }) =>
+    bytes === null ? 0 : Math.ceil(bytes.length / blockSize)
+  );
+  const directoryByteLength = 4 + streams.length * 4 +
+    streamBlockCounts.reduce((sum, count) => sum + count * 4, 0);
+  const directoryBlockCount = Math.ceil(directoryByteLength / blockSize);
+  if (directoryBlockCount > Math.floor(blockSize / 4)) {
+    throw new UnsupportedFormatError("Classic PDB MSF directory block map exceeds one block");
+  }
+  const directoryBlockIndices = Array.from(
+    { length: directoryBlockCount },
+    (_, index) => 4 + index
+  );
+  let nextBlock = 4 + directoryBlockCount;
+  const streamBlockIndices = streamBlockCounts.map((count) => {
+    const indices = Array.from({ length: count }, (_, index) => nextBlock + index);
+    nextBlock += count;
+    return indices;
+  });
+  if (nextBlock > blockSize * 8 ||
+      nextBlock * blockSize > 0x7fffffff) {
+    throw new UnsupportedFormatError(
+      "Classic PDB MSF rebuild exceeds supported allocation limits"
+    );
+  }
+  const output = new Uint8Array(nextBlock * blockSize);
+  output.set(msfMagic);
+  const superblock = new DataView(output.buffer);
+  superblock.setUint32(32, blockSize, true);
+  superblock.setUint32(36, 1, true);
+  superblock.setUint32(40, nextBlock, true);
+  superblock.setUint32(44, directoryByteLength, true);
+  superblock.setUint32(48, 0, true);
+  superblock.setUint32(52, 3, true);
+
+  const directory = new Uint8Array(directoryByteLength);
+  const directoryView = new DataView(directory.buffer);
+  directoryView.setUint32(0, streams.length, true);
+  let directoryOffset = 4;
+  for (const { bytes } of streams) {
+    directoryView.setUint32(
+      directoryOffset,
+      bytes === null ? absentStream : bytes.length,
+      true
+    );
+    directoryOffset += 4;
+  }
+  for (const indices of streamBlockIndices) {
+    for (const block of indices) {
+      directoryView.setUint32(directoryOffset, block, true);
+      directoryOffset += 4;
+    }
+  }
+  const blockMapOffset = 3 * blockSize;
+  const blockMapView = new DataView(output.buffer, blockMapOffset, blockSize);
+  for (let index = 0; index < directoryBlockIndices.length; index++) {
+    blockMapView.setUint32(index * 4, directoryBlockIndices[index], true);
+  }
+  for (let index = 0; index < directoryBlockIndices.length; index++) {
+    const start = index * blockSize;
+    output.set(
+      directory.subarray(start, Math.min(start + blockSize, directory.length)),
+      directoryBlockIndices[index] * blockSize
+    );
+  }
+  streams.forEach(({ bytes }, streamIndex) => {
+    if (bytes === null) return;
+    streamBlockIndices[streamIndex].forEach((block, blockIndex) => {
+      const start = blockIndex * blockSize;
+      output.set(bytes.subarray(start, Math.min(start + blockSize, bytes.length)), block * blockSize);
+    });
+  });
+  for (const freeMapBlock of [1, 2]) {
+    const offset = freeMapBlock * blockSize;
+    output.fill(0xff, offset, offset + blockSize);
+    const markAllocated = (block) => {
+      output[offset + Math.floor(block / 8)] &= ~(1 << (block % 8));
+    };
+    for (let block = 0; block < 4; block++) markAllocated(block);
+    for (const block of directoryBlockIndices) markAllocated(block);
+    for (const indices of streamBlockIndices) {
+      for (const block of indices) markAllocated(block);
+    }
+  }
+  return output;
+}
+
 function replaceClassicPdbDirectoryBytes(bytes, pdb, offset, replacement) {
   if (!Number.isInteger(offset) || offset < 0 ||
       offset > pdb.msf.directoryByteLength - replacement.length) {
@@ -1100,10 +1194,9 @@ export function replaceClassicPdbSymbolName(input, { moduleIndex, recordIndex, n
     );
   }
   if (newSymbolBytes < 4 || newSymbolBytes > 0xffffffff ||
-      newStreamSize < newSymbolBytes || newStreamSize > 0xffffffff ||
-      Math.ceil(newStreamSize / pdb.blockSize) !== stream.blockIndices.length) {
+      newStreamSize < newSymbolBytes || newStreamSize > 0xffffffff) {
     throw new UnsupportedFormatError(
-      "Classic PDB symbol replacement must preserve the module stream's MSF block count"
+      "Classic PDB symbol replacement exceeds supported stream-size limits"
     );
   }
   const streamBytes = new Uint8Array(newStreamSize);
@@ -1113,6 +1206,20 @@ export function replaceClassicPdbSymbolName(input, { moduleIndex, recordIndex, n
     stream.bytes.subarray(record.offset + oldRecordSize),
     record.offset + recordSize
   );
+  if (Math.ceil(newStreamSize / pdb.blockSize) !== stream.blockIndices.length) {
+    const dbiBytes = Uint8Array.from(pdb.streams[3].bytes);
+    new DataView(dbiBytes.buffer).setUint32(
+      module.moduleInfoOffset + 36,
+      newSymbolBytes,
+      true
+    );
+    const output = rebuildClassicPdbStreams(pdb, new Map([
+      [module.streamIndex, streamBytes],
+      [3, dbiBytes]
+    ]));
+    parseClassicPdb(output);
+    return output;
+  }
   let output = writeClassicPdbStream(bytes, pdb, module.streamIndex, streamBytes);
   const updatedDbi = new Uint8Array(4);
   new DataView(updatedDbi.buffer).setUint32(0, newSymbolBytes, true);
