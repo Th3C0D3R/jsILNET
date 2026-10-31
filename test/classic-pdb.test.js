@@ -176,7 +176,7 @@ test("classic PDB parser rejects invalid signatures and overlapping MSF blocks",
   assert.throws(() => parseClassicPdb(overlapping), /overlaps another MSF structure/);
 });
 
-test("classic PDB symbol names can be replaced without changing MSF layout", () => {
+test("classic PDB symbol names can be resized within existing MSF allocations", () => {
   const original = makeClassicPdbWithSymbols();
   const rewritten = replaceClassicPdbSymbolName(original, {
     moduleIndex: 0,
@@ -192,13 +192,31 @@ test("classic PDB symbol names can be replaced without changing MSF layout", () 
   assert.throws(() => replaceClassicPdbSymbolName(original, {
     moduleIndex: 0,
     recordIndex: 0,
-    name: "longer"
-  }), /fit its existing name slot/);
+    name: "\ud800"
+  }), /valid Unicode/);
+
+  const resized = replaceClassicPdbSymbolName(original, {
+    moduleIndex: 0,
+    recordIndex: 0,
+    name: "expansive"
+  });
+  const resizedPdb = parseClassicPdb(resized);
+  assert.equal(resizedPdb.dbi.modules[0].symbols.records[0].decoded.name, "expansive");
+  assert.equal(resizedPdb.dbi.modules[0].symbolBytes, 28);
+  assert.equal(resizedPdb.streams[4].size, 28);
+  const shrunk = replaceClassicPdbSymbolName(original, {
+    moduleIndex: 0,
+    recordIndex: 0,
+    name: "x"
+  });
+  const shrunkPdb = parseClassicPdb(shrunk);
+  assert.equal(shrunkPdb.dbi.modules[0].symbols.records[0].decoded.name, "x");
+  assert.equal(shrunkPdb.dbi.modules[0].symbolBytes, 20);
   assert.throws(() => replaceClassicPdbSymbolName(original, {
     moduleIndex: 0,
     recordIndex: 0,
-    name: "\ud800"
-  }), /valid Unicode/);
+    name: "x".repeat(500)
+  }), /preserve the module stream's MSF block count/);
 });
 
 test("classic PDB symbol names can cross MSF stream blocks", () => {

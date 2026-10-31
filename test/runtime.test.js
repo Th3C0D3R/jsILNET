@@ -91,15 +91,20 @@ test("classic PDB parser reads a compiler-produced MSF identity", {
     const managedRecordIndex = pdb.dbi.modules[managedModuleIndex].symbols.records.findIndex(
       (record) => record.decoded?.kind === "managedProcedure" && record.decoded.name === "Answer"
     );
+    assert.throws(() => replaceClassicPdbSymbolName(pdbBytes, {
+      moduleIndex: managedModuleIndex,
+      recordIndex: managedRecordIndex,
+      name: "A"
+    }), /cannot resize modules with scoped or unknown symbols/);
     const renamedPdbBytes = replaceClassicPdbSymbolName(pdbBytes, {
       moduleIndex: managedModuleIndex,
       recordIndex: managedRecordIndex,
-      name: "Ansxxx"
+      name: "Answor"
     });
     const renamedPdb = parseClassicPdb(renamedPdbBytes);
     assert.equal(
       renamedPdb.dbi.modules[managedModuleIndex].symbols.records[managedRecordIndex].decoded.name,
-      "Ansxxx"
+      "Answor"
     );
     const sourceFile = pdb.dbi.modules.flatMap((module) =>
       module.c13?.lines.flatMap((line) => line.blocks) ?? []
