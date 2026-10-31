@@ -81,6 +81,15 @@ test("classic PDB module symbols preserve bounded CodeView record payloads", () 
 });
 
 test("classic PDB symbol decoding exposes public, data, and procedure names", () => {
+  const decodeRecord = (kind, data) => {
+    const stream = new Uint8Array(8 + data.length);
+    const streamView = new DataView(stream.buffer);
+    streamView.setUint32(0, 4, true);
+    streamView.setUint16(4, data.length + 2, true);
+    streamView.setUint16(6, kind, true);
+    stream.set(data, 8);
+    return parseCodeViewSymbolRecords(stream).records[0].decoded;
+  };
   const publicRecord = Uint8Array.from([
     4, 0, 0, 0,
     18, 0, 0x0e, 0x11,
@@ -141,6 +150,44 @@ test("classic PDB symbol decoding exposes public, data, and procedure names", ()
     segment: 1,
     flags: 2,
     name: "meth"
+  });
+
+  const local = new Uint8Array(10);
+  const localView = new DataView(local.buffer);
+  localView.setUint32(0, 0x1002, true);
+  localView.setUint16(4, 3, true);
+  local.set([0x76, 0x61, 0x72, 0], 6);
+  assert.deepEqual(decodeRecord(0x113e, local), {
+    kind: "local",
+    typeIndex: 0x1002,
+    flags: 3,
+    name: "var"
+  });
+
+  const bpRelative = new Uint8Array(14);
+  const bpView = new DataView(bpRelative.buffer);
+  bpView.setInt32(0, -12, true);
+  bpView.setUint32(4, 0x1003, true);
+  bpRelative.set([0x73, 0x74, 0x61, 0x63, 0x6b, 0], 8);
+  assert.deepEqual(decodeRecord(0x110b, bpRelative), {
+    kind: "bpRelative",
+    offset: -12,
+    typeIndex: 0x1003,
+    name: "stack"
+  });
+
+  const registerRelative = new Uint8Array(14);
+  const registerView = new DataView(registerRelative.buffer);
+  registerView.setInt32(0, 4, true);
+  registerView.setUint32(4, 0x1004, true);
+  registerView.setUint16(8, 17, true);
+  registerRelative.set([0x72, 0x65, 0x67, 0], 10);
+  assert.deepEqual(decodeRecord(0x1111, registerRelative), {
+    kind: "registerRelative",
+    offset: 4,
+    typeIndex: 0x1004,
+    register: 17,
+    name: "reg"
   });
 });
 

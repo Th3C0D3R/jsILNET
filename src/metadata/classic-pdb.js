@@ -305,6 +305,61 @@ function decodeCodeViewSymbol(kind, data) {
       name: readCodeViewName(data, 37, "managed procedure", true)
     };
   }
+  if (kind === 0x113e) {
+    if (data.length < 7) throw new FormatError("Classic PDB local symbol is truncated");
+    return {
+      kind: "local",
+      typeIndex: view.getUint32(0, true),
+      flags: view.getUint16(4, true),
+      name: readCodeViewName(data, 6, "local")
+    };
+  }
+  if (kind === 0x110b) {
+    if (data.length < 9) throw new FormatError("Classic PDB BP-relative symbol is truncated");
+    return {
+      kind: "bpRelative",
+      offset: view.getInt32(0, true),
+      typeIndex: view.getUint32(4, true),
+      name: readCodeViewName(data, 8, "BP-relative")
+    };
+  }
+  if (kind === 0x1111) {
+    if (data.length < 11) throw new FormatError("Classic PDB register-relative symbol is truncated");
+    return {
+      kind: "registerRelative",
+      offset: view.getInt32(0, true),
+      typeIndex: view.getUint32(4, true),
+      register: view.getUint16(8, true),
+      name: readCodeViewName(data, 10, "register-relative")
+    };
+  }
+  if (kind === 0x1108) {
+    if (data.length < 5) throw new FormatError("Classic PDB UDT symbol is truncated");
+    return {
+      kind: "userDefinedType",
+      typeIndex: view.getUint32(0, true),
+      name: readCodeViewName(data, 4, "UDT")
+    };
+  }
+  if (kind === 0x1106) {
+    if (data.length < 7) throw new FormatError("Classic PDB register symbol is truncated");
+    return {
+      kind: "register",
+      typeIndex: view.getUint32(0, true),
+      register: view.getUint16(4, true),
+      name: readCodeViewName(data, 6, "register")
+    };
+  }
+  if (kind === 0x1105) {
+    if (data.length < 8) throw new FormatError("Classic PDB label symbol is truncated");
+    return {
+      kind: "label",
+      offset: view.getUint32(0, true),
+      segment: view.getUint16(4, true),
+      flags: data[6],
+      name: readCodeViewName(data, 7, "label")
+    };
+  }
   return null;
 }
 
