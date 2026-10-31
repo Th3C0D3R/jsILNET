@@ -3418,8 +3418,33 @@ export class Assembly {
     }
     const method = this.methods[rid - 1];
     if (method?.rid !== rid) throw new FormatError(`MethodDef row ${rid} has inconsistent semantic records`);
-    if (method.genericParams.length > 0) {
-      throw new UnsupportedFormatError("MethodDef removal currently requires a method with no GenericParam rows");
+    const genericParamRows = this.tables.rows.get(42) ?? [];
+    if (genericParamRows.length !== (this.tables.counts[42] ?? 0)) {
+      throw new FormatError("GenericParam row count is inconsistent with the metadata table header");
+    }
+    const genericParamRids = new Set(method.genericParams.map((parameter) => parameter.rid));
+    if (genericParamRids.size !== method.genericParams.length ||
+        method.genericParams.length !== this.genericParams.filter(
+          (parameter) => parameter.owner.table === 6 && parameter.owner.rid === rid
+        ).length) {
+      throw new FormatError(`MethodDef row ${rid} has inconsistent GenericParam ownership`);
+    }
+    if (genericParamRids.size > 0) {
+      if (rid !== rows.length) {
+        throw new UnsupportedFormatError(
+          "MethodDef removal with GenericParam rows is currently limited to the trailing MethodDef"
+        );
+      }
+      const sortedGenericParamRids = [...genericParamRids].sort((a, b) => a - b);
+      const firstGenericParamRid = genericParamRows.length - sortedGenericParamRids.length + 1;
+      if (firstGenericParamRid < 1 ||
+          sortedGenericParamRids.some((parameterRid, index) =>
+            parameterRid !== firstGenericParamRid + index
+          )) {
+        throw new UnsupportedFormatError(
+          "MethodDef removal requires its GenericParam rows to form the trailing table range"
+        );
+      }
     }
     const parameterRows = this.tables.rows.get(8) ?? [];
     if (parameterRows.length !== (this.tables.counts[8] ?? 0)) {
@@ -3512,6 +3537,37 @@ export class Assembly {
         }
       }
     }
+    if (genericParamRids.size > 0) {
+      for (const [tableId, tableRows] of this.tables.rows) {
+        const schema = metadataTableSchemas[tableId];
+        if (!schema) {
+          throw new UnsupportedFormatError(
+            `Cannot remove MethodDef row ${rid} with unknown metadata table ${tableId}`
+          );
+        }
+        for (const row of tableRows) {
+          for (const [kind, value, name] of schema) {
+            const columnName = name ?? value;
+            const column = row[columnName];
+            const target = kind === "coded"
+              ? column?.target
+              : kind === "table" ? { table: value, rid: column?.rid } : null;
+            if (target?.table === 42 && genericParamRids.has(target.rid)) {
+              throw new FormatError(
+                `GenericParam row ${target.rid} is referenced by ${metadataTableNames[tableId]}.${columnName}`
+              );
+            }
+            if (kind === "u4" && (tableId === 30 || tableId === 31) &&
+                columnName === "Token" && row[columnName] >>> 24 === 42 &&
+                genericParamRids.has(row[columnName] & 0x00ffffff)) {
+              throw new FormatError(
+                `GenericParam row ${row[columnName] & 0x00ffffff} is referenced by ${metadataTableNames[tableId]}.${columnName}`
+              );
+            }
+          }
+        }
+      }
+    }
 
     const pointerRows = getBijectivePointerRows(this, 5, 6, "Method");
     const pointerRid = pointerRows
@@ -3538,6 +3594,8 @@ export class Assembly {
           if (kind === "coded") {
             const target = row[columnName]?.target;
             if (target?.table !== 6) continue;
+            if (tableId === 42 && columnName === "Owner" &&
+                genericParamRids.has(row.rid)) continue;
             if (target.rid === rid) {
               throw new FormatError(`MethodDef row ${rid} is referenced by ${metadataTableNames[tableId]}.${columnName}`);
             }
@@ -3696,6 +3754,17 @@ export class Assembly {
         this.tables.counts[7] = remainingParamPointers.length;
         if (remainingParamPointers.length === 0) this.tables.valid &= ~(1n << 7n);
       }
+    }
+    if (genericParamRids.size > 0) {
+      const remainingGenericParams = genericParamRows.filter((parameter) =>
+        !genericParamRids.has(parameter.rid)
+      );
+      this.tables.rows.set(42, remainingGenericParams);
+      this.tables.counts[42] = remainingGenericParams.length;
+      if (remainingGenericParams.length === 0) this.tables.valid &= ~(1n << 42n);
+      this.genericParams = this.genericParams.filter((parameter) =>
+        !genericParamRids.has(parameter.rid)
+      );
     }
     const remainingRows = rows.filter((row) => row.rid !== rid);
     remainingRows.forEach((row, index) => {

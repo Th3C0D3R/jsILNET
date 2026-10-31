@@ -2750,6 +2750,63 @@ test("MethodDef removal rejects referenced owned Param rows without mutation", (
   assert.equal(assembly.methods.at(-1).rid, methodRid);
 });
 
+test("trailing MethodDef removal removes trailing method-owned GenericParam rows", () => {
+  const assembly = parseAssembly(withoutDebugDirectory());
+  const originalGenericParamCount = assembly.tables.counts[42] ?? 0;
+  const token = assembly.addMethod({
+    owner: { table: "TypeDef", rid: assembly.types.at(-1).rid },
+    name: "GenericMethodToRemove",
+    flags: 0x0096,
+    signature: Uint8Array.of(0x10, 0x01, 0x01, 0x01, 0x1e, 0x00),
+    body: Uint8Array.of(0x06, 0x2a)
+  });
+  const methodRid = token & 0x00ffffff;
+  const genericParamToken = assembly.addGenericParam({
+    owner: { table: "MethodDef", rid: methodRid },
+    name: "T",
+    number: 0
+  });
+
+  assert.equal(assembly.removeMethod(methodRid).size, 0);
+  assert.equal(assembly.tables.counts[42], originalGenericParamCount);
+  assert.equal(assembly.genericParams.some((parameter) =>
+    parameter.rid === (genericParamToken & 0x00ffffff)
+  ), false);
+  const reparsed = parseAssembly(assembly.serialize());
+  assert.equal(reparsed.tables.counts[42], originalGenericParamCount);
+  assert.equal(reparsed.methods.some((method) => method.name === "GenericMethodToRemove"), false);
+});
+
+test("MethodDef removal rejects referenced owned GenericParam rows without mutation", () => {
+  const assembly = parseAssembly(withoutDebugDirectory());
+  const token = assembly.addMethod({
+    owner: { table: "TypeDef", rid: assembly.types.at(-1).rid },
+    name: "ConstrainedMethodToRemove",
+    flags: 0x0096,
+    signature: Uint8Array.of(0x10, 0x01, 0x01, 0x01, 0x1e, 0x00),
+    body: Uint8Array.of(0x06, 0x2a)
+  });
+  const methodRid = token & 0x00ffffff;
+  const genericParamToken = assembly.addGenericParam({
+    owner: { table: "MethodDef", rid: methodRid },
+    name: "T",
+    number: 0
+  });
+  const genericParamRid = genericParamToken & 0x00ffffff;
+  assembly.addGenericParamConstraint({
+    ownerRid: genericParamRid,
+    constraint: { table: "TypeDef", rid: 2 }
+  });
+  const methodCount = assembly.tables.counts[6];
+  const genericParamCount = assembly.tables.counts[42];
+
+  assert.throws(() => assembly.removeMethod(methodRid),
+    /GenericParam row .* referenced by GenericParamConstraint.Owner/);
+  assert.equal(assembly.tables.counts[6], methodCount);
+  assert.equal(assembly.tables.counts[42], genericParamCount);
+  assert.equal(assembly.methods.at(-1).rid, methodRid);
+});
+
 test("MethodDef removal refuses live CIL references without mutating metadata", () => {
   const assembly = parseAssembly(withoutDebugDirectory());
   const targetOwner = assembly.types.at(-1);
