@@ -205,17 +205,80 @@ export function parseClassicPdb(input) {
   const infoView = new DataView(infoStream.buffer, infoStream.byteOffset, infoStream.byteLength);
   const id = infoStream.subarray(12, 28);
   const infoDetails = parsePdbNamedStreams(infoStream, streams);
+  const info = {
+    version: infoView.getUint32(0, true),
+    signature: infoView.getUint32(4, true),
+    age: infoView.getUint32(8, true),
+    guid: formatGuid(id),
+    ...infoDetails
+  };
+  let dbi = null;
+  const dbiStream = streams[3]?.bytes;
+  if (dbiStream) {
+    if (dbiStream.length < 64) throw new FormatError("Classic PDB DBI stream is truncated");
+    const dbiView = new DataView(dbiStream.buffer, dbiStream.byteOffset, dbiStream.byteLength);
+    if (dbiView.getInt32(0, true) !== -1) {
+      throw new FormatError("Classic PDB DBI version signature is invalid");
+    }
+    const dbiVersion = dbiView.getUint32(4, true);
+    if (dbiVersion < 19990903) {
+      throw new UnsupportedFormatError("Classic PDB DBI version is older than version 7");
+    }
+    const dbiAge = dbiView.getUint32(8, true);
+    if (dbiAge !== info.age) {
+      throw new FormatError("Classic PDB DBI age does not match the information stream");
+    }
+    const substreamSizes = {
+      moduleInfo: dbiView.getUint32(24, true),
+      sectionContributions: dbiView.getUint32(28, true),
+      sectionMap: dbiView.getUint32(32, true),
+      fileInfo: dbiView.getUint32(36, true),
+      typeServerMap: dbiView.getUint32(40, true),
+      optionalDebugHeader: dbiView.getUint32(48, true),
+      editAndContinue: dbiView.getUint32(52, true)
+    };
+    const requiredLength = 64 + Object.values(substreamSizes)
+      .reduce((sum, size) => sum + size, 0);
+    if (requiredLength !== dbiStream.length) {
+      throw new FormatError("Classic PDB DBI stream length does not match its substream sizes");
+    }
+    for (const name of ["moduleInfo", "sectionContributions", "sectionMap", "fileInfo", "typeServerMap"]) {
+      if (substreamSizes[name] % 4 !== 0) {
+        throw new FormatError(`Classic PDB DBI ${name} substream is misaligned`);
+      }
+    }
+    if (substreamSizes.optionalDebugHeader % 2 !== 0) {
+      throw new FormatError("Classic PDB DBI optional debug header is misaligned");
+    }
+    const streamReferences = {
+      globalSymbols: dbiView.getUint16(12, true),
+      publicSymbols: dbiView.getUint16(16, true),
+      symbolRecords: dbiView.getUint16(20, true)
+    };
+    for (const [name, streamIndex] of Object.entries(streamReferences)) {
+      if (streamIndex !== 0xffff &&
+          (streamIndex >= streams.length || streams[streamIndex].bytes === null)) {
+        throw new FormatError(`Classic PDB DBI ${name} reference targets a missing stream`);
+      }
+    }
+    dbi = {
+      version: dbiVersion,
+      age: dbiAge,
+      buildNumber: dbiView.getUint16(14, true),
+      pdbDllVersion: dbiView.getUint16(18, true),
+      pdbDllRebuild: dbiView.getUint16(22, true),
+      machine: dbiView.getUint16(58, true),
+      flags: dbiView.getUint16(56, true),
+      streamReferences,
+      substreamSizes
+    };
+  }
   return {
     format: "MSF 7.0",
     blockSize,
     numBlocks,
-    info: {
-      version: infoView.getUint32(0, true),
-      signature: infoView.getUint32(4, true),
-      age: infoView.getUint32(8, true),
-      guid: formatGuid(id),
-      ...infoDetails
-    },
+    info,
+    dbi,
     streams
   };
 }

@@ -53,6 +53,9 @@ test("classic PDB parser reads a compiler-produced MSF identity", {
     assert.ok(pdb.streams.length >= 3);
     assert.ok(pdb.info.namedStreams instanceof Map);
     assert.ok(pdb.info.namedStreams.has("/names"));
+    assert.ok(pdb.dbi);
+    assert.equal(pdb.dbi.age, pdb.info.age);
+    assert.ok(pdb.dbi.version >= 19990903);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
