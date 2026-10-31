@@ -771,16 +771,17 @@ export function replaceEmbeddedPortablePdbMethodOffsets(
   });
 }
 
-export function appendEmbeddedPortablePdbMethod(pdb, oldCounts, newCounts) {
+export function insertEmbeddedPortablePdbMethod(pdb, methodRid, oldCounts, newCounts) {
   if (!pdb?.metadataRoot?.streams || !(pdb.tables?.rows instanceof Map) ||
       !Array.isArray(pdb.tables.counts) || !(pdb.rowCounts instanceof Map)) {
     throw new TypeError("Portable PDB method insertion requires parsed PDB data");
   }
   if (!Array.isArray(oldCounts) || !Array.isArray(newCounts) ||
       oldCounts.length < 45 || newCounts.length < 45 ||
-      newCounts[6] !== oldCounts[6] + 1) {
+      !Number.isInteger(methodRid) || methodRid < 1 ||
+      methodRid > newCounts[6] || newCounts[6] !== oldCounts[6] + 1) {
     throw new UnsupportedFormatError(
-      "Portable PDB method insertion requires one MethodDef row to be appended"
+      "Portable PDB method insertion requires one valid MethodDef row to be inserted"
     );
   }
   for (const [table, count] of pdb.rowCounts) {
@@ -791,6 +792,15 @@ export function appendEmbeddedPortablePdbMethod(pdb, oldCounts, newCounts) {
     }
   }
 
+  const entryPointRid = pdb.entryPointToken & 0x00ffffff;
+  if (pdb.entryPointToken !== 0 && entryPointRid > oldCounts[6]) {
+    throw new FormatError("Portable PDB entry point references a missing MethodDef");
+  }
+  const entryPointToken = pdb.entryPointToken !== 0 &&
+    (pdb.entryPointToken >>> 24) === 6 && entryPointRid >= methodRid
+    ? pdb.entryPointToken + 1
+    : pdb.entryPointToken;
+
   const rows = new Map(pdb.tables.rows);
   const methodRows = rows.get(49) ?? [];
   if (methodRows.length !== 0 && methodRows.length !== oldCounts[6]) {
@@ -800,18 +810,45 @@ export function appendEmbeddedPortablePdbMethod(pdb, oldCounts, newCounts) {
     if (methodRows.some((row, index) => row.rid !== index + 1)) {
       throw new FormatError("Portable PDB MethodDebugInformation rows are not RID-aligned");
     }
-    rows.set(49, [
-      ...methodRows.map((row) => ({ ...row })),
-      {
-        table: 49,
-        tableName: "MethodDebugInformation",
-        rid: newCounts[6],
-        Document: { raw: 0, table: 48, tableName: "Document", rid: 0 },
-        SequencePoints: 0
-      }
-    ]);
+    const remappedMethodRows = methodRows.map((row) => ({
+      ...row,
+      rid: row.rid >= methodRid ? row.rid + 1 : row.rid
+    }));
+    remappedMethodRows.splice(methodRid - 1, 0, {
+      table: 49,
+      tableName: "MethodDebugInformation",
+      rid: methodRid,
+      Document: { raw: 0, table: 48, tableName: "Document", rid: 0 },
+      SequencePoints: 0
+    });
+    rows.set(49, remappedMethodRows);
   } else {
     rows.delete(49);
+  }
+
+  const remapMethodReference = (reference) => reference.rid >= methodRid
+    ? { ...reference, raw: reference.rid + 1, rid: reference.rid + 1 }
+    : { ...reference };
+  const scopeRows = rows.get(50) ?? [];
+  if (rows.has(50)) {
+    rows.set(50, scopeRows.map((scope) => ({
+      ...scope,
+      Method: remapMethodReference(scope.Method)
+    })));
+  }
+  const stateMachineRows = rows.get(54) ?? [];
+  if (rows.has(54)) {
+    rows.set(54, stateMachineRows.map((stateMachine) => ({
+      ...stateMachine,
+      MoveNextMethod: remapMethodReference(stateMachine.MoveNextMethod),
+      KickoffMethod: remapMethodReference(stateMachine.KickoffMethod)
+    })));
+  }
+  const customDebugRows = rows.get(55) ?? [];
+  if (customDebugRows.some((record) => record.Parent.target?.table === 6)) {
+    throw new UnsupportedFormatError(
+      "Portable PDB method remapping cannot update method-scoped CustomDebugInformation"
+    );
   }
 
   const rowCounts = new Map([...pdb.rowCounts].map(([table]) =>
@@ -829,7 +866,7 @@ export function appendEmbeddedPortablePdbMethod(pdb, oldCounts, newCounts) {
   const pdbStream = new Uint8Array(32 + rowCounts.size * 4);
   pdbStream.set(pdb.id);
   const pdbView = new DataView(pdbStream.buffer);
-  pdbView.setUint32(20, pdb.entryPointToken, true);
+  pdbView.setUint32(20, entryPointToken, true);
   pdbView.setUint32(24, Number(pdb.referencedTypeSystemTables & 0xffffffffn), true);
   pdbView.setUint32(28, Number(pdb.referencedTypeSystemTables >> 32n), true);
   let countOffset = 32;

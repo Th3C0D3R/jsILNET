@@ -30,7 +30,7 @@ import { parseManifestResources } from "./metadata/resources.js";
 import {
   validatePortablePdbAssemblyReferences,
   validatePortablePdbCodeViewIdentity,
-  appendEmbeddedPortablePdbMethod as appendPortablePdbMethod,
+  insertEmbeddedPortablePdbMethod as insertPortablePdbMethod,
   removeEmbeddedPortablePdbMethod as removePortablePdbMethod,
   refreshEmbeddedPortablePdbId,
   replaceEmbeddedPortablePdbMethodOffsets as replacePortablePdbMethodOffsets,
@@ -4495,11 +4495,6 @@ export class Assembly {
       throw new FormatError("ParamPtr must be a one-to-one mapping to Param rows");
     }
     const rid = pointerRows ? methodRows.length + 1 : endRid;
-    if (embeddedPdbIndices.length === 1 && rid !== originalMethodCount + 1) {
-      throw new UnsupportedFormatError(
-        "MethodDef RID remapping cannot be combined with an embedded Portable PDB"
-      );
-    }
     const pointerInsertionIndex = pointerRows
       ? ownerRow.MethodList.rid - 1 + ownedRids.length
       : -1;
@@ -4524,7 +4519,13 @@ export class Assembly {
     const parameterListTable = parameterPointerRows ? 7 : 8;
     const { tokenMap, rowChanges, tokenUpdates, patches } = pointerRows
       ? { tokenMap: new Map(), rowChanges: [], tokenUpdates: [], patches: [] }
-      : this.#prepareTokenRowInsertion(6, rid, methodRows.length, "MethodDef");
+      : this.#prepareTokenRowInsertion(
+        6,
+        rid,
+        methodRows.length,
+        "MethodDef",
+        { allowEmbeddedPortablePdb: embeddedPdbIndices.length === 1 }
+      );
     const cliEntryPointToken = this._cliEntryPointToken ?? this.cli.entryPointToken;
     const isManagedMethodEntryPoint =
       (this.cli.flags & 0x10) === 0 &&
@@ -4546,8 +4547,9 @@ export class Assembly {
       if (pointerRows) updatedCounts[5]++;
       const debugEntryIndex = embeddedPdbIndices[0];
       const debugEntry = this.pe.debugDirectoryEntries[debugEntryIndex];
-      updatedEmbeddedPdb = appendPortablePdbMethod(
+      updatedEmbeddedPdb = insertPortablePdbMethod(
         this.#getPortablePdbForEdit(debugEntryIndex, debugEntry),
+        rid,
         this.tables.counts,
         updatedCounts
       );
@@ -10542,7 +10544,13 @@ export class Assembly {
     }
   }
 
-  #prepareTokenRowInsertion(tableId, insertionRid, rowCount, tableName) {
+  #prepareTokenRowInsertion(
+    tableId,
+    insertionRid,
+    rowCount,
+    tableName,
+    { allowEmbeddedPortablePdb = false } = {}
+  ) {
     const tokenMap = new Map();
     const rowChanges = [];
     const tokenUpdates = [];
@@ -10555,7 +10563,7 @@ export class Assembly {
         `Sorted ${tableName} insertion cannot be combined with method-body edits`
       );
     }
-    this.#ensureTokenRemappingSafe(tableName);
+    this.#ensureTokenRemappingSafe(tableName, { allowEmbeddedPortablePdb });
     for (let oldRid = insertionRid; oldRid <= rowCount; oldRid++) {
       tokenMap.set(
         (tableId << 24) + oldRid,

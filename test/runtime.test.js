@@ -588,6 +588,30 @@ test("strong-name signed PE32+ assemblies load and execute in .NET", {
       type.methodRids.at(-1) < unsafeMethodAdd.methods.length
     );
     assert.ok(nonTailOwner);
+    const unsafePdb = unsafeMethodAdd.pe.debugDirectoryEntries.find((entry) =>
+      entry.type === 17
+    ).embeddedPortablePdb;
+    const unsafeMethodRid = nonTailOwner.methodRids.at(-1) + 1;
+    const unsafeDocument = unsafePdb.tables.get(48)[0];
+    assert.ok(unsafeDocument?.Language);
+    const unsafeCustomDebugRows = (unsafePdb.tables.rows.get(55) ?? [])
+      .map((row) => ({ ...row }));
+    unsafeCustomDebugRows.push({
+      rid: unsafeCustomDebugRows.length + 1,
+      Parent: {
+        raw: encodeCodedIndex(6, unsafeMethodRid, "HasCustomDebugInformation"),
+        target: { table: 6, rid: unsafeMethodRid }
+      },
+      Kind: unsafeDocument.Language,
+      Value: 0
+    });
+    unsafeCustomDebugRows.sort((left, right) => left.Parent.raw - right.Parent.raw);
+    unsafeCustomDebugRows.forEach((row, index) => {
+      row.rid = index + 1;
+    });
+    unsafePdb.tables.rows.set(55, unsafeCustomDebugRows);
+    unsafePdb.tables.counts[55] = unsafeCustomDebugRows.length;
+    unsafePdb.tables.valid |= 1n << 55n;
     const beforeUnsafeMethodAdd = unsafeMethodAdd.serialize();
     assert.throws(() => unsafeMethodAdd.insertMethod({
       owner: { table: "TypeDef", rid: nonTailOwner.rid },
@@ -595,15 +619,86 @@ test("strong-name signed PE32+ assemblies load and execute in .NET", {
       flags: 0x0096,
       signature: Uint8Array.of(0x00, 0x00, 0x01),
       body: Uint8Array.of(0x06, 0x2a)
-    }), /MethodDef RID remapping cannot be combined with an embedded Portable PDB/);
+    }), /cannot update method-scoped CustomDebugInformation/);
     assert.deepEqual(unsafeMethodAdd.serialize(), beforeUnsafeMethodAdd);
+
+    const shiftedMethodAdd = parseAssembly(await readFile(assemblyPath));
+    const shiftedOwner = shiftedMethodAdd.types.find((type) =>
+      type.methodRids.length > 0 &&
+      type.methodRids.at(-1) < shiftedMethodAdd.methods.length
+    );
+    assert.ok(shiftedOwner);
+    const originalMethodCount = shiftedMethodAdd.methods.length;
+    const originalShiftedPdb = shiftedMethodAdd.pe.debugDirectoryEntries.find((entry) =>
+      entry.type === 17
+    ).embeddedPortablePdb;
+    const originalMethodDebugInformation = originalShiftedPdb.methodDebugInformation;
+    const originalLocalScopes = originalShiftedPdb.tables.get(50) ?? [];
+    const originalStateMachineMethods = originalShiftedPdb.tables.get(54) ?? [];
+    originalShiftedPdb.entryPointToken = 0x06000000 + originalMethodCount;
+    const shiftedRid = shiftedOwner.methodRids.at(-1) + 1;
+    const shiftedMethod = shiftedMethodAdd.insertMethod({
+      owner: { table: "TypeDef", rid: shiftedOwner.rid },
+      name: "DebugInfoShifted",
+      flags: 0x0096,
+      signature: Uint8Array.of(0x00, 0x00, 0x01),
+      body: Uint8Array.of(0x06, 0x2a)
+    });
+    assert.equal(shiftedMethod.token, 0x06000000 + shiftedRid);
+    assert.equal(
+      shiftedMethod.tokenMap.get(0x06000000 + originalMethodCount),
+      0x06000000 + originalMethodCount + 1
+    );
+    const shiftedMethodBytes = shiftedMethodAdd.serialize();
+    const reparsedShiftedMethodAdd = parseAssembly(shiftedMethodBytes);
+    const shiftedPdb = reparsedShiftedMethodAdd.pe.debugDirectoryEntries.find((entry) =>
+      entry.type === 17
+    ).embeddedPortablePdb;
+    assert.equal(shiftedPdb.rowCounts.get(6), originalMethodCount + 1);
+    assert.equal(
+      shiftedPdb.entryPointToken,
+      0x06000000 + originalMethodCount + 1
+    );
+    assert.equal(shiftedPdb.methodDebugInformation.length, originalMethodCount + 1);
+    const shiftedLocalScopes = shiftedPdb.tables.get(50) ?? [];
+    assert.equal(shiftedLocalScopes.length, originalLocalScopes.length);
+    for (const scope of originalLocalScopes) {
+      const newMethodRid = scope.Method.rid >= shiftedRid
+        ? scope.Method.rid + 1
+        : scope.Method.rid;
+      assert.equal(shiftedLocalScopes[scope.rid - 1].Method.rid, newMethodRid);
+    }
+    const shiftedStateMachineMethods = shiftedPdb.tables.get(54) ?? [];
+    assert.equal(shiftedStateMachineMethods.length, originalStateMachineMethods.length);
+    for (const stateMachine of originalStateMachineMethods) {
+      const shiftedRow = shiftedStateMachineMethods[stateMachine.rid - 1];
+      for (const column of ["MoveNextMethod", "KickoffMethod"]) {
+        const newMethodRid = stateMachine[column].rid >= shiftedRid
+          ? stateMachine[column].rid + 1
+          : stateMachine[column].rid;
+        assert.equal(shiftedRow[column].rid, newMethodRid);
+      }
+    }
+    assert.deepEqual(
+      shiftedPdb.methodDebugInformation[shiftedRid - 1].sequencePoints,
+      []
+    );
+    for (let rid = 1; rid <= originalMethodCount; rid++) {
+      const newRid = rid >= shiftedRid ? rid + 1 : rid;
+      assert.deepEqual(
+        shiftedPdb.methodDebugInformation[newRid - 1].sequencePoints,
+        originalMethodDebugInformation[rid - 1].sequencePoints
+      );
+    }
+    const shiftedMethodPath = join(libraryDirectory, "RuntimeLibrary.MethodShifted.dll");
+    await writeFile(shiftedMethodPath, shiftedMethodBytes);
 
     const methodAdd = parseAssembly(await readFile(assemblyPath));
     const tailOwner = [...methodAdd.types].reverse().find((type) =>
       type.methodRids.at(-1) === methodAdd.methods.length
     );
     assert.ok(tailOwner);
-    const originalMethodCount = methodAdd.methods.length;
+    assert.equal(methodAdd.methods.length, originalMethodCount);
     const addedMethodToken = methodAdd.addMethod({
       owner: { table: "TypeDef", rid: tailOwner.rid },
       name: "DebugInfoSafe",
@@ -1053,7 +1148,13 @@ test("strong-name signed PE32+ assemblies load and execute in .NET", {
       "    .SelectMany(type => type.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance | BindingFlags.DeclaredOnly))",
       "    .Single(method => method.Name == \"DebugInfoSafe\");",
       "addedMethod.Invoke(null, null);",
-      "Console.WriteLine(\"method-added\");"
+      "Console.WriteLine(\"method-added\");",
+      "var shiftedAssembly = Assembly.LoadFile(Path.GetFullPath(args[2]));",
+      "var shiftedMethod = shiftedAssembly.GetTypes()",
+      "    .SelectMany(type => type.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance | BindingFlags.DeclaredOnly))",
+      "    .Single(method => method.Name == \"DebugInfoShifted\");",
+      "shiftedMethod.Invoke(null, null);",
+      "Console.WriteLine(\"method-shifted\");"
     ].join("\n"));
 
     const runtime = spawnSync(
@@ -1066,14 +1167,16 @@ test("strong-name signed PE32+ assemblies load and execute in .NET", {
         "Release",
         "--",
         assemblyPath,
-        methodAddPath
+        methodAddPath,
+        shiftedMethodPath
       ],
       { encoding: "utf8", timeout: 120_000 }
     );
     assert.equal(runtime.status, 0, runtime.stderr || runtime.stdout || runtime.error?.message);
     const runtimeOutput = runtime.stdout.trim().split(/\r?\n/);
-    assert.equal(runtimeOutput.at(-2), "42");
-    assert.equal(runtimeOutput.at(-1), "method-added");
+    assert.equal(runtimeOutput.at(-3), "42");
+    assert.equal(runtimeOutput.at(-2), "method-added");
+    assert.equal(runtimeOutput.at(-1), "method-shifted");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
