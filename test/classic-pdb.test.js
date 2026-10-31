@@ -148,6 +148,29 @@ test("classic PDB symbol decoding exposes public, data, and procedure names", ()
     ordinal: 4,
     name: "thunk"
   });
+  const frameProcedure = new Uint8Array(26);
+  const frameView = new DataView(frameProcedure.buffer);
+  frameView.setUint32(0, 0x100, true);
+  frameView.setUint32(4, 4, true);
+  frameView.setUint32(8, 8, true);
+  frameView.setUint32(12, 12, true);
+  frameView.setUint32(16, 16, true);
+  frameView.setUint16(20, 2, true);
+  frameView.setUint32(22, 0x1234, true);
+  assert.deepEqual(decodeRecord(0x1012, frameProcedure), {
+    kind: "frameProcedure",
+    frameSize: 0x100,
+    paddingSize: 4,
+    paddingOffset: 8,
+    savedRegisterSize: 12,
+    exceptionHandlerOffset: 16,
+    exceptionHandlerSegment: 2,
+    flags: 0x1234
+  });
+  assert.deepEqual(decodeRecord(0x1124, Uint8Array.from([0x4e, 0x53, 0])), {
+    kind: "namespace",
+    name: "NS"
+  });
 
   const procedure = new Uint8Array(4 + 2 + 2 + 35 + 5);
   const procedureView = new DataView(procedure.buffer);

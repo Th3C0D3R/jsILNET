@@ -332,6 +332,25 @@ function decodeCodeViewSymbol(kind, data) {
       name: readCodeViewName(data, 21, "thunk symbol")
     };
   }
+  if (kind === 0x1012) {
+    if (data.length < 26) throw new FormatError("Classic PDB frame-procedure symbol is truncated");
+    return {
+      kind: "frameProcedure",
+      frameSize: view.getUint32(0, true),
+      paddingSize: view.getUint32(4, true),
+      paddingOffset: view.getUint32(8, true),
+      savedRegisterSize: view.getUint32(12, true),
+      exceptionHandlerOffset: view.getUint32(16, true),
+      exceptionHandlerSegment: view.getUint16(20, true),
+      flags: view.getUint32(22, true)
+    };
+  }
+  if (kind === 0x1124) {
+    return {
+      kind: "namespace",
+      name: readCodeViewName(data, 0, "namespace")
+    };
+  }
   if ([0x110f, 0x1110, 0x1146, 0x1147].includes(kind)) {
     if (data.length < 36) throw new FormatError("Classic PDB procedure symbol record is truncated");
     return {
