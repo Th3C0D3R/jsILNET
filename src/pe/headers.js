@@ -1,5 +1,9 @@
+import { inflateRawSync } from "node:zlib";
 import { BinaryReader } from "../binary/reader.js";
 import { FormatError, UnsupportedFormatError } from "../binary/errors.js";
+import { parseMetadataRoot } from "../metadata/streams.js";
+
+const maxEmbeddedPortablePdbSize = 0x10000000;
 
 function requireSignature(actual, expected, offset, name) {
   if (actual !== expected) throw new FormatError(`Invalid ${name} signature`, { offset });
@@ -72,6 +76,86 @@ function parseCodeViewData(bytes, offset, size) {
     path: new TextDecoder().decode(pathBytes.subarray(0, terminator)),
     pathOffset,
     pathByteLength: terminator
+  };
+}
+
+function parsePortablePdbStream(metadataRoot) {
+  const stream = metadataRoot.streams.get("#Pdb");
+  if (!stream) throw new FormatError("Embedded Portable PDB is missing its #Pdb stream");
+  if (!metadataRoot.streams.has("#~")) {
+    throw new FormatError("Embedded Portable PDB is missing its #~ tables stream");
+  }
+  const reader = new BinaryReader(stream.bytes, { context: "Portable PDB #Pdb stream" });
+  if (reader.remaining < 32) throw new FormatError("Portable PDB #Pdb stream is truncated");
+  const id = Uint8Array.from(reader.take(20));
+  const entryPointToken = reader.u4();
+  if (entryPointToken !== 0 &&
+      ((entryPointToken >>> 24) !== 6 || (entryPointToken & 0x00ffffff) === 0)) {
+    throw new FormatError("Portable PDB entry point must be a MethodDef token or nil");
+  }
+  const referencedTypeSystemTables = BigInt(reader.u4()) | (BigInt(reader.u4()) << 32n);
+  const rowCounts = new Map();
+  for (let table = 0; table < 64; table++) {
+    if ((referencedTypeSystemTables & (1n << BigInt(table))) !== 0n) {
+      rowCounts.set(table, reader.u4());
+    }
+  }
+  if (reader.remaining !== 0) {
+    throw new FormatError("Trailing bytes after Portable PDB #Pdb stream data");
+  }
+  return { id, entryPointToken, referencedTypeSystemTables, rowCounts };
+}
+
+export function parseEmbeddedPortablePdbData(bytes, offset, size) {
+  const reader = new BinaryReader(bytes, {
+    start: offset,
+    length: size,
+    baseOffset: offset,
+    context: "embedded Portable PDB"
+  });
+  if (reader.remaining < 9 || new TextDecoder("ascii").decode(reader.take(4)) !== "MPDB") {
+    throw new FormatError("Embedded Portable PDB has an invalid or truncated MPDB header", {
+      offset,
+      context: "embedded Portable PDB"
+    });
+  }
+  const uncompressedSize = reader.u4();
+  if (uncompressedSize === 0) {
+    throw new FormatError("Embedded Portable PDB declares an empty metadata root", {
+      offset: offset + 4,
+      context: "embedded Portable PDB"
+    });
+  }
+  if (uncompressedSize > maxEmbeddedPortablePdbSize) {
+    throw new UnsupportedFormatError(
+      `Embedded Portable PDB exceeds the ${maxEmbeddedPortablePdbSize}-byte decompression limit`,
+      { offset: offset + 4, context: "embedded Portable PDB" }
+    );
+  }
+  let metadataBytes;
+  try {
+    metadataBytes = inflateRawSync(reader.take(reader.remaining), {
+      maxOutputLength: uncompressedSize
+    });
+  } catch (error) {
+    throw new FormatError(`Embedded Portable PDB deflate stream is invalid: ${error.message}`, {
+      offset: reader.absoluteOffset,
+      context: "embedded Portable PDB"
+    });
+  }
+  if (metadataBytes.length !== uncompressedSize) {
+    throw new FormatError("Embedded Portable PDB decompressed size does not match its header", {
+      offset,
+      context: "embedded Portable PDB"
+    });
+  }
+  const metadataRoot = parseMetadataRoot(metadataBytes, 0, metadataBytes.length);
+  const pdb = parsePortablePdbStream(metadataRoot);
+  return {
+    uncompressedSize,
+    bytes: Uint8Array.from(metadataBytes),
+    metadataRoot,
+    ...pdb
   };
 }
 
@@ -291,14 +375,16 @@ export function parsePE(input) {
           });
         }
       }
+      const debugDataOffset = pointerToRawData !== 0
+        ? pointerToRawData
+        : sizeOfData > 0
+          ? rvaToOffset(addressOfRawData, sizeOfData)
+          : 0;
       const codeView = type === 2 && sizeOfData > 0
-        ? parseCodeViewData(
-          bytes,
-          pointerToRawData !== 0
-            ? pointerToRawData
-            : rvaToOffset(addressOfRawData, sizeOfData),
-          sizeOfData
-        )
+        ? parseCodeViewData(bytes, debugDataOffset, sizeOfData)
+        : null;
+      const embeddedPortablePdb = type === 17 && sizeOfData > 0
+        ? parseEmbeddedPortablePdbData(bytes, debugDataOffset, sizeOfData)
         : null;
       debugDirectoryEntries.push({
         characteristics,
@@ -309,7 +395,8 @@ export function parsePE(input) {
         sizeOfData,
         addressOfRawData,
         pointerToRawData,
-        codeView
+        codeView,
+        embeddedPortablePdb
       });
     }
   }

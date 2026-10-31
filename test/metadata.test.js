@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { deflateRawSync } from "node:zlib";
 import {
   codedIndexWidth,
   decodeCodedIndex,
@@ -9,6 +10,7 @@ import {
   parseTablesStream,
   tableIndexWidth
 } from "../src/index.js";
+import { parseEmbeddedPortablePdbData } from "../src/pe/headers.js";
 import { resolveMethodParameters, resolveTypes } from "../src/resolution/module.js";
 
 function makeMetadataRoot({
@@ -345,4 +347,49 @@ test("metadata roots reject malformed version and stream directory data", () => 
   const nonzeroReserved = makeMetadataRoot({ reserved: 1 });
   assert.throws(() => parseMetadataRoot(nonzeroReserved.bytes, 0, nonzeroReserved.bytes.length),
     /reserved field must be zero/);
+});
+
+test("embedded Portable PDB data validates and exposes its metadata streams", () => {
+  const metadata = new Uint8Array(112);
+  const view = new DataView(metadata.buffer);
+  view.setUint32(0, 0x424a5342, true);
+  view.setUint16(4, 1, true);
+  view.setUint16(6, 1, true);
+  view.setUint32(12, 4, true);
+  metadata.set(Uint8Array.of(0x50, 0x44, 0x42, 0), 16);
+  view.setUint16(22, 2, true);
+  view.setUint32(24, 52, true);
+  view.setUint32(28, 36, true);
+  metadata.set(Uint8Array.of(0x23, 0x50, 0x64, 0x62, 0), 32);
+  view.setUint32(40, 88, true);
+  view.setUint32(44, 24, true);
+  metadata.set(Uint8Array.of(0x23, 0x7e, 0), 48);
+  metadata.set(Uint8Array.from({ length: 20 }, (_, index) => index), 52);
+  view.setUint32(72, 0x06000001, true);
+  view.setUint32(76, 1 << 6, true);
+  view.setUint32(84, 3, true);
+
+  const compressed = deflateRawSync(metadata);
+  const container = new Uint8Array(8 + compressed.length);
+  container.set(Uint8Array.of(0x4d, 0x50, 0x44, 0x42));
+  new DataView(container.buffer).setUint32(4, metadata.length, true);
+  container.set(compressed, 8);
+
+  const pdb = parseEmbeddedPortablePdbData(container, 0, container.length);
+  assert.equal(pdb.uncompressedSize, metadata.length);
+  assert.deepEqual(pdb.id, Uint8Array.from({ length: 20 }, (_, index) => index));
+  assert.equal(pdb.entryPointToken, 0x06000001);
+  assert.equal(pdb.referencedTypeSystemTables, 1n << 6n);
+  assert.equal(pdb.metadataRoot.streams.has("#Pdb"), true);
+  assert.equal(pdb.metadataRoot.streams.has("#~"), true);
+  assert.deepEqual(pdb.rowCounts, new Map([[6, 3]]));
+
+  const invalid = Uint8Array.from(container);
+  invalid[0] = 0;
+  assert.throws(() => parseEmbeddedPortablePdbData(invalid, 0, invalid.length), /MPDB header/);
+
+  const truncated = Uint8Array.from(container);
+  new DataView(truncated.buffer).setUint32(4, metadata.length + 1, true);
+  assert.throws(() => parseEmbeddedPortablePdbData(truncated, 0, truncated.length),
+    /decompressed size does not match/);
 });

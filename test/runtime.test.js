@@ -169,7 +169,7 @@ test("strong-name signed PE32+ assemblies load and execute in .NET", {
       "  <PropertyGroup>",
       `    <TargetFramework>${targetFramework}</TargetFramework>`,
       "    <PlatformTarget>x64</PlatformTarget>",
-      "    <DebugType>none</DebugType>",
+      "    <DebugType>embedded</DebugType>",
       "  </PropertyGroup>",
       "</Project>"
     ].join("\n"));
@@ -193,6 +193,9 @@ test("strong-name signed PE32+ assemblies load and execute in .NET", {
     const assemblyPath = join(libraryDirectory, "RuntimeLibrary.dll");
     const assembly = parseAssembly(await readFile(assemblyPath));
     assert.equal(assembly.pe.optionalHeaderMagic, 0x20b);
+    assert.ok(assembly.pe.debugDirectoryEntries.some((entry) =>
+      entry.type === 17 && entry.embeddedPortablePdb
+    ));
     assembly.replaceStrongNamePublicKey(
       generateKeyPairSync("rsa", { modulusLength: 1024 }).privateKey
     );
