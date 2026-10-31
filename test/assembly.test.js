@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { generateKeyPairSync } from "node:crypto";
+import { createHash, generateKeyPairSync } from "node:crypto";
 import {
   encodeCodedIndex,
   encodeSignature,
@@ -7389,6 +7389,41 @@ test("ManifestResource metadata edits preserve embedded data and update linked t
     tableName: "AssemblyRef",
     rid: assembly.assemblyRefs[0].rid
   });
+});
+
+test("linked resource replacement updates the File hash and exposes pending payload bytes", () => {
+  const assembly = parseAssembly(withoutDebugDirectory());
+  const fileToken = assembly.addFile({ name: "Linked.resources" });
+  const resourceToken = assembly.addManifestResource({
+    name: "LinkedResource",
+    implementation: { table: "File", rid: fileToken & 0x00ffffff }
+  });
+  const secondResourceToken = assembly.addManifestResource({
+    name: "SharedFileResource",
+    implementation: { table: "File", rid: fileToken & 0x00ffffff }
+  });
+  const remoteResourceToken = assembly.addManifestResource({
+    name: "RemoteResource",
+    implementation: { table: "AssemblyRef", rid: assembly.assemblyRefs[0].rid }
+  });
+  const payload = Uint8Array.of(9, 8, 7, 6);
+  const expectedHash = Uint8Array.from(createHash("sha1").update(payload).digest());
+
+  assembly.replaceLinkedResource(resourceToken & 0x00ffffff, payload);
+  assert.deepEqual(assembly.resources[(resourceToken & 0x00ffffff) - 1].data, payload);
+  assert.deepEqual(assembly.resources[(secondResourceToken & 0x00ffffff) - 1].data, payload);
+  assert.deepEqual(assembly.files[0].hashValue, expectedHash);
+  assert.throws(
+    () => assembly.replaceLinkedResource(remoteResourceToken & 0x00ffffff, payload),
+    /directly to a File row/
+  );
+
+  const reparsed = parseAssembly(assembly.serialize());
+  assert.equal(reparsed.resources[(resourceToken & 0x00ffffff) - 1].data, null);
+  assert.equal(reparsed.resources[(secondResourceToken & 0x00ffffff) - 1].data, null);
+  assert.deepEqual(reparsed.files[0].hashValue, expectedHash);
+  assert.throws(() => assembly.replaceLinkedResource(0, payload), /Invalid ManifestResource row ID/);
+  assert.throws(() => assembly.replaceLinkedResource(1, [1, 2, 3]), /Uint8Array/);
 });
 
 test("ExportedType rows can append File or AssemblyRef implementations", () => {

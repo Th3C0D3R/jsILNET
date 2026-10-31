@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { FormatError, UnsupportedFormatError } from "./binary/errors.js";
 import { parsePE, parseCliHeader } from "./pe/headers.js";
 import { parseMetadataRoot, MetadataHeaps } from "./metadata/streams.js";
@@ -11867,6 +11868,35 @@ export class Assembly {
     this._resourceEdits.set(rid, data.slice());
     this._clearResourcesDirectory = false;
     resource.data = data.slice();
+    return this;
+  }
+
+  replaceLinkedResource(rid, data) {
+    this.#ensureEditable();
+    if (!Number.isInteger(rid) || rid < 1 || rid > this.resources.length) {
+      throw new RangeError(`Invalid ManifestResource row ID ${rid}`);
+    }
+    if (!(data instanceof Uint8Array)) {
+      throw new TypeError("Linked resource data must be a Uint8Array");
+    }
+    const resource = this.resources[rid - 1];
+    if (resource.rid !== rid || resource.implementation?.table !== 38) {
+      throw new UnsupportedFormatError("Only resources linked directly to a File row can be replaced");
+    }
+    const file = this.files[resource.implementation.rid - 1];
+    const assemblyRow = this.tables.row(32, 1);
+    if (!file || !assemblyRow) {
+      throw new FormatError("Linked resource File or containing Assembly row is missing");
+    }
+    const hashName = getStrongNameHashName(assemblyRow.HashAlgId);
+    const hashValue = Uint8Array.from(createHash(hashName).update(data).digest());
+    this.replaceFile(file.rid, { hashValue });
+    for (const linkedResource of this.resources) {
+      if (linkedResource.implementation?.table === 38 &&
+          linkedResource.implementation.rid === file.rid) {
+        linkedResource.data = data.slice();
+      }
+    }
     return this;
   }
 
