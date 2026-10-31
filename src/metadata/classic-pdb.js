@@ -219,6 +219,66 @@ function parseDbiFileInfo(dbiStream, fileInfoOffset, fileInfoSize, modules) {
   }));
 }
 
+function readCodeViewName(bytes, offset, context) {
+  const end = bytes.indexOf(0, offset);
+  if (end < 0) throw new FormatError(`Classic PDB ${context} name is not null-terminated`);
+  const padding = bytes.subarray(end + 1);
+  if (padding.length > 0) {
+    const marker = padding[padding.length - 1];
+    const paddingLength = marker - 0xf0;
+    if (paddingLength !== padding.length || padding.some((byte) => byte !== marker)) {
+      throw new FormatError(`Classic PDB ${context} name has invalid CodeView padding`);
+    }
+  }
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(offset, end));
+  } catch (error) {
+    throw new FormatError(`Classic PDB ${context} name is invalid UTF-8: ${error.message}`);
+  }
+}
+
+function decodeCodeViewSymbol(kind, data) {
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  if (kind === 0x110e) {
+    if (data.length < 11) throw new FormatError("Classic PDB S_PUB32 record is truncated");
+    return {
+      kind: "public",
+      flags: view.getUint32(0, true),
+      offset: view.getUint32(4, true),
+      segment: view.getUint16(8, true),
+      name: readCodeViewName(data, 10, "S_PUB32")
+    };
+  }
+  if ([0x110c, 0x110d, 0x111c, 0x111d].includes(kind)) {
+    if (data.length < 11) throw new FormatError("Classic PDB data symbol record is truncated");
+    return {
+      kind: "data",
+      typeIndex: view.getUint32(0, true),
+      offset: view.getUint32(4, true),
+      segment: view.getUint16(8, true),
+      name: readCodeViewName(data, 10, "data symbol")
+    };
+  }
+  if ([0x110f, 0x1110, 0x1146, 0x1147].includes(kind)) {
+    if (data.length < 36) throw new FormatError("Classic PDB procedure symbol record is truncated");
+    return {
+      kind: "procedure",
+      parent: view.getUint32(0, true),
+      end: view.getUint32(4, true),
+      next: view.getUint32(8, true),
+      codeSize: view.getUint32(12, true),
+      debugStart: view.getUint32(16, true),
+      debugEnd: view.getUint32(20, true),
+      typeIndex: view.getUint32(24, true),
+      offset: view.getUint32(28, true),
+      segment: view.getUint16(32, true),
+      flags: data[34],
+      name: readCodeViewName(data, 35, "procedure")
+    };
+  }
+  return null;
+}
+
 export function parseCodeViewSymbolRecords(input) {
   const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
   if (bytes.length < 4) throw new FormatError("Classic PDB module symbol data is truncated");
@@ -237,10 +297,14 @@ export function parseCodeViewSymbolRecords(input) {
     if (length < 2 || length > bytes.length - offset - 2) {
       throw new FormatError("Classic PDB module symbol record exceeds its stream bounds");
     }
+    const kind = view.getUint16(offset + 2, true);
+    const data = bytes.slice(offset + 4, offset + 2 + length);
+    const decoded = decodeCodeViewSymbol(kind, data);
     records.push({
       offset,
-      kind: view.getUint16(offset + 2, true),
-      data: bytes.slice(offset + 4, offset + 2 + length)
+      kind,
+      data,
+      ...(decoded ? { decoded } : {})
     });
     offset += 2 + length;
   }

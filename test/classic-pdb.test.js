@@ -60,13 +60,13 @@ test("classic PDB parser rejects invalid signatures and overlapping MSF blocks",
 test("classic PDB module symbols preserve bounded CodeView record payloads", () => {
   const bytes = Uint8Array.from([
     4, 0, 0, 0,
-    4, 0, 0x0e, 0x11, 0xaa, 0xbb,
+    4, 0, 0x77, 0x77, 0xaa, 0xbb,
     2, 0, 0x04, 0x11
   ]);
   assert.deepEqual(parseCodeViewSymbolRecords(bytes), {
     signature: 4,
     records: [
-      { offset: 4, kind: 0x110e, data: Uint8Array.from([0xaa, 0xbb]) },
+      { offset: 4, kind: 0x7777, data: Uint8Array.from([0xaa, 0xbb]) },
       { offset: 10, kind: 0x1104, data: new Uint8Array() }
     ]
   });
@@ -74,4 +74,68 @@ test("classic PDB module symbols preserve bounded CodeView record payloads", () 
     /length is truncated/);
   assert.throws(() => parseCodeViewSymbolRecords(Uint8Array.from([4, 0, 0, 0, 5, 0, 1, 2])),
     /exceeds its stream bounds/);
+});
+
+test("classic PDB symbol decoding exposes public, data, and procedure names", () => {
+  const publicRecord = Uint8Array.from([
+    4, 0, 0, 0,
+    18, 0, 0x0e, 0x11,
+    1, 0, 0, 0, 0x44, 0x33, 0x22, 0x11, 3, 0,
+    0x70, 0x75, 0x62, 0, 0xf2, 0xf2
+  ]);
+  assert.deepEqual(parseCodeViewSymbolRecords(publicRecord).records[0].decoded, {
+    kind: "public",
+    flags: 1,
+    offset: 0x11223344,
+    segment: 3,
+    name: "pub"
+  });
+
+  const data = new Uint8Array(4 + 2 + 2 + 10 + 4);
+  const view = new DataView(data.buffer);
+  view.setUint32(0, 4, true);
+  view.setUint16(4, 16, true);
+  view.setUint16(6, 0x110d, true);
+  view.setUint32(8, 0x1000, true);
+  view.setUint32(12, 0x40, true);
+  view.setUint16(16, 2, true);
+  data.set([0x67, 0x6c, 0x6f, 0], 18);
+  assert.deepEqual(parseCodeViewSymbolRecords(data).records[0].decoded, {
+    kind: "data",
+    typeIndex: 0x1000,
+    offset: 0x40,
+    segment: 2,
+    name: "glo"
+  });
+
+  const procedure = new Uint8Array(4 + 2 + 2 + 35 + 5);
+  const procedureView = new DataView(procedure.buffer);
+  procedureView.setUint32(0, 4, true);
+  procedureView.setUint16(4, 42, true);
+  procedureView.setUint16(6, 0x1110, true);
+  procedureView.setUint32(8, 12, true);
+  procedureView.setUint32(12, 14, true);
+  procedureView.setUint32(16, 16, true);
+  procedureView.setUint32(20, 18, true);
+  procedureView.setUint32(24, 2, true);
+  procedureView.setUint32(28, 4, true);
+  procedureView.setUint32(32, 0x1234, true);
+  procedureView.setUint32(36, 0x2000, true);
+  procedureView.setUint16(40, 1, true);
+  procedure[42] = 2;
+  procedure.set([0x6d, 0x65, 0x74, 0x68, 0], 43);
+  assert.deepEqual(parseCodeViewSymbolRecords(procedure).records[0].decoded, {
+    kind: "procedure",
+    parent: 12,
+    end: 14,
+    next: 16,
+    codeSize: 18,
+    debugStart: 2,
+    debugEnd: 4,
+    typeIndex: 0x1234,
+    offset: 0x2000,
+    segment: 1,
+    flags: 2,
+    name: "meth"
+  });
 });
