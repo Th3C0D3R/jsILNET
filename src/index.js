@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 import { FormatError, UnsupportedFormatError } from "./binary/errors.js";
-import { parsePE, parseCliHeader } from "./pe/headers.js";
+import {
+  parseEmbeddedPortablePdbData,
+  parsePE,
+  parseCliHeader
+} from "./pe/headers.js";
 import { parseMetadataRoot, MetadataHeaps } from "./metadata/streams.js";
 import { parseTablesStream } from "./metadata/tables.js";
 import {
@@ -25,7 +29,8 @@ import { appendBlobHeap, appendStringHeap, appendUserStringHeap } from "./metada
 import { parseManifestResources } from "./metadata/resources.js";
 import {
   validatePortablePdbAssemblyReferences,
-  validatePortablePdbCodeViewIdentity
+  validatePortablePdbCodeViewIdentity,
+  replaceEmbeddedPortablePdbDocumentName as replacePortablePdbDocumentName
 } from "./metadata/portable-pdb.js";
 import {
   assertStrongNamePEProfile,
@@ -2658,6 +2663,91 @@ export class Assembly {
     codeView.path = path;
     codeView.pathByteLength = encodedPath.length;
     return this;
+  }
+
+  replaceEmbeddedPortablePdb(debugEntryIndex, data) {
+    this.#ensureEditable();
+    if (!Number.isInteger(debugEntryIndex) || debugEntryIndex < 0 ||
+        debugEntryIndex >= this.pe.debugDirectoryEntries.length) {
+      throw new RangeError(`Invalid debug-directory entry index ${debugEntryIndex}`);
+    }
+    if (!(data instanceof Uint8Array)) {
+      throw new TypeError("Embedded Portable PDB replacement must be a Uint8Array");
+    }
+    const entry = this.pe.debugDirectoryEntries[debugEntryIndex];
+    if (entry.type !== 17 || !entry.embeddedPortablePdb) {
+      throw new UnsupportedFormatError("Debug-directory entry is not an embedded Portable PDB");
+    }
+    if (data.length > entry.sizeOfData) {
+      throw new UnsupportedFormatError(
+        "Embedded Portable PDB replacement must fit within its existing data slot"
+      );
+    }
+    const pdb = parseEmbeddedPortablePdbData(data, 0, data.length);
+    validatePortablePdbAssemblyReferences(pdb, this.tables.counts);
+    const codeView = this.pe.debugDirectoryEntries.find((candidate) =>
+      candidate.codeView?.format === "RSDS"
+    )?.codeView;
+    if (codeView) validatePortablePdbCodeViewIdentity(pdb, codeView);
+
+    const dataOffset = entry.pointerToRawData !== 0
+      ? entry.pointerToRawData
+      : this.pe.rvaToOffset(entry.addressOfRawData, entry.sizeOfData);
+    const dataEnd = dataOffset + entry.sizeOfData;
+    const debugDirectory = this.pe.directories[6];
+    if (debugDirectory?.rva && debugDirectory.size > 0) {
+      const directoryOffset = this.pe.rvaToOffset(debugDirectory.rva, debugDirectory.size);
+      const directoryEnd = directoryOffset + debugDirectory.size;
+      if (dataOffset < directoryEnd && directoryOffset < dataEnd) {
+        throw new UnsupportedFormatError(
+          "Embedded Portable PDB data overlaps the PE debug-directory table"
+        );
+      }
+    }
+    for (let index = 0; index < this.pe.debugDirectoryEntries.length; index++) {
+      if (index === debugEntryIndex) continue;
+      const other = this.pe.debugDirectoryEntries[index];
+      if (other.sizeOfData === 0) continue;
+      const otherOffset = other.pointerToRawData !== 0
+        ? other.pointerToRawData
+        : this.pe.rvaToOffset(other.addressOfRawData, other.sizeOfData);
+      if (dataOffset < otherOffset + other.sizeOfData &&
+          otherOffset < dataEnd) {
+        throw new UnsupportedFormatError(
+          "Embedded Portable PDB data overlaps another PE debug record"
+        );
+      }
+    }
+
+    const debugDirectoryOffset = this.pe.rvaToOffset(
+      debugDirectory.rva,
+      debugDirectory.size
+    );
+    const entrySizeOffset = debugDirectoryOffset + debugEntryIndex * 28 + 16;
+    const sizeBytes = new Uint8Array(4);
+    new DataView(sizeBytes.buffer).setUint32(0, data.length, true);
+    this._patches.push({ offset: dataOffset, bytes: Uint8Array.from(data) });
+    this._patches.push({ offset: entrySizeOffset, bytes: sizeBytes });
+    return this;
+  }
+
+  replaceEmbeddedPortablePdbDocumentName(debugEntryIndex, documentRid, name, separator) {
+    this.#ensureEditable();
+    if (!Number.isInteger(debugEntryIndex) || debugEntryIndex < 0 ||
+        debugEntryIndex >= this.pe.debugDirectoryEntries.length) {
+      throw new RangeError(`Invalid debug-directory entry index ${debugEntryIndex}`);
+    }
+    const entry = this.pe.debugDirectoryEntries[debugEntryIndex];
+    if (entry.type !== 17 || !entry.embeddedPortablePdb) {
+      throw new UnsupportedFormatError("Debug-directory entry is not an embedded Portable PDB");
+    }
+    const data = replacePortablePdbDocumentName(
+      entry.embeddedPortablePdb,
+      documentRid,
+      name,
+      separator
+    );
+    return this.replaceEmbeddedPortablePdb(debugEntryIndex, data);
   }
 
   replaceFieldSignature(rid, signature) {

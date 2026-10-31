@@ -340,6 +340,28 @@ test("strong-name signed PE32+ assemblies load and execute in .NET", {
       entry.type === 17
     )?.embeddedPortablePdb;
     assert.ok(embeddedPdb);
+    const embeddedPdbDebugIndex = assembly.pe.debugDirectoryEntries.findIndex((entry) =>
+      entry.type === 17
+    );
+    const embeddedPdbEntry = assembly.pe.debugDirectoryEntries[embeddedPdbDebugIndex];
+    const embeddedPdbOffset = embeddedPdbEntry.pointerToRawData !== 0
+      ? embeddedPdbEntry.pointerToRawData
+      : assembly.pe.rvaToOffset(
+        embeddedPdbEntry.addressOfRawData,
+        embeddedPdbEntry.sizeOfData
+      );
+    const originalEmbeddedPdb = assembly.pe.bytes.slice(
+      embeddedPdbOffset,
+      embeddedPdbOffset + embeddedPdbEntry.sizeOfData
+    );
+    assert.throws(
+      () => assembly.replaceEmbeddedPortablePdb(
+        embeddedPdbDebugIndex,
+        new Uint8Array(embeddedPdbEntry.sizeOfData + 1)
+      ),
+      /must fit within its existing data slot/
+    );
+    assembly.replaceEmbeddedPortablePdb(embeddedPdbDebugIndex, originalEmbeddedPdb);
     const rewrittenPdbBytes = serializeEmbeddedPortablePdb(embeddedPdb);
     const reparsedPdb = parseEmbeddedPortablePdbData(
       rewrittenPdbBytes,
