@@ -4785,9 +4785,6 @@ export class Assembly {
     if (!Number.isInteger(ownerRid) || ownerRid < 1 || !ownerType) {
       throw new RangeError("Field owner must identify an existing TypeDef");
     }
-    if (ownerType.rid !== this.types.at(-1)?.rid) {
-      throw new UnsupportedFormatError("Fields can only be appended to the last TypeDef row");
-    }
     if (typeof name !== "string" || name.length === 0 || name.includes("\0")) {
       throw new TypeError("Field name must be a non-empty null-free string");
     }
@@ -4811,16 +4808,29 @@ export class Assembly {
         fieldRows.length >= 0x00ffffff) {
       throw new RangeError("Field token row ID exceeds 24-bit range or table counts are inconsistent");
     }
-    const pointerPresent = (this.tables.valid & (1n << 3n)) !== 0n;
-    const pointerRows = this.tables.rows.get(3) ?? [];
-    if (pointerPresent) {
-      const pointedRids = pointerRows.map((pointer) => pointer.Field?.rid);
-      if (pointerRows.length !== fieldRows.length ||
-          pointedRids.some((fieldRid) => !Number.isInteger(fieldRid) || fieldRid < 1 ||
-            fieldRid > fieldRows.length) ||
-          new Set(pointedRids).size !== fieldRows.length) {
-        throw new UnsupportedFormatError("FieldPtr editing requires a one-to-one FieldPtr table");
-      }
+    const typeRows = this.tables.rows.get(2) ?? [];
+    if (typeRows.length !== (this.tables.counts[2] ?? 0)) {
+      throw new FormatError("TypeDef row count is inconsistent with the metadata table header");
+    }
+    const ownerRow = typeRows[ownerRid - 1];
+    if (ownerRow?.rid !== ownerRid || !Number.isInteger(ownerRow.FieldList?.rid)) {
+      throw new FormatError(`TypeDef row ${ownerRid} has an inconsistent FieldList`);
+    }
+    const pointerRows = getBijectivePointerRows(this, 3, 4, "Field");
+    const pointerPresent = pointerRows !== null;
+    const listRows = pointerRows ?? fieldRows;
+    const endRid = typeRows[ownerRid]?.FieldList.rid ?? listRows.length + 1;
+    const ownedRids = pointerRows
+      ? pointerRows.slice(ownerRow.FieldList.rid - 1, endRid - 1)
+        .map((pointer) => pointer.Field.rid)
+      : Array.from(
+        { length: Math.max(0, endRid - ownerRow.FieldList.rid) },
+        (_, index) => ownerRow.FieldList.rid + index
+      );
+    if (endRid !== listRows.length + 1 ||
+        ownedRids.length !== ownerType.fieldRids.length ||
+        ownedRids.some((rid, index) => rid !== ownerType.fieldRids[index])) {
+      throw new UnsupportedFormatError("Field append requires the owner's fields to be contiguous at the end");
     }
     const rid = fieldRows.length + 1;
     const heapStreams = new Map(
@@ -4854,6 +4864,10 @@ export class Assembly {
       });
       this.tables.rows.set(3, pointerRows);
       this.tables.counts[3] = pointerRid;
+    }
+    for (let index = ownerRid; index < typeRows.length; index++) {
+      typeRows[index].FieldList.rid++;
+      typeRows[index].FieldList.raw++;
     }
     ownerType.fieldRids.push(rid);
     ownerType.fields.push({ rid, flags, name, signature: signature.slice() });

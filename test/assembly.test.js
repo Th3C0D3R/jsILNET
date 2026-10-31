@@ -4307,6 +4307,9 @@ test("fields append to the last TypeDef in optimized and pointer-table metadata"
       assembly.tables.rows.set(3, pointers);
       assembly.tables.counts[3] = pointers.length;
       assembly.tables.valid |= 1n << 3n;
+      const pointerOwner = assembly.types.at(-1);
+      pointerOwner.fieldRids.reverse();
+      pointerOwner.fields.reverse();
       for (const typeRow of assembly.tables.get(2)) {
         typeRow.FieldList = {
           raw: typeRow.FieldList.rid,
@@ -4329,7 +4332,7 @@ test("fields append to the last TypeDef in optimized and pointer-table metadata"
       owner: { table: "TypeDef", rid: 1 },
       name: "NotLast",
       signature: Uint8Array.from([0x06, 0x08])
-    }), /last TypeDef/);
+    }), /fields to be contiguous at the end/);
 
     const reparsed = parseAssembly(assembly.serialize());
     const appended = reparsed.types[owner.rid - 1].fields.at(-1);
@@ -4356,6 +4359,61 @@ test("fields append to the last TypeDef in optimized and pointer-table metadata"
       assert.equal(afterRemoval.types[owner.rid - 1].fields.at(-1).name, "SurvivingPointerField");
       assert.equal(afterRemoval.tables.get(3).at(-1).Field.rid, token & 0x00ffffff);
     }
+  }
+});
+
+test("fields append before later empty TypeDef ownership ranges", () => {
+  for (const usePointerTable of [false, true]) {
+    const assembly = parseAssembly(fixture);
+    const targetOwner = assembly.types.at(-2);
+    const laterOwner = assembly.types.at(-1);
+    const targetRow = assembly.tables.row(2, targetOwner.rid);
+    const laterRow = assembly.tables.row(2, laterOwner.rid);
+    assert.ok(targetOwner && laterOwner && targetRow && laterRow);
+    if (usePointerTable) {
+      const tableStream = assembly.metadataRoot.streams.get("#~");
+      assert.ok(tableStream);
+      assembly.metadataRoot.streams.delete("#~");
+      assembly.metadataRoot.streams.set("#-", tableStream);
+      const pointerRows = assembly.tables.get(4).map((field, index) => ({
+        table: 3,
+        tableName: metadataTableNames[3],
+        rid: index + 1,
+        Field: {
+          raw: field.rid,
+          table: 4,
+          tableName: metadataTableNames[4],
+          rid: field.rid
+        }
+      }));
+      assembly.tables.rows.set(3, pointerRows);
+      assembly.tables.counts[3] = pointerRows.length;
+      assembly.tables.valid |= 1n << 3n;
+      for (const row of assembly.tables.get(2)) {
+        row.FieldList = {
+          ...row.FieldList,
+          table: 3,
+          tableName: metadataTableNames[3]
+        };
+      }
+    }
+
+    targetOwner.fieldRids.push(...laterOwner.fieldRids);
+    targetOwner.fields.push(...laterOwner.fields);
+    laterOwner.fieldRids = [];
+    laterOwner.fields = [];
+    laterRow.FieldList.rid = assembly.tables.counts[4] + 1;
+    laterRow.FieldList.raw = laterRow.FieldList.rid;
+    const token = assembly.addField({
+      owner: { table: "TypeDef", rid: targetOwner.rid },
+      name: "EarlierOwnerField",
+      signature: Uint8Array.from([0x06, 0x08])
+    });
+    assert.equal(token, 0x04000000 + assembly.tables.counts[4]);
+    assert.equal(laterRow.FieldList.rid, assembly.tables.counts[4] + 1);
+    const reparsed = parseAssembly(assembly.serialize());
+    assert.equal(reparsed.types[targetOwner.rid - 1].fields.at(-1).name, "EarlierOwnerField");
+    assert.equal(reparsed.types[laterOwner.rid - 1].fields.length, 0);
   }
 });
 
@@ -4395,7 +4453,7 @@ test("field append refuses a non-bijective FieldPtr table without mutation", () 
     owner: { table: "TypeDef", rid: owner.rid },
     name: "RejectedField",
     signature: Uint8Array.from([0x06, 0x08])
-  }), /one-to-one FieldPtr table/);
+  }), /one-to-one mapping to Field/);
   assert.equal(assembly.modified, false);
   assert.deepEqual(Buffer.from(assembly.serialize()), before);
 });
