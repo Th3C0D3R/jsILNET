@@ -55,6 +55,7 @@ Invalid or unsupported structures and edits raise `FormatError` or `UnsupportedF
 `insertDeclSecurity` inserts by Parent into an already Parent-ordered table and returns `{ rid, tokenMap }`, remapping shifted DeclSecurity references in metadata, custom attributes, CIL, and ENC records.
 `insertNestedClass` inserts by NestedClass into an already ordered table and returns `{ rid, tokenMap }`, remapping shifted NestedClass tokens in ENC records.
 `insertMethodImpl` inserts by Class into an already Class-ordered table and returns `{ rid, tokenMap }`, remapping shifted MethodImpl tokens in ENC records.
+`insertConstant` inserts by Parent into an already Parent-ordered table and returns `{ token, rid, tokenMap }`, remapping shifted Constant tokens in metadata, CIL operands, and ENC records.
 
 `replaceTypeRef` updates a TypeRef name, namespace, or resolution scope without changing its token; `removeTypeRef` rejects live references and remaps surviving metadata, signature, and CIL references.
 

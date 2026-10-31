@@ -3131,6 +3131,59 @@ test("Constant rows append and replace encoded values without changing their par
   assert.equal(withoutConstant.tables.counts[11], 0);
 });
 
+test("sorted Constant insertion remaps later ENC tokens", () => {
+  const assembly = parseAssembly(withoutDebugDirectory());
+  assembly.tables.sorted |= 1n << 11n;
+  const existingParents = new Set((assembly.tables.rows.get(11) ?? []).map((row) =>
+    `${row.Parent.target.table}:${row.Parent.target.rid}`
+  ));
+  const candidates = [
+    ...(assembly.tables.rows.get(4) ?? []).map((row) => ({
+      parent: { table: "Field", rid: row.rid },
+      tableId: 4,
+      key: encodeCodedIndex(4, row.rid, "HasConstant")
+    })),
+    ...(assembly.tables.rows.get(8) ?? []).map((row) => ({
+      parent: { table: "Param", rid: row.rid },
+      tableId: 8,
+      key: encodeCodedIndex(8, row.rid, "HasConstant")
+    })),
+    ...(assembly.tables.rows.get(23) ?? []).map((row) => ({
+      parent: { table: "Property", rid: row.rid },
+      tableId: 23,
+      key: encodeCodedIndex(23, row.rid, "HasConstant")
+    }))
+  ].filter(({ parent, tableId }) =>
+    !existingParents.has(`${tableId}:${parent.rid}`)
+  );
+  const lower = candidates.find((candidate) =>
+    candidates.some((other) => other.key > candidate.key)
+  );
+  const higher = candidates.find((candidate) => candidate.key > lower?.key);
+  assert.ok(lower);
+  assert.ok(higher);
+
+  const first = assembly.insertConstant({
+    parent: higher.parent,
+    type: 0x08,
+    value: Uint8Array.of(1, 0, 0, 0)
+  });
+  addEncToken(assembly, 31, 0x0b000000 + first.rid);
+  const inserted = assembly.insertConstant({
+    parent: lower.parent,
+    type: 0x08,
+    value: Uint8Array.of(2, 0, 0, 0)
+  });
+
+  assert.equal(inserted.token, 0x0b000000 + inserted.rid);
+  assert.equal(inserted.tokenMap.get(first.token), first.token + 1);
+  assert.equal(assembly.tables.counts[11], (assembly.tables.rows.get(11) ?? []).length);
+  assert.equal(assembly.tables.get(31).at(-1).Token, first.token + 1);
+  const reparsed = parseAssembly(assembly.serialize());
+  assert.equal(reparsed.tables.get(31).at(-1).Token, first.token + 1);
+  assert.equal(reparsed.tables.row(11, inserted.rid).Parent.raw, lower.key);
+});
+
 test("MethodDef names and flags can be replaced without changing row identity", () => {
   const assembly = parseAssembly(fixture);
   const method = assembly.methods[0];

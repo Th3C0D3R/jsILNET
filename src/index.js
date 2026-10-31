@@ -2563,6 +2563,14 @@ export class Assembly {
   }
 
   addConstant({ parent, type, value }) {
+    return this.#writeConstant({ parent, type, value }, false).token;
+  }
+
+  insertConstant({ parent, type, value }) {
+    return this.#writeConstant({ parent, type, value }, true);
+  }
+
+  #writeConstant({ parent, type, value }, insertSorted) {
     this.#ensureEditable();
     const parentTable = metadataTableId(parent?.table);
     if (![4, 8, 23].includes(parentTable) || !Number.isInteger(parent.rid) ||
@@ -2573,7 +2581,7 @@ export class Assembly {
     const parentRow = this.tables.row(parentTable, parent.rid);
     if (!parentRow) throw new FormatError("Constant parent row is missing from its metadata table");
     const rows = this.tables.rows.get(11) ?? [];
-    if (rows.length !== this.tables.counts[11] || rows.length >= 0xffffffff) {
+    if (rows.length !== this.tables.counts[11] || rows.length >= 0x00ffffff) {
       throw new RangeError("Constant row count is inconsistent or exceeds the metadata table limit");
     }
     if (rows.some((row) =>
@@ -2582,12 +2590,25 @@ export class Assembly {
       throw new FormatError("The Constant table already has a value for this parent");
     }
     const encodedParent = encodeCodedIndex(parentTable, parent.rid, "HasConstant");
-    if ((this.tables.sorted & (1n << 11n)) !== 0n &&
+    let insertionIndex = rows.length;
+    if (insertSorted) {
+      for (let index = 1; index < rows.length; index++) {
+        if (rows[index - 1].Parent.raw > rows[index].Parent.raw) {
+          throw new UnsupportedFormatError(
+            "Sorted Constant insertion requires rows already ordered by Parent"
+          );
+        }
+      }
+      const laterParent = rows.findIndex((row) => row.Parent.raw > encodedParent);
+      if (laterParent !== -1) insertionIndex = laterParent;
+    } else if ((this.tables.sorted & (1n << 11n)) !== 0n &&
         rows.at(-1)?.Parent.raw > encodedParent) {
-      throw new UnsupportedFormatError(
-        "Constant append would violate declared Parent ordering"
-      );
+      throw new UnsupportedFormatError("Constant append would violate declared Parent ordering");
     }
+    const rid = insertionIndex + 1;
+    const { tokenMap, rowChanges, tokenUpdates, patches } = insertSorted
+      ? this.#prepareTokenRowInsertion(11, rid, rows.length, "Constant")
+      : { tokenMap: new Map(), rowChanges: [], tokenUpdates: [], patches: [] };
 
     const heapStreams = new Map(
       [...(this._heapStreams ?? new Map([...this.metadataRoot.streams].map(([streamName, stream]) =>
@@ -2596,8 +2617,7 @@ export class Assembly {
     );
     const blob = appendBlobHeap(heapStreams.get("#Blob") ?? new Uint8Array(), value);
     heapStreams.set("#Blob", blob.heap);
-    const rid = rows.length + 1;
-    rows.push({
+    const newRow = {
       table: 11,
       tableName: metadataTableNames[11],
       rid,
@@ -2608,14 +2628,21 @@ export class Assembly {
         target: { table: parentTable, tableName: metadataTableNames[parentTable], rid: parent.rid }
       },
       Value: blob.index
-    });
+    };
+    for (const change of rowChanges) change.row[change.columnName] = change.value;
+    for (const row of rows) {
+      if (row.rid >= rid) row.rid++;
+    }
+    rows.splice(insertionIndex, 0, newRow);
     this.tables.rows.set(11, rows);
-    this.tables.counts[11] = rid;
+    this.tables.counts[11] = rows.length;
     this.tables.valid |= 1n << 11n;
     this._heapStreams = heapStreams;
     this.#refreshHeaps();
+    for (const update of tokenUpdates) update.instruction.operand.value = update.replacement;
+    this._patches.push(...patches);
     this._metadataDirty = true;
-    return 0x0b000000 + rid;
+    return { token: 0x0b000000 + rid, rid, tokenMap };
   }
 
   replaceConstant(rid, { type, value } = {}) {
