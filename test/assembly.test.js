@@ -4618,6 +4618,53 @@ test("fields append before later empty TypeDef ownership ranges", () => {
   }
 });
 
+test("insertField adds fields to non-trailing owners and remaps optimized Field tokens", () => {
+  for (const pointerMode of [false, true]) {
+    const assembly = parseAssembly(withoutDebugDirectory());
+    assembly.tables.sorted &= ~(1n << 12n);
+    if (pointerMode) {
+      usePointerTable(assembly, {
+        pointerId: 3,
+        targetId: 4,
+        column: "Field",
+        listTableId: 2,
+        listColumn: "FieldList",
+        pointerName: "FieldPtr",
+        targetName: "Field"
+      });
+    }
+    const owner = assembly.types.at(-2);
+    const laterOwner = assembly.types.at(-1);
+    const oldOwnerFields = [...owner.fieldRids];
+    const oldLaterFields = [...laterOwner.fieldRids];
+    assert.ok(oldLaterFields.length > 0);
+    const oldFieldCount = assembly.tables.counts[4];
+    const firstLaterField = oldLaterFields[0];
+    const result = assembly.insertField({
+      owner: { table: "TypeDef", rid: owner.rid },
+      name: "InsertedOwnerField",
+      signature: Uint8Array.of(0x06, 0x08)
+    });
+    const insertedRid = result.token & 0x00ffffff;
+    if (pointerMode) {
+      assert.equal(insertedRid, oldFieldCount + 1);
+      assert.equal(result.tokenMap.size, 0);
+    } else {
+      assert.equal(insertedRid, firstLaterField);
+      assert.equal(result.tokenMap.get(0x04000000 + firstLaterField),
+        0x04000000 + firstLaterField + 1);
+    }
+    assert.deepEqual(owner.fieldRids, [...oldOwnerFields, insertedRid]);
+    assert.deepEqual(laterOwner.fieldRids, oldLaterFields.map((rid) =>
+      !pointerMode && rid >= insertedRid ? rid + 1 : rid
+    ));
+
+    const reparsed = parseAssembly(assembly.serialize());
+    assert.equal(reparsed.types[owner.rid - 1].fields.at(-1).name, "InsertedOwnerField");
+    assert.deepEqual(reparsed.types[laterOwner.rid - 1].fieldRids, laterOwner.fieldRids);
+  }
+});
+
 test("field append refuses a non-bijective FieldPtr table without mutation", () => {
   const assembly = parseAssembly(fixture);
   const tableStream = assembly.metadataRoot.streams.get("#~");

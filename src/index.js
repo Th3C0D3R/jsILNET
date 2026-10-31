@@ -5015,6 +5015,14 @@ export class Assembly {
   }
 
   addField({ owner, name, flags = 0, signature }) {
+    return this.#writeField({ owner, name, flags, signature }, false).token;
+  }
+
+  insertField({ owner, name, flags = 0, signature }) {
+    return this.#writeField({ owner, name, flags, signature }, true);
+  }
+
+  #writeField({ owner, name, flags, signature }, insertIntoOwner) {
     this.#ensureEditable();
     const ownerRid = metadataTableId(owner?.table) === 2 ? owner.rid : 0;
     const ownerType = this.types[ownerRid - 1];
@@ -5040,6 +5048,7 @@ export class Assembly {
       this
     );
     const fieldRows = this.tables.rows.get(4) ?? [];
+    const originalFieldCount = fieldRows.length;
     if (fieldRows.length !== this.tables.counts[4] ||
         fieldRows.length >= 0x00ffffff) {
       throw new RangeError("Field token row ID exceeds 24-bit range or table counts are inconsistent");
@@ -5052,8 +5061,11 @@ export class Assembly {
     if (ownerRow?.rid !== ownerRid || !Number.isInteger(ownerRow.FieldList?.rid)) {
       throw new FormatError(`TypeDef row ${ownerRid} has an inconsistent FieldList`);
     }
+    const pointerPresent = (this.tables.valid & (1n << 3n)) !== 0n;
     const pointerRows = getBijectivePointerRows(this, 3, 4, "Field");
-    const pointerPresent = pointerRows !== null;
+    if (pointerPresent && !pointerRows) {
+      throw new FormatError("FieldPtr must be a one-to-one mapping to Field rows");
+    }
     const listRows = pointerRows ?? fieldRows;
     const endRid = typeRows[ownerRid]?.FieldList.rid ?? listRows.length + 1;
     const ownedRids = pointerRows
@@ -5063,12 +5075,22 @@ export class Assembly {
         { length: Math.max(0, endRid - ownerRow.FieldList.rid) },
         (_, index) => ownerRow.FieldList.rid + index
       );
-    if (endRid !== listRows.length + 1 ||
+    if (endRid > listRows.length + 1 ||
         ownedRids.length !== ownerType.fieldRids.length ||
         ownedRids.some((rid, index) => rid !== ownerType.fieldRids[index])) {
+      throw new UnsupportedFormatError("Field insertion requires a valid contiguous owner range");
+    }
+    if (!insertIntoOwner && endRid !== listRows.length + 1) {
       throw new UnsupportedFormatError("Field append requires the owner's fields to be contiguous at the end");
     }
-    const rid = fieldRows.length + 1;
+    const rid = pointerRows ? fieldRows.length + 1 : endRid;
+    const pointerInsertionIndex = pointerRows
+      ? ownerRow.FieldList.rid - 1 + ownedRids.length
+      : -1;
+    const pointerRid = pointerInsertionIndex + 1;
+    const { tokenMap, rowChanges, tokenUpdates, patches } = pointerRows
+      ? { tokenMap: new Map(), rowChanges: [], tokenUpdates: [], patches: [] }
+      : this.#prepareTokenRowInsertion(4, rid, fieldRows.length, "Field");
     const heapStreams = new Map(
       [...(this._heapStreams ?? new Map([...this.metadataRoot.streams].map(([streamName, stream]) =>
         [streamName, stream.bytes]
@@ -5086,31 +5108,49 @@ export class Assembly {
       Name: stringHeap.index,
       Signature: blobHeap.index
     };
-    fieldRows.push(fieldRow);
+    for (const change of rowChanges) change.row[change.columnName] = change.value;
+    for (const row of fieldRows) {
+      if (row.rid >= rid) row.rid++;
+    }
+    fieldRows.splice(rid - 1, 0, fieldRow);
     this.tables.rows.set(4, fieldRows);
     this.tables.valid |= 1n << 4n;
-    this.tables.counts[4] = rid;
-    if (pointerPresent) {
-      const pointerRid = pointerRows.length + 1;
-      pointerRows.push({
+    this.tables.counts[4] = fieldRows.length;
+    if (pointerRows) {
+      for (const row of pointerRows) {
+        if (row.rid >= pointerRid) row.rid++;
+      }
+      pointerRows.splice(pointerInsertionIndex, 0, {
         table: 3,
         tableName: metadataTableNames[3],
         rid: pointerRid,
         Field: { raw: rid, table: 4, tableName: metadataTableNames[4], rid }
       });
       this.tables.rows.set(3, pointerRows);
-      this.tables.counts[3] = pointerRid;
+      this.tables.counts[3] = pointerRows.length;
     }
-    for (let index = ownerRid; index < typeRows.length; index++) {
-      typeRows[index].FieldList.rid++;
-      typeRows[index].FieldList.raw++;
+    if (pointerRows || rid > originalFieldCount) {
+      for (let index = ownerRid; index < typeRows.length; index++) {
+        typeRows[index].FieldList.rid++;
+        typeRows[index].FieldList.raw++;
+      }
+    }
+    for (const type of this.types) {
+      if (!pointerRows) {
+        type.fieldRids = type.fieldRids.map((fieldRid) => fieldRid >= rid ? fieldRid + 1 : fieldRid);
+        for (const field of type.fields) {
+          if (field.rid >= rid) field.rid++;
+        }
+      }
     }
     ownerType.fieldRids.push(rid);
     ownerType.fields.push({ rid, flags, name, signature: signature.slice() });
     this._heapStreams = heapStreams;
     this.#refreshHeaps();
+    for (const update of tokenUpdates) update.instruction.operand.value = update.replacement;
+    this._patches.push(...patches);
     this._metadataDirty = true;
-    return 0x04000000 + rid;
+    return { token: 0x04000000 + rid, tokenMap };
   }
 
   addMethodSemantics({ methodRid, association, semantics }) {
