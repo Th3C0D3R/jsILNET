@@ -484,6 +484,26 @@ function collectCatchTokenRemaps(body, tableId, rowCount, remapRid, tableName, r
   return { patches, updates };
 }
 
+function collectEncTokenRemaps(tables, tokenTableId, remapRid) {
+  const changes = [];
+  for (const tableId of [30, 31]) {
+    for (const row of tables.get(tableId)) {
+      const token = row.Token;
+      if ((token >>> 24) !== tokenTableId) continue;
+      const rid = token & 0x00ffffff;
+      const remappedRid = remapRid(rid);
+      if (remappedRid !== rid) {
+        changes.push({
+          row,
+          columnName: "Token",
+          value: (tokenTableId << 24) | remappedRid
+        });
+      }
+    }
+  }
+  return changes;
+}
+
 function getBijectivePointerRows(assembly, pointerTableId, targetTableId, columnName) {
   if ((assembly.tables.valid & (1n << BigInt(pointerTableId))) === 0n) return null;
   const pointers = assembly.tables.rows.get(pointerTableId) ?? [];
@@ -5187,6 +5207,7 @@ export class Assembly {
       }
     }
 
+    rowChanges.push(...collectEncTokenRemaps(this.tables, 10, remappedRid));
     const tokenUpdates = [];
     const patches = [];
     for (const method of this.methods) {
@@ -5641,6 +5662,7 @@ export class Assembly {
         }
       }
     }
+    rowChanges.push(...collectEncTokenRemaps(this.tables, 1, remappedRid));
     const changesByRow = new Map();
     for (const change of rowChanges) {
       if (!changesByRow.has(change.row)) changesByRow.set(change.row, new Map());
@@ -7336,6 +7358,7 @@ export class Assembly {
         }
       }
     }
+    rowChanges.push(...collectEncTokenRemaps(this.tables, 43, remappedRid));
     const customAttributeChanges = new Map(
       rowChanges.filter((change) => change.row.table === 12)
         .map((change) => [change.row, change.value])

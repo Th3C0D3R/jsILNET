@@ -64,6 +64,18 @@ function setCatchClauseToken(assembly, token) {
   clause.classTokenOrFilterOffset = token;
 }
 
+function addEncToken(assembly, tableId, token) {
+  const rows = assembly.tables.rows.get(tableId) ?? [];
+  const tableName = tableId === 30 ? "ENCLog" : "ENCMap";
+  const row = { table: tableId, tableName, rid: rows.length + 1, Token: token };
+  if (tableId === 30) row.FuncCode = 0;
+  rows.push(row);
+  assembly.tables.rows.set(tableId, rows);
+  assembly.tables.counts[tableId] = rows.length;
+  assembly.tables.valid |= 1n << BigInt(tableId);
+  assembly._metadataDirty = true;
+}
+
 function addExtraPEDataDirectory(input) {
   const pe = parsePE(input);
   const delta = 8;
@@ -4213,6 +4225,8 @@ test("sorted MemberRef insertion remaps table, IL, and returned tokens", () => {
     method: { table: "MemberRef", rid: originalToken & 0x00ffffff },
     instantiation: Uint8Array.from([0x0a, 0x01, 0x08])
   });
+  addEncToken(assembly, 30, originalToken);
+  addEncToken(assembly, 31, originalToken);
   const callSite = assembly.methods.map((method) => ({
     method,
     instruction: assembly.getInstructions(method.rid).find((item) => item.opcode.name === "call")
@@ -4225,9 +4239,13 @@ test("sorted MemberRef insertion remaps table, IL, and returned tokens", () => {
     signature: Uint8Array.from([0x20, 0x00, 0x0e])
   });
   assert.equal(insertion.tokenMap.get(originalToken), originalToken + 1);
+  assert.equal(assembly.tables.get(30)[0].Token, insertion.tokenMap.get(originalToken));
+  assert.equal(assembly.tables.get(31)[0].Token, insertion.tokenMap.get(originalToken));
   const expectedConstructorToken = insertion.tokenMap.get(attributeConstructorToken) ?? attributeConstructorToken;
   assert.equal(assembly.customAttributes[0].constructor.rid, expectedConstructorToken & 0x00ffffff);
   const reparsed = parseAssembly(assembly.serialize());
+  assert.equal(reparsed.tables.get(30)[0].Token, insertion.tokenMap.get(originalToken));
+  assert.equal(reparsed.tables.get(31)[0].Token, insertion.tokenMap.get(originalToken));
   assert.equal(reparsed.customAttributes[0].constructor.rid, expectedConstructorToken & 0x00ffffff);
   const rewrittenRows = reparsed.tables.get("MemberRef");
   for (let index = 1; index < rewrittenRows.length; index++) {
@@ -4262,6 +4280,8 @@ test("sorted TypeRef insertion remaps metadata references and signature blobs", 
   }
   const customAttributeRow = assembly.tables.row(12, 1);
   setCatchClauseToken(assembly, 0x01000005);
+  addEncToken(assembly, 30, 0x01000005);
+  addEncToken(assembly, 31, 0x01000005);
   customAttributeRow.Parent.raw = encodeCodedIndex(1, 5, "HasCustomAttribute");
   customAttributeRow.Parent.target = { table: 1, tableName: "TypeRef", rid: 5 };
   assembly.customAttributes[0].parent = customAttributeRow.Parent.target;
@@ -4287,6 +4307,8 @@ test("sorted TypeRef insertion remaps metadata references and signature blobs", 
     reparsed.getMethodBody(finallyMethod.rid).sections[0].clauses[0].classTokenOrFilterOffset,
     result.tokenMap.get(0x01000005)
   );
+  assert.equal(reparsed.tables.get(30)[0].Token, result.tokenMap.get(0x01000005));
+  assert.equal(reparsed.tables.get(31)[0].Token, result.tokenMap.get(0x01000005));
   assert.equal(reparsed.typeRefs[(result.token & 0x00ffffff) - 1].name, "InsertedTypeRef");
   assert.equal(
     reparsed.typeRefs[(result.token & 0x00ffffff) - 1].resolutionScope.rid,
@@ -4453,6 +4475,8 @@ test("sorted MethodSpec insertion preserves method references and serializes its
     name: "EarlierGenericMethod",
     signature: genericMember.signature
   });
+  addEncToken(assembly, 30, 0x2b000000 + oldMethodSpecRid);
+  addEncToken(assembly, 31, 0x2b000000 + oldMethodSpecRid);
   const customAttributeRow = assembly.tables.row(12, 1);
   customAttributeRow.Parent.raw = encodeCodedIndex(43, oldMethodSpecRid, "HasCustomAttribute");
   customAttributeRow.Parent.target = {
@@ -4478,8 +4502,12 @@ test("sorted MethodSpec insertion preserves method references and serializes its
     result.tokenMap.get(0x2b000000 + oldMethodSpecRid),
     0x2b000000 + oldMethodSpecRid + 1
   );
+  assert.equal(assembly.tables.get(30)[0].Token, result.tokenMap.get(0x2b000000 + oldMethodSpecRid));
+  assert.equal(assembly.tables.get(31)[0].Token, result.tokenMap.get(0x2b000000 + oldMethodSpecRid));
   assert.equal(assembly.customAttributes[0].parent.rid, oldMethodSpecRid + 1);
   const reparsed = parseAssembly(assembly.serialize());
+  assert.equal(reparsed.tables.get(30)[0].Token, result.tokenMap.get(0x2b000000 + oldMethodSpecRid));
+  assert.equal(reparsed.tables.get(31)[0].Token, result.tokenMap.get(0x2b000000 + oldMethodSpecRid));
   assert.equal(reparsed.customAttributes[0].parent.rid, oldMethodSpecRid + 1);
   assert.equal(reparsed.methodSpecs.length, 2);
   assert.equal(reparsed.methodSpecs[1].rid, oldMethodSpecRid + 1);
