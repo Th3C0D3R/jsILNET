@@ -171,6 +171,20 @@ test("classic PDB symbol decoding exposes public, data, and procedure names", ()
     kind: "namespace",
     name: "NS"
   });
+  const compileInfo = new Uint8Array(26);
+  const compileView = new DataView(compileInfo.buffer);
+  compileView.setUint32(0, 3, true);
+  compileView.setUint16(4, 0x8664, true);
+  for (let index = 0; index < 8; index++) compileView.setUint16(6 + index * 2, index + 1, true);
+  compileInfo.set([0x63, 0x76, 0x31, 0], 22);
+  assert.deepEqual(decodeRecord(0x113c, compileInfo), {
+    kind: "compileInfo",
+    flags: 3,
+    machine: 0x8664,
+    frontEndVersion: { major: 1, minor: 2, build: 3, qfe: 4 },
+    backEndVersion: { major: 5, minor: 6, build: 7, qfe: 8 },
+    version: "cv1"
+  });
 
   const procedure = new Uint8Array(4 + 2 + 2 + 35 + 5);
   const procedureView = new DataView(procedure.buffer);

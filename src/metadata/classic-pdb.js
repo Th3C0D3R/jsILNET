@@ -351,6 +351,27 @@ function decodeCodeViewSymbol(kind, data) {
       name: readCodeViewName(data, 0, "namespace")
     };
   }
+  if (kind === 0x113c) {
+    if (data.length < 23) throw new FormatError("Classic PDB compile-info symbol is truncated");
+    return {
+      kind: "compileInfo",
+      flags: view.getUint32(0, true),
+      machine: view.getUint16(4, true),
+      frontEndVersion: {
+        major: view.getUint16(6, true),
+        minor: view.getUint16(8, true),
+        build: view.getUint16(10, true),
+        qfe: view.getUint16(12, true)
+      },
+      backEndVersion: {
+        major: view.getUint16(14, true),
+        minor: view.getUint16(16, true),
+        build: view.getUint16(18, true),
+        qfe: view.getUint16(20, true)
+      },
+      version: readCodeViewName(data, 22, "compile-info", true)
+    };
+  }
   if ([0x110f, 0x1110, 0x1146, 0x1147].includes(kind)) {
     if (data.length < 36) throw new FormatError("Classic PDB procedure symbol record is truncated");
     return {
