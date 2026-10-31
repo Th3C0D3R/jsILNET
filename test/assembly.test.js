@@ -7758,6 +7758,15 @@ test("custom-attribute encoding rejects invalid Unicode and enum encodings", () 
       value: true
     }]
   }, []), /enum underlying type/);
+  assert.throws(() => encodeCustomAttribute({
+    fixedArguments: [],
+    namedArguments: [{
+      kind: "field",
+      type: { kind: "enum", name: null, elementType: 0x08 },
+      name: "Value",
+      value: 1
+    }]
+  }, []), /enum types require a name/);
 });
 
 test("binary and XML PermissionSets encode and parse round-trip", () => {

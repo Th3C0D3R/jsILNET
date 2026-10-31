@@ -227,6 +227,9 @@ function writeFieldOrPropertyType(output, type, depth = 0) {
     if (!enumTypes.has(type.elementType)) {
       throw new UnsupportedFormatError("Unsupported custom-attribute enum underlying type");
     }
+    if (typeof type.name !== "string") {
+      throw new TypeError("Custom-attribute enum types require a name");
+    }
     output.push(0x55);
     writeSerString(output, type.name);
   } else {
