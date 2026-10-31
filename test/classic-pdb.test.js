@@ -120,6 +120,13 @@ test("classic PDB symbol decoding exposes public, data, and procedure names", ()
     segment: 2,
     name: "glo"
   });
+  assert.deepEqual(decodeRecord(0x1113, data.subarray(8)), {
+    kind: "threadData",
+    typeIndex: 0x1000,
+    offset: 0x40,
+    segment: 2,
+    name: "glo"
+  });
 
   const procedure = new Uint8Array(4 + 2 + 2 + 35 + 5);
   const procedureView = new DataView(procedure.buffer);

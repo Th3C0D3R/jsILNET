@@ -308,6 +308,16 @@ function decodeCodeViewSymbol(kind, data) {
       name: readCodeViewName(data, 4 + numeric.size, "constant symbol")
     };
   }
+  if (kind === 0x1112 || kind === 0x1113) {
+    if (data.length < 11) throw new FormatError("Classic PDB thread-data symbol is truncated");
+    return {
+      kind: "threadData",
+      typeIndex: view.getUint32(0, true),
+      offset: view.getUint32(4, true),
+      segment: view.getUint16(8, true),
+      name: readCodeViewName(data, 10, "thread-data symbol")
+    };
+  }
   if ([0x110f, 0x1110, 0x1146, 0x1147].includes(kind)) {
     if (data.length < 36) throw new FormatError("Classic PDB procedure symbol record is truncated");
     return {
