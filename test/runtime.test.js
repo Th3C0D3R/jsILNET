@@ -6,6 +6,8 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  decodePortablePdbSequencePoints,
+  encodePortablePdbSequencePoints,
   parseAssembly,
   parseClassicPdb,
   parsePE,
@@ -317,6 +319,22 @@ test("strong-name signed PE32+ assemblies load and execute in .NET", {
     assert.ok(embeddedPdb.heaps.blobs);
     assert.ok(embeddedPdb.documents.some((document) => document.name.length > 0));
     assert.ok(embeddedPdb.methodDebugInformation.some((row) => row.sequencePoints.length > 0));
+    const methodDebugInfo = embeddedPdb.methodDebugInformation.find((row) =>
+      row.sequencePoints.length > 0
+    );
+    const sequencePointContext = {
+      documentRid: methodDebugInfo.Document.rid,
+      documentCount: embeddedPdb.documents.length,
+      localSignatureCount: assembly.tables.counts[17]
+    };
+    const sequencePointBlob = encodePortablePdbSequencePoints(methodDebugInfo, sequencePointContext);
+    assert.deepEqual(
+      decodePortablePdbSequencePoints(sequencePointBlob, sequencePointContext),
+      {
+        localSignatureRid: methodDebugInfo.localSignatureRid,
+        points: methodDebugInfo.sequencePoints
+      }
+    );
     assembly.replaceStrongNamePublicKey(
       generateKeyPairSync("rsa", { modulusLength: 1024 }).privateKey
     );
