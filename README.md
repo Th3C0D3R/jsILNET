@@ -82,6 +82,8 @@ Invalid or unsupported structures and edits raise `FormatError` or `UnsupportedF
 
 `replaceMemberRef` updates a MemberRef's name, parent, or signature without changing its token; it validates generic context (including arity inferred from a direct TypeRef parent's backtick suffix) and sorted-row order, preserves MethodSpec arity, and refuses edits to rows used as custom-attribute constructors.
 
+An external TypeRef name without an arity suffix has unknown generic arity; generic variables in its MemberRef signatures are preserved rather than incorrectly rejected as if the type were nongeneric.
+
 `removeTypeSpec` rejects live references and remaps surviving TypeDefOrRef metadata indexes, signature references, and CIL tokens.
 
 `replaceAssemblyRef` updates version, flags, identity strings, public-key/token bytes, or hash bytes without changing the AssemblyRef token. `replaceFile` updates a File row's name, flags, or hash without changing its token or breaking linked ManifestResource references. `addAssemblyProcessor`/`replaceAssemblyProcessor`/`removeAssemblyProcessor`, the corresponding `AssemblyOS` methods, and `AssemblyRefProcessor`/`AssemblyRefOS` methods provide validated platform-table CRUD. Processor/platform fields are checked as unsigned 32-bit values, AssemblyRef links must resolve, and removal is refused when unknown metadata streams could contain references.
