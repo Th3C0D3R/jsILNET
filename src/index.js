@@ -30,6 +30,7 @@ import { parseManifestResources } from "./metadata/resources.js";
 import {
   validatePortablePdbAssemblyReferences,
   validatePortablePdbCodeViewIdentity,
+  appendEmbeddedPortablePdbMethod as appendPortablePdbMethod,
   removeEmbeddedPortablePdbMethod as removePortablePdbMethod,
   refreshEmbeddedPortablePdbId,
   replaceEmbeddedPortablePdbMethodOffsets as replacePortablePdbMethodOffsets,
@@ -4392,9 +4393,12 @@ export class Assembly {
 
   #writeMethod({ owner, name, flags, implFlags = 0, signature, body: bodyBytes }, insertIntoOwner) {
     this.#ensureEditable();
-    if (this.pe.debugDirectoryEntries.some((entry) => entry.embeddedPortablePdb)) {
+    const embeddedPdbIndices = this.pe.debugDirectoryEntries.flatMap((entry, index) =>
+      entry.embeddedPortablePdb ? [index] : []
+    );
+    if (embeddedPdbIndices.length > 1) {
       throw new UnsupportedFormatError(
-        "MethodDef rows cannot be added while an embedded Portable PDB is present because its method rows are not updated"
+        "MethodDef insertion supports only one embedded Portable PDB"
       );
     }
     const ownerRid = metadataTableId(owner?.table) === 2 ? owner.rid : 0;
@@ -4491,6 +4495,11 @@ export class Assembly {
       throw new FormatError("ParamPtr must be a one-to-one mapping to Param rows");
     }
     const rid = pointerRows ? methodRows.length + 1 : endRid;
+    if (embeddedPdbIndices.length === 1 && rid !== originalMethodCount + 1) {
+      throw new UnsupportedFormatError(
+        "MethodDef RID remapping cannot be combined with an embedded Portable PDB"
+      );
+    }
     const pointerInsertionIndex = pointerRows
       ? ownerRow.MethodList.rid - 1 + ownedRids.length
       : -1;
@@ -4529,6 +4538,20 @@ export class Assembly {
       cliEntryPointRid >= rid
       ? cliEntryPointToken + 1
       : cliEntryPointToken;
+    let updatedEmbeddedPdb = null;
+    let updatedCounts = null;
+    if (embeddedPdbIndices.length === 1) {
+      updatedCounts = [...this.tables.counts];
+      updatedCounts[6]++;
+      if (pointerRows) updatedCounts[5]++;
+      const debugEntryIndex = embeddedPdbIndices[0];
+      const debugEntry = this.pe.debugDirectoryEntries[debugEntryIndex];
+      updatedEmbeddedPdb = appendPortablePdbMethod(
+        this.#getPortablePdbForEdit(debugEntryIndex, debugEntry),
+        this.tables.counts,
+        updatedCounts
+      );
+    }
     const insertedBody = hasBody ? bodyBytes.slice() : null;
     if (parsedBody && insertedBody) {
       for (const instruction of parsedBody.instructions) {
@@ -4583,6 +4606,13 @@ export class Assembly {
       genericParams: [],
       row
     };
+    if (updatedEmbeddedPdb) {
+      this.#replaceEmbeddedPortablePdb(
+        embeddedPdbIndices[0],
+        updatedEmbeddedPdb,
+        updatedCounts
+      );
+    }
     for (const change of rowChanges) change.row[change.columnName] = change.value;
     for (const existingRow of methodRows) {
       if (existingRow.rid >= rid) existingRow.rid++;

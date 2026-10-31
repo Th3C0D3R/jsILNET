@@ -771,6 +771,89 @@ export function replaceEmbeddedPortablePdbMethodOffsets(
   });
 }
 
+export function appendEmbeddedPortablePdbMethod(pdb, oldCounts, newCounts) {
+  if (!pdb?.metadataRoot?.streams || !(pdb.tables?.rows instanceof Map) ||
+      !Array.isArray(pdb.tables.counts) || !(pdb.rowCounts instanceof Map)) {
+    throw new TypeError("Portable PDB method insertion requires parsed PDB data");
+  }
+  if (!Array.isArray(oldCounts) || !Array.isArray(newCounts) ||
+      oldCounts.length < 45 || newCounts.length < 45 ||
+      newCounts[6] !== oldCounts[6] + 1) {
+    throw new UnsupportedFormatError(
+      "Portable PDB method insertion requires one MethodDef row to be appended"
+    );
+  }
+  for (const [table, count] of pdb.rowCounts) {
+    if (count !== oldCounts[table]) {
+      throw new FormatError(
+        `Portable PDB row count for type-system table ${table} does not match assembly metadata`
+      );
+    }
+  }
+
+  const rows = new Map(pdb.tables.rows);
+  const methodRows = rows.get(49) ?? [];
+  if (methodRows.length !== 0 && methodRows.length !== oldCounts[6]) {
+    throw new FormatError("Portable PDB MethodDebugInformation row count is inconsistent");
+  }
+  if (methodRows.length > 0) {
+    if (methodRows.some((row, index) => row.rid !== index + 1)) {
+      throw new FormatError("Portable PDB MethodDebugInformation rows are not RID-aligned");
+    }
+    rows.set(49, [
+      ...methodRows.map((row) => ({ ...row })),
+      {
+        table: 49,
+        tableName: "MethodDebugInformation",
+        rid: newCounts[6],
+        Document: { raw: 0, table: 48, tableName: "Document", rid: 0 },
+        SequencePoints: 0
+      }
+    ]);
+  } else {
+    rows.delete(49);
+  }
+
+  const rowCounts = new Map([...pdb.rowCounts].map(([table]) =>
+    [table, newCounts[table]]
+  ));
+  const tableCounts = [...pdb.tables.counts];
+  for (let table = 0; table < 45; table++) {
+    tableCounts[table] = newCounts[table];
+  }
+  tableCounts[49] = methodRows.length > 0 ? methodRows.length + 1 : 0;
+  const valid = tableCounts[49] === 0
+    ? pdb.tables.valid & ~(1n << 49n)
+    : pdb.tables.valid | (1n << 49n);
+
+  const pdbStream = new Uint8Array(32 + rowCounts.size * 4);
+  pdbStream.set(pdb.id);
+  const pdbView = new DataView(pdbStream.buffer);
+  pdbView.setUint32(20, pdb.entryPointToken, true);
+  pdbView.setUint32(24, Number(pdb.referencedTypeSystemTables & 0xffffffffn), true);
+  pdbView.setUint32(28, Number(pdb.referencedTypeSystemTables >> 32n), true);
+  let countOffset = 32;
+  for (const [table, count] of [...rowCounts].sort(([left], [right]) => left - right)) {
+    pdbView.setUint32(countOffset, count, true);
+    countOffset += 4;
+  }
+
+  const streams = new Map([...pdb.metadataRoot.streams].map(([name, stream]) =>
+    [name, { ...stream, bytes: Uint8Array.from(stream.bytes) }]
+  ));
+  const pdbMetadataStream = streams.get("#Pdb");
+  if (!pdbMetadataStream) {
+    throw new FormatError("Portable PDB is missing its #Pdb stream");
+  }
+  pdbMetadataStream.bytes = pdbStream;
+  return serializeEmbeddedPortablePdb({
+    ...pdb,
+    metadataRoot: { ...pdb.metadataRoot, streams },
+    rowCounts,
+    tables: { ...pdb.tables, rows, counts: tableCounts, valid }
+  });
+}
+
 export function removeEmbeddedPortablePdbMethod(pdb, methodRid, oldCounts, newCounts) {
   if (!pdb?.metadataRoot?.streams || !(pdb.tables?.rows instanceof Map) ||
       !Array.isArray(pdb.tables.counts) || !(pdb.rowCounts instanceof Map)) {

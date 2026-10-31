@@ -62,6 +62,7 @@ MethodDef rows can be appended to a TypeDef whose MethodList reaches the end of 
 
 MethodDef removal is supported when no live metadata or CIL references remain. Owned Param and method-owned GenericParam rows can be removed with the method when their row ranges are contiguous; surviving Param and GenericParam references and tokens are remapped. Bijective MethodPtr/ParamPtr ownership and TypeDef list boundaries are updated. The CLI entry-point MethodDef token is remapped, and removal of the entry-point method is rejected.
 With exactly one embedded Portable PDB, removal can target any MethodDef that has no LocalScope, StateMachineMethod, or Portable PDB entry-point reference, provided the PDB contains no MethodDef-scoped CustomDebugInformation. MethodDebugInformation rows and surviving Portable PDB method references are remapped, and `#Pdb` type-system row counts are synchronized; order-changing CustomDebugInformation mappings are rejected before metadata mutation. Other debug-dependent RID remapping remains unsupported.
+With exactly one embedded Portable PDB, MethodDef insertion is supported when the inserted row is appended without shifting existing MethodDef RIDs. An empty MethodDebugInformation row and the updated `#Pdb` type-system row counts are added; insertions that shift existing MethodDef RIDs remain unsupported.
 GenericParamConstraint rows owned by a removed method's GenericParam rows are removed with them when no metadata, CIL, or ENC references target those constraints; surviving constraint owners and tokens are remapped.
 `insertGenericParamConstraint` inserts by Owner into an already Owner-ordered table, remapping later constraint references in metadata, custom attributes, CIL operands, and ENC tokens; it returns the inserted RID and token map.
 `insertCustomAttribute` inserts by Parent into an already Parent-ordered table and remaps shifted CustomAttribute tokens in CIL operands and ENC records.
@@ -126,8 +127,6 @@ PE CodeView records in RSDS and NB10 forms are parsed into PDB identity/path met
 Replacing an EmbeddedSource payload also recomputes its Document hash for recognized SHA-1/SHA-2 GUIDs; unsupported or nil document hash algorithms are rejected.
 
 `replaceClassicPdbStringTableName` supports variable-length UTF-8 names by rebuilding MSF streams and remapping C13 checksum references to shifted `/names` offsets.
-
-MethodDef additions are refused when an embedded Portable PDB is present because its MethodDebugInformation rows and `#Pdb` method counts are not yet extended.
 
 Unsuffixed external TypeRef names retain unknown generic arity; MemberRef validation does not assume those types are nongeneric.
 

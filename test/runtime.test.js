@@ -582,15 +582,48 @@ test("strong-name signed PE32+ assemblies load and execute in .NET", {
       entry.type === 17
     )?.embeddedPortablePdb;
     assert.ok(embeddedPdb);
-    const beforeMethodAdd = assembly.serialize();
-    assert.throws(() => assembly.addMethod({
-      owner: { table: "TypeDef", rid: assembly.types[0].rid },
+    const unsafeMethodAdd = parseAssembly(await readFile(assemblyPath));
+    const nonTailOwner = unsafeMethodAdd.types.find((type) =>
+      type.methodRids.length > 0 &&
+      type.methodRids.at(-1) < unsafeMethodAdd.methods.length
+    );
+    assert.ok(nonTailOwner);
+    const beforeUnsafeMethodAdd = unsafeMethodAdd.serialize();
+    assert.throws(() => unsafeMethodAdd.insertMethod({
+      owner: { table: "TypeDef", rid: nonTailOwner.rid },
       name: "DebugInfoUnsafe",
       flags: 0x0096,
       signature: Uint8Array.of(0x00, 0x00, 0x01),
       body: Uint8Array.of(0x06, 0x2a)
-    }), /MethodDef rows cannot be added while an embedded Portable PDB is present/);
-    assert.deepEqual(assembly.serialize(), beforeMethodAdd);
+    }), /MethodDef RID remapping cannot be combined with an embedded Portable PDB/);
+    assert.deepEqual(unsafeMethodAdd.serialize(), beforeUnsafeMethodAdd);
+
+    const methodAdd = parseAssembly(await readFile(assemblyPath));
+    const tailOwner = [...methodAdd.types].reverse().find((type) =>
+      type.methodRids.at(-1) === methodAdd.methods.length
+    );
+    assert.ok(tailOwner);
+    const originalMethodCount = methodAdd.methods.length;
+    const addedMethodToken = methodAdd.addMethod({
+      owner: { table: "TypeDef", rid: tailOwner.rid },
+      name: "DebugInfoSafe",
+      flags: 0x0096,
+      signature: Uint8Array.of(0x00, 0x00, 0x01),
+      body: Uint8Array.of(0x06, 0x2a)
+    });
+    assert.equal(addedMethodToken, 0x06000000 + originalMethodCount + 1);
+    const methodAddBytes = methodAdd.serialize();
+    const reparsedMethodAdd = parseAssembly(methodAddBytes);
+    const methodAddPdb = reparsedMethodAdd.pe.debugDirectoryEntries.find((entry) =>
+      entry.type === 17
+    )?.embeddedPortablePdb;
+    assert.ok(methodAddPdb);
+    assert.equal(methodAddPdb.rowCounts.get(6), originalMethodCount + 1);
+    assert.equal(methodAddPdb.methodDebugInformation.length, originalMethodCount + 1);
+    assert.deepEqual(methodAddPdb.methodDebugInformation.at(-1).sequencePoints, []);
+    const methodAddPath = join(libraryDirectory, "RuntimeLibrary.MethodAdded.dll");
+    await writeFile(methodAddPath, methodAddBytes);
+
     const refreshedOriginalPdb = refreshEmbeddedPortablePdbId(embeddedPdb);
     const reparsedRefreshedPdb = parseEmbeddedPortablePdbData(
       refreshedOriginalPdb.bytes,
@@ -1009,20 +1042,38 @@ test("strong-name signed PE32+ assemblies load and execute in .NET", {
     await writeFile(join(directory, "Program.cs"), [
       "using System;",
       "using System.IO;",
+      "using System.Linq;",
       "using System.Reflection;",
       "var assembly = Assembly.LoadFile(Path.GetFullPath(args[0]));",
       "var type = assembly.GetType(\"RuntimeLibrary\")",
       "    ?? throw new InvalidOperationException(\"RuntimeLibrary was not found\");",
-      "Console.WriteLine(type.GetMethod(\"Answer\")!.Invoke(null, null));"
+      "Console.WriteLine(type.GetMethod(\"Answer\")!.Invoke(null, null));",
+      "var methodAddedAssembly = Assembly.LoadFile(Path.GetFullPath(args[1]));",
+      "var addedMethod = methodAddedAssembly.GetTypes()",
+      "    .SelectMany(type => type.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance | BindingFlags.DeclaredOnly))",
+      "    .Single(method => method.Name == \"DebugInfoSafe\");",
+      "addedMethod.Invoke(null, null);",
+      "Console.WriteLine(\"method-added\");"
     ].join("\n"));
 
     const runtime = spawnSync(
       "dotnet",
-      ["run", "--project", harnessProject, "--configuration", "Release", "--", assemblyPath],
+      [
+        "run",
+        "--project",
+        harnessProject,
+        "--configuration",
+        "Release",
+        "--",
+        assemblyPath,
+        methodAddPath
+      ],
       { encoding: "utf8", timeout: 120_000 }
     );
     assert.equal(runtime.status, 0, runtime.stderr || runtime.stdout || runtime.error?.message);
-    assert.equal(runtime.stdout.trim().split(/\r?\n/).at(-1), "42");
+    const runtimeOutput = runtime.stdout.trim().split(/\r?\n/);
+    assert.equal(runtimeOutput.at(-2), "42");
+    assert.equal(runtimeOutput.at(-1), "method-added");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
