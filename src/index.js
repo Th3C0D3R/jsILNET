@@ -31,6 +31,7 @@ import {
   validatePortablePdbAssemblyReferences,
   validatePortablePdbCodeViewIdentity,
   insertEmbeddedPortablePdbMethod as insertPortablePdbMethod,
+  remapEmbeddedPortablePdbLocalSignatures as remapPortablePdbLocalSignatures,
   removeEmbeddedPortablePdbMethod as removePortablePdbMethod,
   refreshEmbeddedPortablePdbId,
   replaceEmbeddedPortablePdbMethodOffsets as replacePortablePdbMethodOffsets,
@@ -9823,6 +9824,14 @@ export class Assembly {
 
   insertStandAloneSig({ beforeRid, signature }) {
     this.#ensureEditable();
+    const embeddedPdbIndices = this.pe.debugDirectoryEntries.flatMap((entry, index) =>
+      entry.embeddedPortablePdb ? [index] : []
+    );
+    if (embeddedPdbIndices.length > 1) {
+      throw new UnsupportedFormatError(
+        "StandAloneSig insertion supports only one embedded Portable PDB"
+      );
+    }
     if (!(signature instanceof Uint8Array) || signature.length === 0) {
       throw new TypeError("StandAloneSig signature must be a non-empty Uint8Array");
     }
@@ -9841,7 +9850,13 @@ export class Assembly {
       throw new RangeError("StandAloneSig token row ID exceeds 24-bit range");
     }
     const { tokenMap, rowChanges, tokenUpdates, patches } =
-      this.#prepareTokenRowInsertion(17, beforeRid, rows.length, "StandAloneSig");
+      this.#prepareTokenRowInsertion(
+        17,
+        beforeRid,
+        rows.length,
+        "StandAloneSig",
+        { allowEmbeddedPortablePdb: embeddedPdbIndices.length === 1 }
+      );
     const localSignatureUpdates = [];
     if (beforeRid <= rows.length) {
       for (const method of this.methods) {
@@ -9895,6 +9910,26 @@ export class Assembly {
       rid,
       Signature: blob.index
     };
+    let updatedEmbeddedPdb = null;
+    let updatedCounts = null;
+    if (embeddedPdbIndices.length === 1) {
+      updatedCounts = [...this.tables.counts];
+      updatedCounts[17]++;
+      const debugEntryIndex = embeddedPdbIndices[0];
+      const debugEntry = this.pe.debugDirectoryEntries[debugEntryIndex];
+      updatedEmbeddedPdb = remapPortablePdbLocalSignatures(
+        this.#getPortablePdbForEdit(debugEntryIndex, debugEntry),
+        rid,
+        this.tables.counts,
+        updatedCounts,
+        "insert"
+      );
+      this.#replaceEmbeddedPortablePdb(
+        debugEntryIndex,
+        updatedEmbeddedPdb,
+        updatedCounts
+      );
+    }
 
     for (const change of rowChanges) change.row[change.columnName] = change.value;
     rows.splice(rid - 1, 0, newRow);
@@ -10001,7 +10036,17 @@ export class Assembly {
       );
     }
     this.#ensureAddedMethodBodiesSafe("StandAloneSig removal");
-    this.#ensureTokenRemappingSafe("StandAloneSig");
+    const embeddedPdbIndices = this.pe.debugDirectoryEntries.flatMap((entry, index) =>
+      entry.embeddedPortablePdb ? [index] : []
+    );
+    if (embeddedPdbIndices.length > 1) {
+      throw new UnsupportedFormatError(
+        "StandAloneSig removal supports only one embedded Portable PDB"
+      );
+    }
+    this.#ensureTokenRemappingSafe("StandAloneSig", {
+      allowEmbeddedPortablePdb: embeddedPdbIndices.length === 1
+    });
     const rows = this.tables.rows.get(17) ?? [];
     if (rows.length !== this.tables.counts[17]) {
       throw new FormatError("StandAloneSig row count is inconsistent with the metadata table header");
@@ -10156,6 +10201,27 @@ export class Assembly {
     }
     for (let oldRid = rid + 1; oldRid <= rows.length; oldRid++) {
       tokenMap.set(0x11000000 + oldRid, 0x11000000 + oldRid - 1);
+    }
+
+    let updatedEmbeddedPdb = null;
+    let updatedCounts = null;
+    if (embeddedPdbIndices.length === 1) {
+      updatedCounts = [...this.tables.counts];
+      updatedCounts[17]--;
+      const debugEntryIndex = embeddedPdbIndices[0];
+      const debugEntry = this.pe.debugDirectoryEntries[debugEntryIndex];
+      updatedEmbeddedPdb = remapPortablePdbLocalSignatures(
+        this.#getPortablePdbForEdit(debugEntryIndex, debugEntry),
+        rid,
+        this.tables.counts,
+        updatedCounts,
+        "remove"
+      );
+      this.#replaceEmbeddedPortablePdb(
+        debugEntryIndex,
+        updatedEmbeddedPdb,
+        updatedCounts
+      );
     }
 
     const remainingRows = rows.filter((row) => row.rid !== rid);

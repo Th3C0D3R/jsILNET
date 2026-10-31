@@ -33,6 +33,20 @@ const targetFramework = dotnetAvailable
   ? `net${dotnetVersion.stdout.trim().split(".")[0]}.0`
   : null;
 
+function stripPortablePdbMethodCustomDebugInformation(pdb) {
+  const rows = pdb.tables.rows.get(55) ?? [];
+  const remaining = rows
+    .filter((row) => row.Parent.target?.table !== 6)
+    .map((row, index) => ({ ...row, rid: index + 1 }));
+  if (remaining.length > 0) {
+    pdb.tables.rows.set(55, remaining);
+  } else {
+    pdb.tables.rows.delete(55);
+    pdb.tables.valid &= ~(1n << 55n);
+  }
+  pdb.tables.counts[55] = remaining.length;
+}
+
 test("trailing abstract MethodDef removal updates an embedded Portable PDB", {
   skip: dotnetAvailable ? false : ".NET SDK/runtime is unavailable"
 }, async () => {
@@ -530,6 +544,7 @@ test("strong-name signed PE32+ assemblies load and execute in .NET", {
       "  <PropertyGroup>",
       `    <TargetFramework>${targetFramework}</TargetFramework>`,
       "    <PlatformTarget>x64</PlatformTarget>",
+      "    <Optimize>false</Optimize>",
       "    <DebugType>embedded</DebugType>",
       "    <EmbedAllSources>true</EmbedAllSources>",
       "  </PropertyGroup>",
@@ -539,6 +554,7 @@ test("strong-name signed PE32+ assemblies load and execute in .NET", {
       "public static class RuntimeLibrary",
       "{",
       "    public static int Answer() => 42;",
+      "    public static int WithLocal(int value) { int adjusted = value + 1; return adjusted; }",
       "}",
       "public class Outer",
       "{",
@@ -622,6 +638,56 @@ test("strong-name signed PE32+ assemblies load and execute in .NET", {
     }), /cannot update method-scoped CustomDebugInformation/);
     assert.deepEqual(unsafeMethodAdd.serialize(), beforeUnsafeMethodAdd);
 
+    const localSignatureEdit = parseAssembly(await readFile(assemblyPath));
+    const localSignatureMethod = localSignatureEdit.methods.find((method) =>
+      localSignatureEdit.getMethodBody(method.rid)?.localVarSigToken !== 0
+    );
+    assert.ok(localSignatureMethod);
+    const localSignatureRid =
+      localSignatureEdit.getMethodBody(localSignatureMethod.rid).localVarSigToken & 0x00ffffff;
+    const localSignature = localSignatureEdit.standAloneSigs.find((entry) =>
+      entry.rid === localSignatureRid && entry.parsedSignature.kind === "locals"
+    );
+    assert.ok(localSignature);
+    const originalLocalSignaturePdb = localSignatureEdit.pe.debugDirectoryEntries.find(
+      (entry) => entry.type === 17
+    ).embeddedPortablePdb;
+    const originalLocalSignatureValues = originalLocalSignaturePdb.methodDebugInformation
+      .map((row) => row.localSignatureRid);
+    assert.ok(originalLocalSignatureValues.includes(localSignatureRid));
+    const originalStandAloneSigCount = localSignatureEdit.standAloneSigs.length;
+    localSignatureEdit.insertStandAloneSig({
+      beforeRid: 1,
+      signature: localSignature.signature
+    });
+    const insertedLocalSignatureAssembly = parseAssembly(localSignatureEdit.serialize());
+    const insertedLocalSignaturePdb = insertedLocalSignatureAssembly.pe.debugDirectoryEntries
+      .find((entry) => entry.type === 17).embeddedPortablePdb;
+    assert.equal(
+      insertedLocalSignaturePdb.rowCounts.get(17),
+      originalStandAloneSigCount + 1
+    );
+    assert.deepEqual(
+      insertedLocalSignaturePdb.methodDebugInformation.map((row) => row.localSignatureRid),
+      originalLocalSignatureValues.map((rid) => rid === 0 ? 0 : rid + 1)
+    );
+    const insertedLocalSignaturePath = join(libraryDirectory, "RuntimeLibrary.SignatureInserted.dll");
+    await writeFile(insertedLocalSignaturePath, localSignatureEdit.serialize());
+    localSignatureEdit.removeStandAloneSig(1);
+    const restoredLocalSignatureAssembly = parseAssembly(localSignatureEdit.serialize());
+    const restoredLocalSignaturePdb = restoredLocalSignatureAssembly.pe.debugDirectoryEntries
+      .find((entry) => entry.type === 17).embeddedPortablePdb;
+    assert.equal(
+      restoredLocalSignaturePdb.rowCounts.get(17),
+      originalStandAloneSigCount
+    );
+    assert.deepEqual(
+      restoredLocalSignaturePdb.methodDebugInformation.map((row) => row.localSignatureRid),
+      originalLocalSignatureValues
+    );
+    const restoredLocalSignaturePath = join(libraryDirectory, "RuntimeLibrary.SignatureRestored.dll");
+    await writeFile(restoredLocalSignaturePath, localSignatureEdit.serialize());
+
     const shiftedMethodAdd = parseAssembly(await readFile(assemblyPath));
     const shiftedOwner = shiftedMethodAdd.types.find((type) =>
       type.methodRids.length > 0 &&
@@ -632,6 +698,7 @@ test("strong-name signed PE32+ assemblies load and execute in .NET", {
     const originalShiftedPdb = shiftedMethodAdd.pe.debugDirectoryEntries.find((entry) =>
       entry.type === 17
     ).embeddedPortablePdb;
+    stripPortablePdbMethodCustomDebugInformation(originalShiftedPdb);
     const originalMethodDebugInformation = originalShiftedPdb.methodDebugInformation;
     const originalLocalScopes = originalShiftedPdb.tables.get(50) ?? [];
     const originalStateMachineMethods = originalShiftedPdb.tables.get(54) ?? [];
@@ -694,6 +761,10 @@ test("strong-name signed PE32+ assemblies load and execute in .NET", {
     await writeFile(shiftedMethodPath, shiftedMethodBytes);
 
     const methodAdd = parseAssembly(await readFile(assemblyPath));
+    const methodAddSourcePdb = methodAdd.pe.debugDirectoryEntries.find((entry) =>
+      entry.type === 17
+    ).embeddedPortablePdb;
+    stripPortablePdbMethodCustomDebugInformation(methodAddSourcePdb);
     const tailOwner = [...methodAdd.types].reverse().find((type) =>
       type.methodRids.at(-1) === methodAdd.methods.length
     );
@@ -1154,7 +1225,13 @@ test("strong-name signed PE32+ assemblies load and execute in .NET", {
       "    .SelectMany(type => type.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance | BindingFlags.DeclaredOnly))",
       "    .Single(method => method.Name == \"DebugInfoShifted\");",
       "shiftedMethod.Invoke(null, null);",
-      "Console.WriteLine(\"method-shifted\");"
+      "Console.WriteLine(\"method-shifted\");",
+      "var signatureInserted = Assembly.LoadFile(Path.GetFullPath(args[3]));",
+      "var signatureInsertedMethod = signatureInserted.GetType(\"RuntimeLibrary\")!.GetMethod(\"WithLocal\")!;",
+      "Console.WriteLine(\"local-sig-inserted:\" + signatureInsertedMethod.Invoke(null, new object[] { 41 }));",
+      "var signatureRestored = Assembly.LoadFile(Path.GetFullPath(args[4]));",
+      "var signatureRestoredMethod = signatureRestored.GetType(\"RuntimeLibrary\")!.GetMethod(\"WithLocal\")!;",
+      "Console.WriteLine(\"local-sig-restored:\" + signatureRestoredMethod.Invoke(null, new object[] { 41 }));"
     ].join("\n"));
 
     const runtime = spawnSync(
@@ -1168,15 +1245,19 @@ test("strong-name signed PE32+ assemblies load and execute in .NET", {
         "--",
         assemblyPath,
         methodAddPath,
-        shiftedMethodPath
+        shiftedMethodPath,
+        insertedLocalSignaturePath,
+        restoredLocalSignaturePath
       ],
       { encoding: "utf8", timeout: 120_000 }
     );
     assert.equal(runtime.status, 0, runtime.stderr || runtime.stdout || runtime.error?.message);
     const runtimeOutput = runtime.stdout.trim().split(/\r?\n/);
-    assert.equal(runtimeOutput.at(-3), "42");
-    assert.equal(runtimeOutput.at(-2), "method-added");
-    assert.equal(runtimeOutput.at(-1), "method-shifted");
+    assert.equal(runtimeOutput.at(-5), "42");
+    assert.equal(runtimeOutput.at(-4), "method-added");
+    assert.equal(runtimeOutput.at(-3), "method-shifted");
+    assert.equal(runtimeOutput.at(-2), "local-sig-inserted:42");
+    assert.equal(runtimeOutput.at(-1), "local-sig-restored:42");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

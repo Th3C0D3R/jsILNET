@@ -100,9 +100,9 @@ An external TypeRef name without an arity suffix has unknown generic arity; gene
 
 `insertProperty` and `insertEvent` insert at the end of any valid owner range and return `{ rid, tokenMap }`; if the owner has no PropertyMap or EventMap row, insertion creates one in TypeDef order. Optimized metadata remaps shifted tokens, while `#-` insertion requires a bijective PropertyPtr or EventPtr table.
 
-`insertStandAloneSig({ beforeRid, signature })` inserts a parsed method or local-variable signature at a 1-based row position and returns `{ token, tokenMap }`; insertion remaps shifted metadata/ENC and CIL tokens plus fat method-header local-signature tokens. It refuses unsafe debug, opaque-stream, or method-body-edit combinations.
+`insertStandAloneSig({ beforeRid, signature })` inserts a parsed method or local-variable signature at a 1-based row position and returns `{ token, tokenMap }`; insertion remaps shifted metadata/ENC and CIL tokens plus fat method-header local-signature tokens. With exactly one embedded Portable PDB, it also remaps local-signature references in sequence-point blobs and updates `#Pdb` counts. Other unsafe debug, opaque-stream, or method-body-edit combinations are refused.
 
-`removeStandAloneSig` rejects rows referenced by metadata, CIL operands, or fat method headers; it remaps surviving StandAloneSig tokens, including local-variable signature tokens, and refuses edits when debug data or unknown metadata streams make remapping unsafe.
+`removeStandAloneSig` rejects rows referenced by metadata, CIL operands, fat method headers, or embedded Portable PDB sequence points; it remaps surviving StandAloneSig tokens and local-signature references, updating affected sequence-point blobs and `#Pdb` counts. Other debug data and unknown metadata streams make remapping unsafe.
 
 `addStandAloneSig({ signature })` appends a parsed method or local-variable signature and returns its stable StandAloneSig token. `replaceStandAloneSig` replaces the blob in place while preserving signature kind; signatures are exposed in `assembly.standAloneSigs`.
 Lazy method-body parsing validates local-variable and `calli` signatures against the caller's type and method generic arities, as it does for MethodSpec instantiations.

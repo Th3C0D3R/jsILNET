@@ -891,6 +891,129 @@ export function insertEmbeddedPortablePdbMethod(pdb, methodRid, oldCounts, newCo
   });
 }
 
+export function remapEmbeddedPortablePdbLocalSignatures(
+  pdb,
+  signatureRid,
+  oldCounts,
+  newCounts,
+  operation
+) {
+  if (!pdb?.metadataRoot?.streams || !(pdb.tables?.rows instanceof Map) ||
+      !Array.isArray(pdb.tables.counts) || !(pdb.rowCounts instanceof Map) ||
+      !Array.isArray(pdb.methodDebugInformation)) {
+    throw new TypeError("Portable PDB local-signature remapping requires parsed PDB data");
+  }
+  if (!Array.isArray(oldCounts) || !Array.isArray(newCounts) ||
+      oldCounts.length < 45 || newCounts.length < 45 ||
+      !Number.isInteger(signatureRid) || signatureRid < 1 ||
+      !["insert", "remove"].includes(operation) ||
+      (operation === "insert" &&
+        (signatureRid > newCounts[17] || newCounts[17] !== oldCounts[17] + 1)) ||
+      (operation === "remove" &&
+        (signatureRid > oldCounts[17] || newCounts[17] !== oldCounts[17] - 1))) {
+    throw new UnsupportedFormatError(
+      "Portable PDB local-signature remapping requires one valid StandAloneSig edit"
+    );
+  }
+  for (const [table, count] of pdb.rowCounts) {
+    if (count !== oldCounts[table]) {
+      throw new FormatError(
+        `Portable PDB row count for type-system table ${table} does not match assembly metadata`
+      );
+    }
+  }
+
+  const rows = new Map(pdb.tables.rows);
+  const methodRows = rows.get(49) ?? [];
+  if (methodRows.length !== 0 &&
+      (methodRows.length !== oldCounts[6] ||
+       pdb.methodDebugInformation.length !== methodRows.length)) {
+    throw new FormatError("Portable PDB MethodDebugInformation row count is inconsistent");
+  }
+  const streams = new Map([...pdb.metadataRoot.streams].map(([name, stream]) =>
+    [name, { ...stream, bytes: Uint8Array.from(stream.bytes) }]
+  ));
+  const blobStream = streams.get("#Blob");
+  if (!blobStream) {
+    throw new FormatError("Portable PDB metadata is missing its #Blob heap");
+  }
+  let blobHeap = blobStream.bytes;
+  let changed = false;
+  const methodRowsWithRemappedSignatures = methodRows.map((row) => {
+    if (row.SequencePoints === 0) return { ...row };
+    const debugInformation = pdb.methodDebugInformation[row.rid - 1];
+    if (!debugInformation || debugInformation.rid !== row.rid) {
+      throw new FormatError(
+        `Portable PDB MethodDebugInformation row ${row.rid} is missing`
+      );
+    }
+    const localSignatureRid = debugInformation.localSignatureRid;
+    if (!Number.isInteger(localSignatureRid) || localSignatureRid < 0 ||
+        localSignatureRid > oldCounts[17]) {
+      throw new FormatError(
+        `Portable PDB MethodDebugInformation row ${row.rid} references a missing StandAloneSig`
+      );
+    }
+    if (operation === "remove" && localSignatureRid === signatureRid) {
+      throw new FormatError(
+        `StandAloneSig row ${signatureRid} is referenced by Portable PDB MethodDebugInformation row ${row.rid}`
+      );
+    }
+    let remappedLocalSignatureRid = localSignatureRid;
+    if (operation === "insert" && localSignatureRid >= signatureRid) {
+      remappedLocalSignatureRid++;
+    } else if (operation === "remove" && localSignatureRid > signatureRid) {
+      remappedLocalSignatureRid--;
+    }
+    if (remappedLocalSignatureRid === localSignatureRid) return { ...row };
+    const encoded = encodePortablePdbSequencePoints({
+      localSignatureRid: remappedLocalSignatureRid,
+      points: debugInformation.sequencePoints
+    }, {
+      documentRid: row.Document.rid,
+      documentCount: pdb.tables.counts[48],
+      localSignatureCount: newCounts[17]
+    });
+    const appended = appendBlobHeap(blobHeap, encoded);
+    blobHeap = appended.heap;
+    changed = true;
+    return { ...row, SequencePoints: appended.index };
+  });
+
+  const rowCounts = new Map([...pdb.rowCounts].map(([table]) =>
+    [table, newCounts[table]]
+  ));
+  const tableCounts = [...pdb.tables.counts];
+  for (let table = 0; table < 45; table++) {
+    tableCounts[table] = newCounts[table];
+  }
+  if (methodRows.length > 0) rows.set(49, methodRowsWithRemappedSignatures);
+  if (changed) blobStream.bytes = blobHeap;
+
+  const pdbStream = new Uint8Array(32 + rowCounts.size * 4);
+  pdbStream.set(pdb.id);
+  const pdbView = new DataView(pdbStream.buffer);
+  pdbView.setUint32(20, pdb.entryPointToken, true);
+  pdbView.setUint32(24, Number(pdb.referencedTypeSystemTables & 0xffffffffn), true);
+  pdbView.setUint32(28, Number(pdb.referencedTypeSystemTables >> 32n), true);
+  let countOffset = 32;
+  for (const [table, count] of [...rowCounts].sort(([left], [right]) => left - right)) {
+    pdbView.setUint32(countOffset, count, true);
+    countOffset += 4;
+  }
+  const pdbMetadataStream = streams.get("#Pdb");
+  if (!pdbMetadataStream) {
+    throw new FormatError("Portable PDB is missing its #Pdb stream");
+  }
+  pdbMetadataStream.bytes = pdbStream;
+  return serializeEmbeddedPortablePdb({
+    ...pdb,
+    metadataRoot: { ...pdb.metadataRoot, streams },
+    rowCounts,
+    tables: { ...pdb.tables, rows, counts: tableCounts }
+  });
+}
+
 export function removeEmbeddedPortablePdbMethod(pdb, methodRid, oldCounts, newCounts) {
   if (!pdb?.metadataRoot?.streams || !(pdb.tables?.rows instanceof Map) ||
       !Array.isArray(pdb.tables.counts) || !(pdb.rowCounts instanceof Map)) {
