@@ -72,6 +72,7 @@ GenericParamConstraint rows owned by a removed method's GenericParam rows are re
 `insertClassLayout` inserts by Parent into an already Parent-ordered table and remaps shifted ClassLayout tokens in ENC records.
 `insertFieldLayout` inserts by Field into an already Field-ordered table and remaps shifted FieldLayout tokens in ENC records.
 `insertImplMap` inserts by MemberForwarded into an already ordered table and remaps shifted ImplMap tokens in ENC records.
+`insertFieldRva` inserts by Field into an already Field-ordered table and remaps shifted FieldRVA tokens in ENC records.
 
 MethodDef names, flags, and implementation flags can be replaced without changing row identity.
 

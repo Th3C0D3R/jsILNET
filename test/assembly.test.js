@@ -3689,6 +3689,39 @@ test("FieldRVA rows validate static primitive fields and round-trip add/replace/
   assert.equal(parseAssembly(reparsed.serialize()).tables.counts[29], 0);
 });
 
+test("sorted FieldRVA insertion remaps later ENC tokens", () => {
+  const assembly = parseAssembly(withoutDebugDirectory());
+  const owner = assembly.types.at(-1);
+  const lowerField = assembly.addField({
+    owner: { table: "TypeDef", rid: owner.rid },
+    name: "RvaLower",
+    flags: 0x10,
+    signature: Uint8Array.of(0x06, 0x08)
+  }) & 0x00ffffff;
+  const higherField = assembly.addField({
+    owner: { table: "TypeDef", rid: owner.rid },
+    name: "RvaHigher",
+    flags: 0x10,
+    signature: Uint8Array.of(0x06, 0x08)
+  }) & 0x00ffffff;
+  const dataSection = assembly.pe.sections.find((section) => section.rawSize >= 8);
+  assert.ok(dataSection);
+  assembly.tables.rows.set(29, []);
+  assembly.tables.counts[29] = 0;
+  assembly.tables.valid &= ~(1n << 29n);
+  assembly.tables.sorted |= 1n << 29n;
+  const later = assembly.insertFieldRva(higherField, dataSection.virtualAddress + 4);
+  addEncToken(assembly, 31, 0x1d000000 + later.rid);
+  const earlier = assembly.insertFieldRva(lowerField, dataSection.virtualAddress);
+
+  assert.equal(earlier.rid, 1);
+  assert.equal(earlier.tokenMap.get(0x1d000000 + later.rid), 0x1d000000 + later.rid + 1);
+  assert.equal(assembly.tables.get(31).at(-1).Token, 0x1d000000 + later.rid + 1);
+  const reparsed = parseAssembly(assembly.serialize());
+  assert.equal(reparsed.tables.get(31).at(-1).Token, 0x1d000000 + later.rid + 1);
+  assert.equal(reparsed.tables.row(29, 1).Field.rid, lowerField);
+});
+
 test("MethodSemantics rows validate owners and round-trip add/replace/remove", () => {
   const assembly = parseAssembly(fixture);
   const owner = assembly.types.find((type) =>

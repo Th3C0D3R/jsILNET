@@ -2317,27 +2317,57 @@ export class Assembly {
   }
 
   addFieldRva(fieldRid, rva) {
+    return this.#writeFieldRva(fieldRid, rva, false).rid;
+  }
+
+  insertFieldRva(fieldRid, rva) {
+    return this.#writeFieldRva(fieldRid, rva, true);
+  }
+
+  #writeFieldRva(fieldRid, rva, insertSorted) {
     this.#ensureEditable();
     const rows = this.tables.rows.get(29) ?? [];
-    if (rows.length !== this.tables.counts[29] || rows.length >= 0xffffffff) {
+    if (rows.length !== this.tables.counts[29] || rows.length >= 0x00ffffff) {
       throw new RangeError("FieldRVA row count is inconsistent or exceeds the metadata table limit");
     }
     const field = validateFieldRva(this, fieldRid, rva);
     if (rows.some((row) => row.Field.rid === fieldRid)) {
       throw new FormatError("The FieldRVA table already has a row for this Field");
     }
-    if ((this.tables.sorted & (1n << 29n)) !== 0n && rows.at(-1)?.Field.rid > fieldRid) {
+    let insertionIndex = rows.length;
+    if (insertSorted) {
+      for (let index = 1; index < rows.length; index++) {
+        if (rows[index - 1].Field.rid > rows[index].Field.rid) {
+          throw new UnsupportedFormatError(
+            "Sorted FieldRVA insertion requires rows already ordered by Field"
+          );
+        }
+      }
+      const laterField = rows.findIndex((row) => row.Field.rid > fieldRid);
+      if (laterField !== -1) insertionIndex = laterField;
+    } else if ((this.tables.sorted & (1n << 29n)) !== 0n &&
+        rows.at(-1)?.Field.rid > fieldRid) {
       throw new UnsupportedFormatError("FieldRVA append would violate declared Field ordering");
     }
-    const rid = rows.length + 1;
-    rows.push({ table: 29, tableName: metadataTableNames[29], rid, RVA: rva,
-      Field: { rid: fieldRid } });
+    const rid = insertionIndex + 1;
+    const { tokenMap, rowChanges, tokenUpdates, patches } = insertSorted
+      ? this.#prepareTokenRowInsertion(29, rid, rows.length, "FieldRVA")
+      : { tokenMap: new Map(), rowChanges: [], tokenUpdates: [], patches: [] };
+    const candidate = { table: 29, tableName: metadataTableNames[29], rid, RVA: rva,
+      Field: { rid: fieldRid } };
+    for (const change of rowChanges) change.row[change.columnName] = change.value;
+    for (const row of rows) {
+      if (row.rid >= rid) row.rid++;
+    }
+    rows.splice(insertionIndex, 0, candidate);
     this.tables.rows.set(29, rows);
-    this.tables.counts[29] = rid;
+    this.tables.counts[29] = rows.length;
     this.tables.valid |= 1n << 29n;
     field.rva = rva;
+    for (const update of tokenUpdates) update.instruction.operand.value = update.replacement;
+    this._patches.push(...patches);
     this._metadataDirty = true;
-    return rid;
+    return { rid, tokenMap };
   }
 
   replaceFieldRva(rid, rva) {
