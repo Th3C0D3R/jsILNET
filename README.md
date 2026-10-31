@@ -62,6 +62,7 @@ Invalid or unsupported structures and edits raise `FormatError` or `UnsupportedF
 `insertFieldLayout` inserts by Field into an already Field-ordered table and returns `{ rid, tokenMap }`, remapping shifted FieldLayout tokens in ENC records.
 `insertImplMap` inserts by MemberForwarded into an already ordered table and returns `{ rid, tokenMap }`, remapping shifted ImplMap tokens in ENC records.
 `insertFieldRva` inserts by Field into an already Field-ordered table and returns `{ rid, tokenMap }`, remapping shifted FieldRVA tokens in ENC records.
+`insertGenericParam` inserts by Owner/Number into an already ordered table and returns `{ token, rid, tokenMap }`, remapping shifted GenericParam references and ENC tokens.
 
 `replaceTypeRef` updates a TypeRef name, namespace, or resolution scope without changing its token; `removeTypeRef` rejects live references and remaps surviving metadata, signature, and CIL references.
 

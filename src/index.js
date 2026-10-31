@@ -9010,6 +9010,14 @@ export class Assembly {
   }
 
   addGenericParam({ owner, name, number, flags = 0 }) {
+    return this.#writeGenericParam({ owner, name, number, flags }, false).token;
+  }
+
+  insertGenericParam({ owner, name, number, flags = 0 }) {
+    return this.#writeGenericParam({ owner, name, number, flags }, true);
+  }
+
+  #writeGenericParam({ owner, name, number, flags }, insertSorted) {
     this.#ensureEditable();
     if (!owner || !Number.isInteger(owner.rid) || owner.rid < 1) {
       throw new TypeError("GenericParam owner must identify a TypeDef or MethodDef row");
@@ -9051,32 +9059,53 @@ export class Assembly {
     if (existing.some((parameter) => parameter.number === selectedNumber)) {
       throw new FormatError(`GenericParam number ${selectedNumber} already exists for this owner`);
     }
-    const ordered = genericParamRows.every((row, index) => {
-      if (index === 0) return true;
-      const previous = genericParamRows[index - 1];
-      return previous.Owner.raw < row.Owner.raw ||
-        (previous.Owner.raw === row.Owner.raw && previous.Number <= row.Number);
-    });
-    const last = genericParamRows.at(-1);
-    if (!ordered || (last &&
-        (last.Owner.raw > ownerValue ||
-         (last.Owner.raw === ownerValue && last.Number > selectedNumber)))) {
-      throw new FormatError("Appending this GenericParam would violate the table's sorted Owner/Number order");
+    let insertionIndex = genericParamRows.length;
+    if (insertSorted) {
+      for (let index = 1; index < genericParamRows.length; index++) {
+        const previous = genericParamRows[index - 1];
+        const current = genericParamRows[index];
+        if (previous.Owner.raw > current.Owner.raw ||
+            (previous.Owner.raw === current.Owner.raw && previous.Number > current.Number)) {
+          throw new UnsupportedFormatError(
+            "Sorted GenericParam insertion requires rows already ordered by Owner/Number"
+          );
+        }
+      }
+      const laterParameter = genericParamRows.findIndex((row) =>
+        row.Owner.raw > ownerValue ||
+        (row.Owner.raw === ownerValue && row.Number > selectedNumber)
+      );
+      if (laterParameter !== -1) insertionIndex = laterParameter;
+    } else {
+      const ordered = genericParamRows.every((row, index) => {
+        if (index === 0) return true;
+        const previous = genericParamRows[index - 1];
+        return previous.Owner.raw < row.Owner.raw ||
+          (previous.Owner.raw === row.Owner.raw && previous.Number <= row.Number);
+      });
+      const last = genericParamRows.at(-1);
+      if (!ordered || (last &&
+          (last.Owner.raw > ownerValue ||
+           (last.Owner.raw === ownerValue && last.Number > selectedNumber)))) {
+        throw new FormatError("Appending this GenericParam would violate the table's sorted Owner/Number order");
+      }
     }
     if (genericParamRows.length + 1 > 0x00ffffff) {
       throw new RangeError("GenericParam token row ID exceeds 24-bit range");
     }
 
-    const rid = genericParamRows.length + 1;
-    if (!this._heapStreams) {
-      this._heapStreams = new Map([...this.metadataRoot.streams].map(([streamName, stream]) =>
-        [streamName, stream.bytes.slice()]
-      ));
-    }
-    const stringHeap = appendStringHeap(this._heapStreams.get("#Strings") ?? new Uint8Array(), name);
-    this._heapStreams.set("#Strings", stringHeap.heap);
-    this.#refreshHeaps();
-    genericParamRows.push({
+    const rid = insertionIndex + 1;
+    const { tokenMap, rowChanges, tokenUpdates, patches } = insertSorted
+      ? this.#prepareTokenRowInsertion(42, rid, genericParamRows.length, "GenericParam")
+      : { tokenMap: new Map(), rowChanges: [], tokenUpdates: [], patches: [] };
+    const heapStreams = new Map(
+      [...(this._heapStreams ?? new Map([...this.metadataRoot.streams].map(([streamName, stream]) =>
+        [streamName, stream.bytes]
+      )))].map(([streamName, bytes]) => [streamName, bytes.slice()])
+    );
+    const stringHeap = appendStringHeap(heapStreams.get("#Strings") ?? new Uint8Array(), name);
+    heapStreams.set("#Strings", stringHeap.heap);
+    const candidate = {
       table: 42,
       tableName: metadataTableNames[42],
       rid,
@@ -9087,11 +9116,7 @@ export class Assembly {
         target: { table: ownerTable, tableName: metadataTableNames[ownerTable], rid: owner.rid }
       },
       Name: stringHeap.index
-    });
-    this.tables.rows.set(42, genericParamRows);
-    this.tables.valid |= 1n << 42n;
-    this.tables.sorted |= 1n << 42n;
-    this.tables.counts[42] = rid;
+    };
     const parameter = {
       rid,
       number: selectedNumber,
@@ -9099,14 +9124,44 @@ export class Assembly {
       owner: { table: ownerTable, tableName: metadataTableNames[ownerTable], rid: owner.rid },
       name
     };
-    this.genericParams.push(parameter);
-    if (ownerTable === 2) {
-      this.types[owner.rid - 1].genericParams.push(parameter);
-    } else {
-      this.methods[owner.rid - 1].genericParams.push(parameter);
+    const attributeRows = this.customAttributes.map((attribute) => {
+      const row = this.tables.row(12, attribute.rid);
+      if (!row) throw new FormatError(`CustomAttribute row ${attribute.rid} has no metadata row`);
+      return { attribute, row };
+    });
+    for (const change of rowChanges) change.row[change.columnName] = change.value;
+    for (const row of genericParamRows) {
+      if (row.rid >= rid) row.rid++;
     }
+    for (const item of this.genericParams) {
+      if (item.rid >= rid) item.rid++;
+    }
+    for (const constraint of this.genericParamConstraints) {
+      if (constraint.ownerRid >= rid) constraint.ownerRid++;
+    }
+    genericParamRows.splice(insertionIndex, 0, candidate);
+    this.genericParams.splice(insertionIndex, 0, parameter);
+    for (const { attribute, row } of attributeRows) {
+      attribute.parent = row.Parent.target;
+      attribute.constructor = row.Type.target;
+    }
+    this.tables.rows.set(42, genericParamRows);
+    this.tables.valid |= 1n << 42n;
+    this.tables.sorted |= 1n << 42n;
+    this.tables.counts[42] = genericParamRows.length;
+    this._heapStreams = heapStreams;
+    this.#refreshHeaps();
+    if (ownerTable === 2) {
+      const ownerParams = this.types[owner.rid - 1].genericParams;
+      if (!ownerParams.includes(parameter)) ownerParams.push(parameter);
+    } else {
+      const ownerParams = this.methods[owner.rid - 1].genericParams;
+      if (!ownerParams.includes(parameter)) ownerParams.push(parameter);
+    }
+    for (const update of tokenUpdates) update.instruction.operand.value = update.replacement;
+    this._patches.push(...patches);
     this._metadataDirty = true;
-    return 0x2a000000 + rid;
+    return { token: 0x2a000000 + rid, rid, tokenMap };
   }
 
   replaceGenericParam(rid, { name, flags } = {}) {

@@ -2147,6 +2147,62 @@ test("generic parameters append sorted owner metadata and validate flags", () =>
   assert.equal(invalidAssembly.modified, false);
 });
 
+test("sorted GenericParam insertion remaps dependent metadata and ENC tokens", () => {
+  const assembly = parseAssembly(withoutDebugDirectory());
+  const candidates = assembly.methods.filter((method) =>
+    method.genericParams.length === 0 && !parseSignature(method.signature).generic
+  );
+  const lowerMethod = candidates[0];
+  const higherMethod = candidates.at(-1);
+  assert.ok(lowerMethod);
+  assert.ok(higherMethod);
+  assert.ok(lowerMethod.rid < higherMethod.rid);
+  const genericSignature = Uint8Array.of(0x10, 0x01, 0x00, 0x01);
+  assembly.replaceMethodSignature(lowerMethod.rid, genericSignature);
+  assembly.replaceMethodSignature(higherMethod.rid, genericSignature);
+
+  const later = assembly.insertGenericParam({
+    owner: { table: "MethodDef", rid: higherMethod.rid },
+    name: "THigher"
+  });
+  const constraintRid = assembly.addGenericParamConstraint({
+    ownerRid: later.rid,
+    constraint: { table: "TypeDef", rid: 2 }
+  });
+  const template = assembly.customAttributes[0];
+  assert.ok(template);
+  assembly.tables.sorted &= ~(1n << 12n);
+  assembly.addCustomAttribute({
+    parent: { table: "GenericParam", rid: later.rid },
+    constructor: template.constructor,
+    value: assembly.parseCustomAttribute(template.rid)
+  });
+  addEncToken(assembly, 31, later.token);
+  const earlier = assembly.insertGenericParam({
+    owner: { table: "MethodDef", rid: lowerMethod.rid },
+    name: "TLower"
+  });
+
+  assert.equal(earlier.rid, 1 + assembly.tables.get(42)
+    .filter((row) => row.Owner.raw < encodeCodedIndex(6, lowerMethod.rid, "TypeOrMethodDef"))
+    .length);
+  assert.equal(earlier.tokenMap.get(later.token), later.token + 1);
+  assert.equal(assembly.tables.get(31).at(-1).Token, later.token + 1);
+  assert.equal(assembly.genericParamConstraints.find((item) => item.rid === constraintRid).ownerRid,
+    later.rid + 1);
+  assert.equal(assembly.customAttributes.at(-1).parent.rid, later.rid + 1);
+  assert.ok(assembly.methods[lowerMethod.rid - 1].genericParams
+    .some((parameter) => parameter.name === "TLower"));
+  assert.ok(assembly.methods[higherMethod.rid - 1].genericParams
+    .some((parameter) => parameter.rid === later.rid + 1));
+  const reparsed = parseAssembly(assembly.serialize());
+  assert.equal(reparsed.tables.get(31).at(-1).Token, later.token + 1);
+  assert.ok(reparsed.methods[lowerMethod.rid - 1].genericParams
+    .some((parameter) => parameter.name === "TLower"));
+  assert.ok(reparsed.methods[higherMethod.rid - 1].genericParams
+    .some((parameter) => parameter.name === "THigher"));
+});
+
 test("generic parameters can update names and variance or constraint flags safely", () => {
   const assembly = parseAssembly(fixture);
   const parameter = assembly.genericParams[0];
