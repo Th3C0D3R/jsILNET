@@ -12,8 +12,10 @@ import {
   parseClassicPdb,
   parsePE,
   replaceClassicPdbStringTableName,
-  replaceClassicPdbSymbolName
+  replaceClassicPdbSymbolName,
+  serializeEmbeddedPortablePdb
 } from "../src/index.js";
+import { parseEmbeddedPortablePdbData } from "../src/pe/headers.js";
 
 const dotnetVersion = spawnSync("dotnet", ["--version"], { encoding: "utf8" });
 const dotnetAvailable = dotnetVersion.status === 0;
@@ -337,6 +339,18 @@ test("strong-name signed PE32+ assemblies load and execute in .NET", {
       entry.type === 17
     )?.embeddedPortablePdb;
     assert.ok(embeddedPdb);
+    const rewrittenPdbBytes = serializeEmbeddedPortablePdb(embeddedPdb);
+    const reparsedPdb = parseEmbeddedPortablePdbData(
+      rewrittenPdbBytes,
+      0,
+      rewrittenPdbBytes.length
+    );
+    assert.deepEqual(reparsedPdb.id, embeddedPdb.id);
+    assert.deepEqual(reparsedPdb.rowCounts, embeddedPdb.rowCounts);
+    assert.deepEqual(reparsedPdb.documents, embeddedPdb.documents);
+    assert.deepEqual(reparsedPdb.methodDebugInformation, embeddedPdb.methodDebugInformation);
+    assert.deepEqual(reparsedPdb.stateMachineMethods, embeddedPdb.stateMachineMethods);
+    assert.deepEqual(reparsedPdb.customDebugInformation, embeddedPdb.customDebugInformation);
     assert.ok(embeddedPdb.tables.counts[48] > 0);
     assert.ok(embeddedPdb.tables.counts[49] > 0);
     assert.ok(embeddedPdb.heaps.blobs);

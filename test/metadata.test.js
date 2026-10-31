@@ -22,6 +22,7 @@ import {
   validatePortablePdbAssemblyReferences,
   validatePortablePdbCodeViewIdentity
 } from "../src/metadata/portable-pdb.js";
+import { serializeTablesStream } from "../src/metadata/writer.js";
 import { resolveMethodParameters, resolveTypes } from "../src/resolution/module.js";
 
 function makeMetadataRoot({
@@ -501,6 +502,36 @@ test("Portable PDB document names and sequence points round-trip bounded blobs",
     Uint8Array.from([0, 0, 1, 0x7f, 1, 0]),
     { documentRid: 1, documentCount: 1, localSignatureCount: 0 }
   ), /sequence-point source spans/);
+});
+
+test("Portable PDB table serialization retains external row-index widths", () => {
+  const counts = Array(64).fill(0);
+  counts[6] = 0x10000;
+  counts[50] = 1;
+  const tables = {
+    majorVersion: 2,
+    minorVersion: 0,
+    reserved: 0,
+    reservedByte: 1,
+    valid: 1n << 50n,
+    sorted: 0n,
+    counts,
+    rows: new Map([[50, [{
+      rid: 1,
+      Method: { rid: 0x10000 },
+      ImportScope: { rid: 0 },
+      VariableList: { rid: 1 },
+      ConstantList: { rid: 1 },
+      StartOffset: 0,
+      Length: 1
+    }]]])
+  };
+  const streamBytes = serializeTablesStream(tables, new Map());
+  const reparsed = parseTablesStream(
+    { name: "#~", offset: 0, bytes: streamBytes },
+    counts
+  );
+  assert.equal(reparsed.row(50, 1).Method.rid, 0x10000);
 });
 
 test("Portable PDB type-system counts and entry point match the assembly", () => {

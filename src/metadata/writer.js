@@ -76,7 +76,7 @@ export function serializeTablesStream(tables, heapStreams) {
   const rows = new Map([...tables.rows].map(([id, tableRows]) => [id, [...tableRows]]));
   const valid = tables.valid;
   const present = new Set();
-  const counts = Array(64).fill(0);
+  const counts = tables.counts ? [...tables.counts] : Array(64).fill(0);
   for (let id = 0; id < 64; id++) {
     if ((valid & (1n << BigInt(id))) !== 0n || rows.has(id)) {
       if (!metadataTableSchemas[id]) throw new FormatError(`Cannot serialize unsupported metadata table ${id}`);

@@ -1048,7 +1048,8 @@ export {
   decodePortablePdbDocumentName,
   decodePortablePdbSequencePoints,
   encodePortablePdbDocumentName,
-  encodePortablePdbSequencePoints
+  encodePortablePdbSequencePoints,
+  serializeEmbeddedPortablePdb
 } from "./metadata/portable-pdb.js";
 export {
   encodeSignature,

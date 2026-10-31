@@ -1,13 +1,16 @@
-import { inflateRawSync } from "node:zlib";
+import { deflateRawSync, inflateRawSync } from "node:zlib";
 import { BinaryReader, readCompressedInt, readCompressedUInt } from "../binary/reader.js";
 import { FormatError, UnsupportedFormatError } from "../binary/errors.js";
 import {
   appendBlobHeap,
   appendCompressedInt,
-  appendCompressedUInt
+  appendCompressedUInt,
+  serializeTablesStream
 } from "./writer.js";
+import { serializeMetadataRoot } from "./root-writer.js";
 
 const maxEmbeddedSourceSize = 0x10000000;
+const maxEmbeddedPortablePdbSize = 0x10000000;
 const embeddedSourceKind = "0e8a571b-6926-466e-b4ad-8ab04611f5fe";
 const sourceLinkKind = "cc110556-a091-4d38-9fec-25ab9a351a6a";
 
@@ -524,4 +527,33 @@ export function parsePortablePdbTables(tables, heaps, typeSystemCounts) {
     ...decodePortablePdbCustomDebugInformation(row, heaps)
   }));
   return { documents, methodDebugInformation, stateMachineMethods, customDebugInformation };
+}
+
+export function serializeEmbeddedPortablePdb(pdb) {
+  if (!pdb?.metadataRoot?.streams || !(pdb.tables?.rows instanceof Map) ||
+      !Array.isArray(pdb.tables.counts)) {
+    throw new TypeError("Embedded Portable PDB serialization requires parsed PDB data");
+  }
+  const streams = new Map([...pdb.metadataRoot.streams].map(([name, stream]) =>
+    [name, Uint8Array.from(stream.bytes)]
+  ));
+  const tableStreamName = streams.has("#~") ? "#~" : streams.has("#-") ? "#-" : null;
+  if (!tableStreamName || !streams.has("#Pdb")) {
+    throw new FormatError("Embedded Portable PDB is missing a required metadata stream");
+  }
+  streams.set(tableStreamName, serializeTablesStream(pdb.tables, streams));
+  const metadata = serializeMetadataRoot(pdb.metadataRoot, streams);
+  if (metadata.length === 0 || metadata.length > maxEmbeddedPortablePdbSize ||
+      metadata.length > 0xffffffff) {
+    throw new UnsupportedFormatError("Serialized Portable PDB metadata exceeds the supported size");
+  }
+  const compressed = deflateRawSync(metadata);
+  if (compressed.length > 0xffffffff - 8) {
+    throw new RangeError("Compressed Portable PDB exceeds the container size limit");
+  }
+  const output = new Uint8Array(8 + compressed.length);
+  output.set([0x4d, 0x50, 0x44, 0x42]);
+  new DataView(output.buffer).setUint32(4, metadata.length, true);
+  output.set(compressed, 8);
+  return output;
 }
