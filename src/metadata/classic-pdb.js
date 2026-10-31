@@ -1258,14 +1258,93 @@ export function replaceClassicPdbStringTableName(input, { nameOffset, name } = {
     throw new RangeError(`Classic PDB string-table offset ${nameOffset} does not exist`);
   }
   const existingBytes = new TextEncoder().encode(existingName);
-  if (replacement.length !== existingBytes.length) {
-    throw new UnsupportedFormatError(
-      "Classic PDB string-table replacements must preserve the UTF-8 byte length"
+  if (replacement.length === existingBytes.length) {
+    const output = replaceClassicPdbStreamBytes(
+      bytes, pdb, streamIndex, 12 + nameOffset, replacement
     );
+    parseClassicPdb(output);
+    return output;
   }
-  const output = replaceClassicPdbStreamBytes(
-    bytes, pdb, streamIndex, 12 + nameOffset, replacement
-  );
+
+  const updatedStrings = [];
+  const remappedOffsets = new Map();
+  const encoder = new TextEncoder();
+  let updatedStringByteLength = 0;
+  for (const [offset, value] of [...pdb.info.stringTable.strings].sort((a, b) => a[0] - b[0])) {
+    remappedOffsets.set(offset, updatedStringByteLength);
+    const encoded = offset === nameOffset ? replacement : encoder.encode(value);
+    updatedStrings.push(encoded);
+    updatedStrings.push(Uint8Array.of(0));
+    updatedStringByteLength += encoded.length + 1;
+  }
+  if (updatedStringByteLength > 0xffffffff) {
+    throw new UnsupportedFormatError("Classic PDB /names string table exceeds its 32-bit size limit");
+  }
+  const stringBytes = new Uint8Array(updatedStringByteLength);
+  let stringByteOffset = 0;
+  for (const part of updatedStrings) {
+    stringBytes.set(part, stringByteOffset);
+    stringByteOffset += part.length;
+  }
+  const stringTable = pdb.info.stringTable;
+  const nameIds = stringTable.nameIds.map((offset) => {
+    const updatedOffset = offset === 0 ? 0 : remappedOffsets.get(offset);
+    if (updatedOffset === undefined) {
+      throw new FormatError("Classic PDB /names hash table references a missing string");
+    }
+    return updatedOffset;
+  });
+  const namesStream = new Uint8Array(20 + stringBytes.length + nameIds.length * 4);
+  const namesView = new DataView(namesStream.buffer);
+  namesView.setUint32(0, stringTable.signature, true);
+  namesView.setUint32(4, stringTable.hashVersion, true);
+  namesView.setUint32(8, stringBytes.length, true);
+  namesStream.set(stringBytes, 12);
+  let namesOffset = 12 + stringBytes.length;
+  namesView.setUint32(namesOffset, nameIds.length, true);
+  namesOffset += 4;
+  for (const offset of nameIds) {
+    namesView.setUint32(namesOffset, offset, true);
+    namesOffset += 4;
+  }
+  namesView.setUint32(namesOffset, stringTable.nameCount, true);
+
+  const replacements = new Map([[streamIndex, namesStream]]);
+  const mutableModuleStreams = new Map();
+  for (const module of pdb.dbi?.modules ?? []) {
+    if (!module.c13) continue;
+    const stream = mutableModuleStreams.get(module.streamIndex) ??
+      Uint8Array.from(pdb.streams[module.streamIndex].bytes);
+    let updated = false;
+    let subsectionOffset = 0;
+    for (const subsection of module.c13.subsections) {
+      if (subsection.kind === 0xf4) {
+        const checksumData = Uint8Array.from(subsection.data);
+        const checksumView = new DataView(checksumData.buffer);
+        for (const [recordOffset, checksum] of module.c13.fileChecksums) {
+          const updatedOffset = remappedOffsets.get(checksum.fileNameOffset);
+          if (updatedOffset === undefined) {
+            throw new FormatError("Classic PDB C13 checksum references a missing /names entry");
+          }
+          if (updatedOffset === checksum.fileNameOffset) continue;
+          checksumView.setUint32(recordOffset, updatedOffset, true);
+          updated = true;
+        }
+        if (updated) {
+          stream.set(
+            checksumData,
+            module.symbolBytes + module.c11Bytes + subsectionOffset + 8
+          );
+        }
+      }
+      subsectionOffset = (subsectionOffset + 8 + subsection.data.length + 3) & ~3;
+    }
+    if (updated) mutableModuleStreams.set(module.streamIndex, stream);
+  }
+  for (const [moduleStreamIndex, moduleStream] of mutableModuleStreams) {
+    replacements.set(moduleStreamIndex, moduleStream);
+  }
+  const output = rebuildClassicPdbStreams(pdb, replacements);
   parseClassicPdb(output);
   return output;
 }

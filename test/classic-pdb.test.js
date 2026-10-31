@@ -285,7 +285,7 @@ test("classic PDB symbol names can cross MSF stream blocks", () => {
     Uint8Array.from([0x6c, 0x6f, 0x6e, 0x67, 0, 0xf1]));
 });
 
-test("classic PDB /names entries can be replaced without shifting string offsets", () => {
+test("classic PDB /names entries can be replaced with offset remapping", () => {
   const original = makeClassicPdbWithNames();
   const rewritten = replaceClassicPdbStringTableName(original, {
     nameOffset: 1,
@@ -299,10 +299,20 @@ test("classic PDB /names entries can be replaced without shifting string offsets
     name: "\ufeff"
   });
   assert.equal(parseClassicPdb(bomName).info.stringTable.strings.get(1), "\ufeff");
-  assert.throws(() => replaceClassicPdbStringTableName(original, {
+  const expanded = parseClassicPdb(replaceClassicPdbStringTableName(original, {
     nameOffset: 1,
     name: "longer"
-  }), /preserve the UTF-8 byte length/);
+  }));
+  assert.equal(expanded.info.stringTable.strings.get(1), "longer");
+  assert.equal(expanded.info.stringTable.strings.get(8), "bar");
+  assert.deepEqual(expanded.info.stringTable.nameIds, [1, 8]);
+  const shortened = parseClassicPdb(replaceClassicPdbStringTableName(original, {
+    nameOffset: 1,
+    name: "x"
+  }));
+  assert.equal(shortened.info.stringTable.strings.get(1), "x");
+  assert.equal(shortened.info.stringTable.strings.get(3), "bar");
+  assert.deepEqual(shortened.info.stringTable.nameIds, [1, 3]);
 });
 
 test("classic PDB module symbols preserve bounded CodeView record payloads", () => {

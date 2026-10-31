@@ -123,7 +123,7 @@ test("classic PDB parser reads a compiler-produced MSF identity", {
       module.c13?.lines.flatMap((line) => line.blocks) ?? []
     ).find((block) => block.fileName?.endsWith("Class1.cs"));
     assert.ok(sourceFile);
-    const replacementPath = sourceFile.fileName.replace("Class1.cs", "Other1.cs");
+    const replacementPath = sourceFile.fileName.replace("Class1.cs", "OtherLongerSource.cs");
     const renamedPathPdb = parseClassicPdb(replaceClassicPdbStringTableName(pdbBytes, {
       nameOffset: sourceFile.fileNameOffset,
       name: replacementPath
