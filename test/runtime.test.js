@@ -5,13 +5,56 @@ import { spawnSync } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseAssembly, parsePE } from "../src/index.js";
+import { parseAssembly, parseClassicPdb, parsePE } from "../src/index.js";
 
 const dotnetVersion = spawnSync("dotnet", ["--version"], { encoding: "utf8" });
 const dotnetAvailable = dotnetVersion.status === 0;
 const targetFramework = dotnetAvailable
   ? `net${dotnetVersion.stdout.trim().split(".")[0]}.0`
   : null;
+
+test("classic PDB parser reads a compiler-produced MSF identity", {
+  skip: dotnetAvailable ? false : ".NET SDK/runtime is unavailable"
+}, async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "jsilnet-classic-pdb-"));
+  try {
+    const project = join(directory, "ClassicPdb.csproj");
+    const output = join(directory, "out");
+    await writeFile(project, [
+      "<Project Sdk=\"Microsoft.NET.Sdk\">",
+      "  <PropertyGroup>",
+      `    <TargetFramework>${targetFramework}</TargetFramework>`,
+      "    <DebugType>full</DebugType>",
+      "    <DebugSymbols>true</DebugSymbols>",
+      "  </PropertyGroup>",
+      "</Project>"
+    ].join("\n"));
+    await writeFile(join(directory, "Class1.cs"),
+      "public static class ClassicPdb { public static int Answer() => 42; }");
+    const build = spawnSync(
+      "dotnet",
+      ["build", project, "--configuration", "Debug", "--output", output, "--nologo"],
+      { encoding: "utf8", timeout: 120_000 }
+    );
+    assert.equal(build.status, 0, build.stderr || build.stdout || build.error?.message);
+
+    const pdbBytes = await readFile(join(output, "ClassicPdb.pdb"));
+    const signature = new TextDecoder().decode(pdbBytes.subarray(0, 32));
+    if (!signature.startsWith("Microsoft C/C++ MSF 7.00")) {
+      t.skip("The installed SDK emitted a non-classic PDB format");
+      return;
+    }
+    const pdb = parseClassicPdb(pdbBytes);
+    const pe = parsePE(await readFile(join(output, "ClassicPdb.dll")));
+    const codeView = pe.debugDirectoryEntries.find((entry) => entry.codeView)?.codeView;
+    assert.ok(codeView);
+    assert.equal(codeView.guid, pdb.info.guid);
+    assert.equal(codeView.age, pdb.info.age);
+    assert.ok(pdb.streams.length >= 3);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 test("rewritten and signed IL assemblies with 15 directories load in .NET", {
   skip: dotnetAvailable ? false : ".NET SDK/runtime is unavailable"
