@@ -99,6 +99,9 @@ function parsePortablePdbStream(metadataRoot) {
   const rowCounts = new Map();
   for (let table = 0; table < 64; table++) {
     if ((referencedTypeSystemTables & (1n << BigInt(table))) !== 0n) {
+      if (table >= 45) {
+        throw new FormatError("Portable PDB #Pdb references a non-type-system metadata table");
+      }
       rowCounts.set(table, reader.u4());
     }
   }
@@ -156,6 +159,9 @@ export function parseEmbeddedPortablePdbData(bytes, offset, size) {
   const externalCounts = new Array(64).fill(0);
   for (const [table, count] of pdb.rowCounts) externalCounts[table] = count;
   const tables = parseTablesStream(metadataRoot.streams.get("#~"), externalCounts);
+  if ((tables.valid & ((1n << 45n) - 1n)) !== 0n) {
+    throw new FormatError("Portable PDB #~ stream contains type-system metadata tables");
+  }
   const heaps = new MetadataHeaps(metadataRoot.streams);
   const decoded = parsePortablePdbTables(tables, heaps, externalCounts);
   return {

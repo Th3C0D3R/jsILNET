@@ -398,6 +398,19 @@ test("embedded Portable PDB data validates and exposes its metadata streams", ()
   new DataView(truncated.buffer).setUint32(4, metadata.length + 1, true);
   assert.throws(() => parseEmbeddedPortablePdbData(truncated, 0, truncated.length),
     /decompressed size does not match/);
+
+  const invalidMaskMetadata = Uint8Array.from(metadata);
+  const invalidMaskView = new DataView(invalidMaskMetadata.buffer);
+  invalidMaskView.setUint32(76, 0, true);
+  invalidMaskView.setUint32(80, 1 << 13, true);
+  const invalidMaskCompressed = deflateRawSync(invalidMaskMetadata);
+  const invalidMaskContainer = new Uint8Array(8 + invalidMaskCompressed.length);
+  invalidMaskContainer.set(Uint8Array.of(0x4d, 0x50, 0x44, 0x42));
+  new DataView(invalidMaskContainer.buffer).setUint32(4, invalidMaskMetadata.length, true);
+  invalidMaskContainer.set(invalidMaskCompressed, 8);
+  assert.throws(() => parseEmbeddedPortablePdbData(
+    invalidMaskContainer, 0, invalidMaskContainer.length
+  ), /non-type-system metadata table/);
 });
 
 test("Portable PDB document names and sequence points decode bounded blobs", () => {
