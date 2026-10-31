@@ -718,7 +718,26 @@ export function replaceEmbeddedPortablePdbSource(pdb, documentRid, source, { com
       `Portable PDB Document row ${documentRid} has no EmbeddedSource record`
     );
   }
+  const documentRow = pdb.tables.rows.get(48)?.[documentRid - 1];
+  if (!documentRow) {
+    throw new FormatError(`Portable PDB Document row ${documentRid} is missing`);
+  }
+  const hashAlgorithmBytes = pdb.heaps.getGuid(documentRow.HashAlgorithm);
+  const hashAlgorithm = hashAlgorithmBytes ? formatGuid(hashAlgorithmBytes) : null;
+  const hashAlgorithms = new Map([
+    ["ff1816ec-aa5e-4d10-87f7-6f4963833460", "sha1"],
+    ["8829d00f-11b8-4213-878b-770e8597ac16", "sha256"],
+    ["d99cfeb1-8c43-444a-8a6c-b61269d2a0bf", "sha384"],
+    ["ef2d1afc-6550-46d6-b14b-d70afe9a5566", "sha512"]
+  ]);
+  const hashName = hashAlgorithms.get(hashAlgorithm);
+  if (!hashName) {
+    throw new UnsupportedFormatError(
+      `Portable PDB Document hash algorithm ${hashAlgorithm ?? "(nil)"} is unsupported`
+    );
+  }
   const rawSource = Uint8Array.from(source);
+  const sourceHash = Uint8Array.from(createHash(hashName).update(rawSource).digest());
   const compressed = compress && rawSource.length > 0
     ? Uint8Array.from(deflateRawSync(rawSource))
     : null;
@@ -728,10 +747,20 @@ export function replaceEmbeddedPortablePdbSource(pdb, documentRid, source, { com
   new DataView(value.buffer).setUint32(0, useCompressed ? rawSource.length : 0, true);
   value.set(payload, 4);
 
-  return replacePortablePdbCustomDebugInformationValue(pdb, debugInfo, value);
+  return replacePortablePdbCustomDebugInformationValue(
+    pdb,
+    debugInfo,
+    value,
+    { documentRid, hash: sourceHash }
+  );
 }
 
-function replacePortablePdbCustomDebugInformationValue(pdb, debugInfo, value) {
+function replacePortablePdbCustomDebugInformationValue(
+  pdb,
+  debugInfo,
+  value,
+  documentHashUpdate = null
+) {
   const streams = new Map([...pdb.metadataRoot.streams].map(([streamName, stream]) =>
     [streamName, { ...stream, bytes: Uint8Array.from(stream.bytes) }]
   ));
@@ -744,6 +773,16 @@ function replacePortablePdbCustomDebugInformationValue(pdb, debugInfo, value) {
   rows.set(55, debugRows.map((row) =>
     row.rid === debugInfo.rid ? { ...row, Value: appended.index } : { ...row }
   ));
+  if (documentHashUpdate) {
+    const documentRows = pdb.tables.rows.get(48) ?? [];
+    const appendedHash = appendBlobHeap(blobStream.bytes, documentHashUpdate.hash);
+    blobStream.bytes = appendedHash.heap;
+    rows.set(48, documentRows.map((row) =>
+      row.rid === documentHashUpdate.documentRid
+        ? { ...row, Hash: appendedHash.index }
+        : { ...row }
+    ));
+  }
   return serializeEmbeddedPortablePdb({
     ...pdb,
     metadataRoot: { ...pdb.metadataRoot, streams },

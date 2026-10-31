@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { generateKeyPairSync } from "node:crypto";
+import { createHash, generateKeyPairSync } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -530,6 +530,23 @@ test("strong-name signed PE32+ assemblies load and execute in .NET", {
       ).embeddedSource,
       changedSource
     );
+    const changedDocument = changedSourcePdb.documents.find((document) =>
+      document.rid === embeddedSourceRecord.Parent.target.rid
+    );
+    assert.ok(changedDocument);
+    assert.deepEqual(
+      Uint8Array.from(changedSourcePdb.heaps.getBlob(changedDocument.Hash)),
+      Uint8Array.from(createHash("sha256").update(changedSource).digest())
+    );
+    const nilHashRows = new Map(embeddedPdb.tables.rows);
+    nilHashRows.set(48, embeddedPdb.tables.rows.get(48).map((row) =>
+      row.rid === changedDocument.rid ? { ...row, HashAlgorithm: 0 } : { ...row }
+    ));
+    assert.throws(() => replaceEmbeddedPortablePdbSource(
+      { ...embeddedPdb, tables: { ...embeddedPdb.tables, rows: nilHashRows } },
+      changedDocument.rid,
+      changedSource
+    ), /hash algorithm.*unsupported/);
     assembly.replaceEmbeddedPortablePdbSource(
       embeddedPdbDebugIndex,
       embeddedSourceRecord.Parent.target.rid,
@@ -659,7 +676,7 @@ test("strong-name signed PE32+ assemblies load and execute in .NET", {
     )?.embeddedPortablePdb;
     const expectedPdb = refreshEmbeddedPortablePdbId(combinedPdb);
     assert.deepEqual(rewrittenPdb?.id, expectedPdb.id);
-    assert.deepEqual(rewrittenPdb?.documents, embeddedPdb.documents);
+    assert.deepEqual(rewrittenPdb?.documents, combinedPdb.documents);
     assert.deepEqual(rewrittenPdb?.methodDebugInformation, expectedMethodDebugInformation);
     assert.deepEqual(rewrittenPdb?.customDebugInformation, expectedCustomDebugInformation);
     const checksumEntry = signed.pe.debugDirectoryEntries.find((entry) => entry.type === 19);
