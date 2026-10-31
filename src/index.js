@@ -3418,11 +3418,32 @@ export class Assembly {
     }
     const method = this.methods[rid - 1];
     if (method?.rid !== rid) throw new FormatError(`MethodDef row ${rid} has inconsistent semantic records`);
-    if (method.parameterRids.length > 0 || method.parameters.length > 0) {
-      throw new UnsupportedFormatError("MethodDef removal currently requires a method with no Param rows");
-    }
     if (method.genericParams.length > 0) {
       throw new UnsupportedFormatError("MethodDef removal currently requires a method with no GenericParam rows");
+    }
+    const parameterRows = this.tables.rows.get(8) ?? [];
+    if (parameterRows.length !== (this.tables.counts[8] ?? 0)) {
+      throw new FormatError("Param row count is inconsistent with the metadata table header");
+    }
+    const parameterRids = new Set(method.parameterRids);
+    if (method.parameterRids.length !== method.parameters.length ||
+        parameterRids.size !== method.parameterRids.length) {
+      throw new FormatError(`MethodDef row ${rid} has inconsistent Param ownership`);
+    }
+    if (parameterRids.size > 0) {
+      if (rid !== rows.length) {
+        throw new UnsupportedFormatError(
+          "MethodDef removal with Param rows is currently limited to the trailing MethodDef"
+        );
+      }
+      const sortedParameterRids = [...parameterRids].sort((a, b) => a - b);
+      const firstParameterRid = parameterRows.length - sortedParameterRids.length + 1;
+      if (firstParameterRid < 1 ||
+          sortedParameterRids.some((parameterRid, index) => parameterRid !== firstParameterRid + index)) {
+        throw new UnsupportedFormatError(
+          "MethodDef removal requires its Param rows to form the trailing Param range"
+        );
+      }
     }
     const owners = this.types.filter((type) => type.methodRids.includes(rid));
     if (owners.length !== 1 || !owners[0].methods.some((candidate) => candidate.rid === rid)) {
@@ -3434,6 +3455,61 @@ export class Assembly {
         throw new UnsupportedFormatError(
           `Cannot remove MethodDef row ${rid} with unrecognized metadata stream ${streamName}`
         );
+      }
+    }
+
+    const paramPointerRows = parameterRids.size > 0
+      ? getBijectivePointerRows(this, 7, 8, "Param")
+      : null;
+    if (parameterRids.size > 0 && (this.tables.valid & (1n << 7n)) !== 0n) {
+      const pointerRids = paramPointerRows
+        .filter((pointer) => parameterRids.has(pointer.Param.rid))
+        .map((pointer) => pointer.rid);
+      const firstPointerRid = paramPointerRows.length - pointerRids.length + 1;
+      if (pointerRids.length !== parameterRids.size ||
+          pointerRids.some((pointerRid, index) => pointerRid !== firstPointerRid + index)) {
+        throw new UnsupportedFormatError(
+          "MethodDef removal requires its ParamPtr rows to form the trailing pointer range"
+        );
+      }
+    }
+    if (parameterRids.size > 0) {
+      for (const [tableId, tableRows] of this.tables.rows) {
+        const schema = metadataTableSchemas[tableId];
+        if (!schema) {
+          throw new UnsupportedFormatError(
+            `Cannot remove MethodDef row ${rid} with unknown metadata table ${tableId}`
+          );
+        }
+        for (const row of tableRows) {
+          for (const [kind, value, name, pointer] of schema) {
+            const columnName = name ?? value;
+            if (kind === "coded" && row[columnName]?.target?.table === 8 &&
+                parameterRids.has(row[columnName].target.rid)) {
+              throw new FormatError(
+                `Param row ${row[columnName].target.rid} is referenced by ${metadataTableNames[tableId]}.${columnName}`
+              );
+            }
+            if (kind === "table") {
+              const targetTable = pointer !== undefined &&
+                (this.tables.valid & (1n << BigInt(pointer))) !== 0n ? pointer : value;
+              if (targetTable !== 8 || (tableId === 6 && columnName === "ParamList") ||
+                  (tableId === 7 && columnName === "Param")) continue;
+              if (parameterRids.has(row[columnName]?.rid)) {
+                throw new FormatError(
+                  `Param row ${row[columnName].rid} is referenced by ${metadataTableNames[tableId]}.${columnName}`
+                );
+              }
+            }
+            if (kind === "u4" && (tableId === 30 || tableId === 31) &&
+                columnName === "Token" && row[columnName] >>> 24 === 8 &&
+                parameterRids.has(row[columnName] & 0x00ffffff)) {
+              throw new FormatError(
+                `Param row ${row[columnName] & 0x00ffffff} is referenced by ${metadataTableNames[tableId]}.${columnName}`
+              );
+            }
+          }
+        }
       }
     }
 
@@ -3604,6 +3680,23 @@ export class Assembly {
     for (const change of listChanges) change.row.MethodList = change.value;
     for (const update of tokenUpdates) update.instruction.operand.value = update.replacement;
     this._patches.push(...patches);
+    if (parameterRids.size > 0) {
+      const remainingParams = parameterRows.filter((parameter) => !parameterRids.has(parameter.rid));
+      this.tables.rows.set(8, remainingParams);
+      this.tables.counts[8] = remainingParams.length;
+      if (remainingParams.length === 0) this.tables.valid &= ~(1n << 8n);
+      if (paramPointerRows) {
+        const remainingParamPointers = paramPointerRows.filter((pointer) =>
+          !parameterRids.has(pointer.Param.rid)
+        );
+        remainingParamPointers.forEach((pointer, index) => {
+          pointer.rid = index + 1;
+        });
+        this.tables.rows.set(7, remainingParamPointers);
+        this.tables.counts[7] = remainingParamPointers.length;
+        if (remainingParamPointers.length === 0) this.tables.valid &= ~(1n << 7n);
+      }
+    }
     const remainingRows = rows.filter((row) => row.rid !== rid);
     remainingRows.forEach((row, index) => {
       row.rid = index + 1;

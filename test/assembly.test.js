@@ -2679,6 +2679,77 @@ test("trailing MethodDef removal preserves #- MethodPtr ownership", () => {
   assert.equal(reparsed.methods.some((method) => method.name === "DisposableMethod"), false);
 });
 
+test("trailing MethodDef removal also removes owned Param rows", () => {
+  for (const useParamPointerTable of [false, true]) {
+    const assembly = parseAssembly(withoutDebugDirectory());
+    if (useParamPointerTable) {
+      usePointerTable(assembly, {
+        pointerId: 7,
+        targetId: 8,
+        column: "Param",
+        listTableId: 6,
+        listColumn: "ParamList",
+        pointerName: "ParamPtr",
+        targetName: "Param"
+      });
+    }
+    const originalParamCount = assembly.tables.counts[8];
+    const originalParamPointerCount = assembly.tables.counts[7] ?? 0;
+    const owner = assembly.types.at(-1);
+    const token = assembly.addMethod({
+      owner: { table: "TypeDef", rid: owner.rid },
+      name: "MethodWithParameters",
+      flags: 0x0096,
+      signature: Uint8Array.of(0, 2, 1, 8, 8),
+      body: Uint8Array.of(0x06, 0x2a)
+    });
+    const methodRid = token & 0x00ffffff;
+    assembly.addParam({ owner: { table: "MethodDef", rid: methodRid }, sequence: 1 });
+    assembly.addParam({ owner: { table: "MethodDef", rid: methodRid }, sequence: 2 });
+    const pointerCountAfterAppend = assembly.tables.counts[7] ?? 0;
+
+    assert.equal(assembly.removeMethod(methodRid).size, 0);
+    assert.equal(assembly.tables.counts[8], originalParamCount);
+    assert.equal(assembly.tables.counts[7] ?? 0,
+      useParamPointerTable ? originalParamPointerCount : pointerCountAfterAppend);
+    const reparsed = parseAssembly(assembly.serialize());
+    assert.equal(reparsed.methods.some((method) => method.name === "MethodWithParameters"), false);
+    assert.equal(reparsed.tables.counts[8], originalParamCount);
+    assert.equal(reparsed.metadataRoot.streams.has("#-"), useParamPointerTable);
+    if (useParamPointerTable) {
+      assert.equal(reparsed.tables.counts[7], originalParamPointerCount);
+    }
+  }
+});
+
+test("MethodDef removal rejects referenced owned Param rows without mutation", () => {
+  const assembly = parseAssembly(withoutDebugDirectory());
+  const token = assembly.addMethod({
+    owner: { table: "TypeDef", rid: assembly.types.at(-1).rid },
+    name: "ReferencedParameter",
+    flags: 0x0096,
+    signature: Uint8Array.of(0, 1, 1, 8),
+    body: Uint8Array.of(0x06, 0x2a)
+  });
+  const methodRid = token & 0x00ffffff;
+  const paramRid = assembly.addParam({
+    owner: { table: "MethodDef", rid: methodRid },
+    sequence: 1
+  });
+  assembly.addConstant({
+    parent: { table: "Param", rid: paramRid },
+    type: 0x08,
+    value: Uint8Array.of(1, 0, 0, 0)
+  });
+  const methodCount = assembly.tables.counts[6];
+  const paramCount = assembly.tables.counts[8];
+
+  assert.throws(() => assembly.removeMethod(methodRid), /Param row .* referenced by Constant.Parent/);
+  assert.equal(assembly.tables.counts[6], methodCount);
+  assert.equal(assembly.tables.counts[8], paramCount);
+  assert.equal(assembly.methods.at(-1).rid, methodRid);
+});
+
 test("MethodDef removal refuses live CIL references without mutating metadata", () => {
   const assembly = parseAssembly(withoutDebugDirectory());
   const targetOwner = assembly.types.at(-1);
