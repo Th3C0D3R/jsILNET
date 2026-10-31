@@ -51,6 +51,8 @@ test("classic PDB parser reads a compiler-produced MSF identity", {
     assert.equal(codeView.guid, pdb.info.guid);
     assert.equal(codeView.age, pdb.info.age);
     assert.ok(pdb.streams.length >= 3);
+    assert.ok(pdb.info.namedStreams instanceof Map);
+    assert.ok(pdb.info.namedStreams.has("/names"));
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

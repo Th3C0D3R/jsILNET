@@ -14,6 +14,84 @@ function formatGuid(bytes) {
   return `${first}-${second}-${third}-${tail.slice(0, 4)}-${tail.slice(4)}`;
 }
 
+function parsePdbNamedStreams(infoStream, streams) {
+  let offset = 28;
+  const readU32 = (context) => {
+    if (offset > infoStream.length - 4) {
+      throw new FormatError(`Classic PDB information stream is truncated at ${context}`);
+    }
+    const value = new DataView(infoStream.buffer, infoStream.byteOffset + offset, 4)
+      .getUint32(0, true);
+    offset += 4;
+    return value;
+  };
+  const stringBufferSize = readU32("named-stream string buffer size");
+  if (stringBufferSize > infoStream.length - offset) {
+    throw new FormatError("Classic PDB named-stream string buffer exceeds its information stream");
+  }
+  const stringBuffer = infoStream.subarray(offset, offset + stringBufferSize);
+  offset += stringBufferSize;
+  const size = readU32("named-stream hash size");
+  const capacity = readU32("named-stream hash capacity");
+  if (capacity === 0 || size > Math.floor(capacity * 2 / 3) + 1) {
+    throw new FormatError("Classic PDB named-stream hash table size or capacity is invalid");
+  }
+  const readBitVector = (label) => {
+    const wordCount = readU32(`${label} word count`);
+    if (wordCount > Math.ceil(capacity / 32)) {
+      throw new FormatError(`Classic PDB named-stream ${label} bit vector exceeds its capacity`);
+    }
+    const indices = [];
+    for (let wordIndex = 0; wordIndex < wordCount; wordIndex++) {
+      const word = readU32(`${label} bit vector`);
+      for (let bit = 0; bit < 32; bit++) {
+        if ((word & (1 << bit)) === 0) continue;
+        const index = wordIndex * 32 + bit;
+        if (index >= capacity) {
+          throw new FormatError(`Classic PDB named-stream ${label} bit vector sets an out-of-range slot`);
+        }
+        indices.push(index);
+      }
+    }
+    return indices;
+  };
+  const present = readBitVector("present");
+  const deleted = readBitVector("deleted");
+  const deletedSlots = new Set(deleted);
+  if (present.length !== size || present.some((index) => deletedSlots.has(index))) {
+    throw new FormatError("Classic PDB named-stream hash bit vectors are inconsistent");
+  }
+  const namedStreams = new Map();
+  for (let index = 0; index < present.length; index++) {
+    const nameOffset = readU32("named-stream name offset");
+    const streamIndex = readU32("named-stream index");
+    if (nameOffset >= stringBuffer.length ||
+        streamIndex >= streams.length || streams[streamIndex].bytes === null) {
+      throw new FormatError("Classic PDB named-stream entry references missing data");
+    }
+    const terminator = stringBuffer.indexOf(0, nameOffset);
+    if (terminator < 0) {
+      throw new FormatError("Classic PDB named-stream name is not null-terminated");
+    }
+    let name;
+    try {
+      name = new TextDecoder("utf-8", { fatal: true })
+        .decode(stringBuffer.subarray(nameOffset, terminator));
+    } catch (error) {
+      throw new FormatError(`Classic PDB named-stream name is invalid UTF-8: ${error.message}`);
+    }
+    if (namedStreams.has(name)) throw new FormatError("Classic PDB named-stream map contains duplicate names");
+    namedStreams.set(name, streamIndex);
+  }
+  readU32("named-stream map terminator");
+  if ((infoStream.length - offset) % 4 !== 0) {
+    throw new FormatError("Classic PDB information stream has a truncated feature signature");
+  }
+  const featureSignatures = [];
+  while (offset < infoStream.length) featureSignatures.push(readU32("feature signature"));
+  return { namedStreams, featureSignatures };
+}
+
 export function parseClassicPdb(input) {
   const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
   if (bytes.length < 56) throw new FormatError("Classic PDB MSF superblock is truncated");
@@ -126,6 +204,7 @@ export function parseClassicPdb(input) {
   }
   const infoView = new DataView(infoStream.buffer, infoStream.byteOffset, infoStream.byteLength);
   const id = infoStream.subarray(12, 28);
+  const infoDetails = parsePdbNamedStreams(infoStream, streams);
   return {
     format: "MSF 7.0",
     blockSize,
@@ -134,7 +213,8 @@ export function parseClassicPdb(input) {
       version: infoView.getUint32(0, true),
       signature: infoView.getUint32(4, true),
       age: infoView.getUint32(8, true),
-      guid: formatGuid(id)
+      guid: formatGuid(id),
+      ...infoDetails
     },
     streams
   };

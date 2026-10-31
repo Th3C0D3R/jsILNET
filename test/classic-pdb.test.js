@@ -17,13 +17,14 @@ function makeClassicPdb() {
   view.setUint32(blockSize * 3, 4, true);
   view.setUint32(blockSize * 4, 2, true);
   view.setUint32(blockSize * 4 + 4, 0xffffffff, true);
-  view.setUint32(blockSize * 4 + 8, 28, true);
+  view.setUint32(blockSize * 4 + 8, 52, true);
   view.setUint32(blockSize * 4 + 12, 5, true);
 
   const info = blockSize * 5;
   view.setUint32(info, 20000404, true);
   view.setUint32(info + 4, 0x12345678, true);
   view.setUint32(info + 8, 3, true);
+  view.setUint32(info + 36, 8, true);
   bytes.set(Uint8Array.from([
     0x04, 0x03, 0x02, 0x01, 0x06, 0x05, 0x08, 0x07,
     0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10
@@ -39,8 +40,10 @@ test("classic PDB parser exposes MSF streams and information-stream identity", (
   assert.equal(pdb.info.signature, 0x12345678);
   assert.equal(pdb.info.age, 3);
   assert.equal(pdb.info.guid, "01020304-0506-0708-090a-0b0c0d0e0f10");
+  assert.deepEqual(pdb.info.namedStreams, new Map());
+  assert.deepEqual(pdb.info.featureSignatures, []);
   assert.equal(pdb.streams[0].bytes, null);
-  assert.equal(pdb.streams[1].bytes.length, 28);
+  assert.equal(pdb.streams[1].bytes.length, 52);
 });
 
 test("classic PDB parser rejects invalid signatures and overlapping MSF blocks", () => {
