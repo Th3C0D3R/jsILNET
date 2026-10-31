@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { generateKeyPairSync } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -12,7 +13,7 @@ const targetFramework = dotnetAvailable
   ? `net${dotnetVersion.stdout.trim().split(".")[0]}.0`
   : null;
 
-test("rewritten IL assemblies load and execute in the installed .NET runtime", {
+test("rewritten and signed IL assemblies with 15 directories load in .NET", {
   skip: dotnetAvailable ? false : ".NET SDK/runtime is unavailable"
 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), "jsilnet-runtime-"));
@@ -26,6 +27,11 @@ test("rewritten IL assemblies load and execute in the installed .NET runtime", {
     const view = new DataView(bytes.buffer);
     view.setUint32(debugDirectoryOffset, 0, true);
     view.setUint32(debugDirectoryOffset + 4, 0, true);
+    view.setUint32(
+      pe.optionalHeaderOffset + (pe.optionalHeaderMagic === 0x10b ? 92 : 108),
+      15,
+      true
+    );
     const assembly = parseAssembly(bytes);
     assembly.tables.sorted &= ~(1n << 12n);
     const insertedMethodToken = assembly.insertMethod({
@@ -102,8 +108,15 @@ test("rewritten IL assemblies load and execute in the installed .NET runtime", {
       signature: Uint8Array.of(0x00, 0x00, 0x08),
       body: Uint8Array.of(0x0e, 0x1f, 44, 0x2a)
     });
+    assembly.replaceStrongNamePublicKey(
+      generateKeyPairSync("rsa", { modulusLength: 1024 }).privateKey
+    );
     const assemblyPath = join(directory, "Fixture.dll");
-    await writeFile(assemblyPath, assembly.serialize());
+    const rewrittenBytes = assembly.serialize();
+    const rewritten = parseAssembly(rewrittenBytes);
+    assert.equal(rewritten.pe.directories.length, 15);
+    assert.equal(rewritten.verifyStrongNameSignature(), true);
+    await writeFile(assemblyPath, rewrittenBytes);
     const projectPath = join(directory, "RuntimeSmoke.csproj");
     await writeFile(projectPath, [
       "<Project Sdk=\"Microsoft.NET.Sdk\">",

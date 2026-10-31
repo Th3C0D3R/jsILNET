@@ -144,9 +144,9 @@ export function decodeStrongNamePublicKey(bytes) {
 function getStrongNameRanges(bytes, pe, cli) {
   const fixedOptionalHeaderSize = pe.optionalHeaderMagic === 0x10b ? 96 : 112;
   if (pe.optionalHeaderSize !== fixedOptionalHeaderSize + 16 * 8 ||
-      pe.directories.length !== 16) {
+      pe.directories.length < 15 || pe.directories.length > 16) {
     throw new UnsupportedFormatError(
-      "Strong-name signing requires the standard PE optional header with 16 data directories"
+      "Strong-name signing requires the standard PE optional header with 15 or 16 declared data directories"
     );
   }
   const signature = cli.strongNameSignature;

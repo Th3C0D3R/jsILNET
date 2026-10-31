@@ -151,6 +151,16 @@ function addExtraPEDataDirectory(input) {
   return bytes;
 }
 
+function withPEDataDirectoryCount(input, count) {
+  const bytes = Uint8Array.from(input);
+  const pe = parsePE(bytes);
+  const countOffset = pe.optionalHeaderOffset +
+    (pe.optionalHeaderMagic === 0x10b ? 92 : 108);
+  new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+    .setUint32(countOffset, count, true);
+  return bytes;
+}
+
 function addStrongNameSignatureSlot(input, size) {
   const assembly = parseAssembly(input);
   const metadataOffset = assembly.pe.rvaToOffset(
@@ -524,6 +534,18 @@ test("strong-name signing preserves and verifies a reserved RSA signature slot",
   assert.equal(parseAssembly(invalidSignature).verifyStrongNameSignature(), false);
 });
 
+test("strong-name signing supports a standard optional header declaring 15 directories", () => {
+  const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 1024 });
+  const input = withPEDataDirectoryCount(withoutDebugDirectory(), 15);
+  assert.equal(parsePE(input).directories.length, 15);
+  const assembly = parseAssembly(addStrongNameSignatureSlot(input, 128));
+  setStrongNameAssemblyKey(assembly, privateKey, 0x00008004);
+
+  const signed = parseAssembly(assembly.signStrongName(privateKey).serialize());
+  assert.equal(signed.pe.directories.length, 15);
+  assert.equal(signed.verifyStrongNameSignature(), true);
+});
+
 test("strong-name signing rejects optional headers with additional directories", () => {
   const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 1024 });
   const input = addExtraPEDataDirectory(withoutDebugDirectory());
@@ -533,7 +555,7 @@ test("strong-name signing rejects optional headers with additional directories",
 
   assert.throws(
     () => assembly.signStrongName(privateKey).serialize(),
-    /standard PE optional header with 16 data directories/
+    /standard PE optional header with 15 or 16 declared data directories/
   );
 });
 
