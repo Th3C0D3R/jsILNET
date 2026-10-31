@@ -78,15 +78,29 @@ function getManagedTypeName(assembly, reference) {
   }
   if (reference?.table === 2) {
     const type = assembly.types[reference.rid - 1];
-    return type ? `${type.namespace ? `${type.namespace}.` : ""}${type.name}` : null;
+    return type ? getManagedTypeDefinitionName(assembly, type) : null;
   }
   return null;
+}
+
+function getManagedTypeDefinitionName(assembly, type, visited = new Set()) {
+  if (!type) return null;
+  if (visited.has(type.rid)) {
+    throw new FormatError("Nested TypeDef relationships contain a cycle");
+  }
+  visited.add(type.rid);
+  const nesting = (assembly.tables.rows.get(41) ?? [])
+    .find((row) => row.NestedClass.rid === type.rid);
+  if (!nesting) return `${type.namespace ? `${type.namespace}.` : ""}${type.name}`;
+  const enclosingType = assembly.types[nesting.EnclosingClass.rid - 1];
+  const enclosingName = getManagedTypeDefinitionName(assembly, enclosingType, visited);
+  return enclosingName ? `${enclosingName}+${type.name}` : null;
 }
 
 function resolveEnumElementType(assembly, name) {
   const fullName = name.split(",", 1)[0].trim();
   const definition = assembly.types.find((type) =>
-    `${type.namespace ? `${type.namespace}.` : ""}${type.name}` === fullName
+    getManagedTypeDefinitionName(assembly, type) === fullName
   );
   if (!definition || getManagedTypeName(assembly, definition.extends) !== "System.Enum") {
     throw new UnsupportedFormatError(

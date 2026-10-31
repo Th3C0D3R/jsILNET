@@ -294,7 +294,18 @@ test("strong-name signed PE32+ assemblies load and execute in .NET", {
       "public static class RuntimeLibrary",
       "{",
       "    public static int Answer() => 42;",
-      "}"
+      "}",
+      "public class Outer",
+      "{",
+      "    public enum Mode : int { Value = 2 }",
+      "}",
+      "[System.AttributeUsage(System.AttributeTargets.Class)]",
+      "public sealed class EnumDataAttribute : System.Attribute",
+      "{",
+      "    public EnumDataAttribute(Outer.Mode mode) { }",
+      "}",
+      "[EnumData(Outer.Mode.Value)]",
+      "public class NestedEnumTarget { }"
     ].join("\n"));
     const libraryBuild = spawnSync(
       "dotnet",
@@ -310,6 +321,18 @@ test("strong-name signed PE32+ assemblies load and execute in .NET", {
     const assemblyPath = join(libraryDirectory, "RuntimeLibrary.dll");
     const assembly = parseAssembly(await readFile(assemblyPath));
     assert.equal(assembly.pe.optionalHeaderMagic, 0x20b);
+    const enumDataAttribute = assembly.customAttributes.find((attribute) =>
+      assembly.types.some((type) =>
+        type.name === "EnumDataAttribute" &&
+        type.methodRids.includes(attribute.constructor.rid) &&
+        attribute.constructor.table === 6
+      )
+    );
+    assert.ok(enumDataAttribute);
+    assert.equal(
+      assembly.parseCustomAttribute(enumDataAttribute.rid).fixedArguments[0],
+      2
+    );
     const embeddedPdb = assembly.pe.debugDirectoryEntries.find((entry) =>
       entry.type === 17
     )?.embeddedPortablePdb;
