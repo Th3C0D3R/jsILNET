@@ -1,6 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseClassicPdb, replaceClassicPdbSymbolName } from "../src/index.js";
+import {
+  parseClassicPdb,
+  replaceClassicPdbStringTableName,
+  replaceClassicPdbSymbolName
+} from "../src/index.js";
 import {
   parseCodeViewC13Subsections,
   parseCodeViewSymbolRecords,
@@ -106,6 +110,48 @@ function makeClassicPdbWithSymbols({ crossBlockName = false } = {}) {
   return bytes;
 }
 
+function makeClassicPdbWithNames() {
+  const blockSize = 512;
+  const bytes = new Uint8Array(blockSize * 7);
+  const view = new DataView(bytes.buffer);
+  bytes.set(new TextEncoder().encode("Microsoft C/C++ MSF 7.00\r\n\u001aDS\0\0\0"));
+  view.setUint32(32, blockSize, true);
+  view.setUint32(36, 1, true);
+  view.setUint32(40, 7, true);
+  view.setUint32(44, 24, true);
+  view.setUint32(52, 3, true);
+  view.setUint32(blockSize * 3, 4, true);
+
+  const directoryOffset = blockSize * 4;
+  view.setUint32(directoryOffset, 3, true);
+  view.setUint32(directoryOffset + 4, 0xffffffff, true);
+  view.setUint32(directoryOffset + 8, 72, true);
+  view.setUint32(directoryOffset + 12, 37, true);
+  view.setUint32(directoryOffset + 16, 5, true);
+  view.setUint32(directoryOffset + 20, 6, true);
+
+  const infoOffset = blockSize * 5;
+  view.setUint32(infoOffset, 20000404, true);
+  view.setUint32(infoOffset + 4, 0x12345678, true);
+  view.setUint32(infoOffset + 8, 3, true);
+  view.setUint32(infoOffset + 28, 8, true);
+  bytes.set([0, 0x2f, 0x6e, 0x61, 0x6d, 0x65, 0x73, 0], infoOffset + 32);
+  view.setUint32(infoOffset + 40, 1, true);
+  view.setUint32(infoOffset + 44, 1, true);
+  view.setUint32(infoOffset + 48, 1, true);
+  view.setUint32(infoOffset + 52, 1, true);
+  view.setUint32(infoOffset + 56, 0, true);
+  view.setUint32(infoOffset + 60, 1, true);
+  view.setUint32(infoOffset + 64, 2, true);
+  view.setUint32(infoOffset + 68, 0, true);
+  bytes.set([
+    0xfe, 0xef, 0xfe, 0xef, 1, 0, 0, 0, 9, 0, 0, 0,
+    0, 0x66, 0x6f, 0x6f, 0, 0x62, 0x61, 0x72, 0,
+    2, 0, 0, 0, 1, 0, 0, 0, 5, 0, 0, 0, 2, 0, 0, 0
+  ], blockSize * 6);
+  return bytes;
+}
+
 test("classic PDB parser exposes MSF streams and information-stream identity", () => {
   const pdb = parseClassicPdb(makeClassicPdb());
   assert.equal(pdb.format, "MSF 7.0");
@@ -165,6 +211,21 @@ test("classic PDB symbol names can cross MSF stream blocks", () => {
   assert.equal(parseClassicPdb(rewritten).dbi.modules[0].symbols.records[1].decoded.name, "long");
   assert.deepEqual(rewritten.subarray(512 * 7 + 510, 512 * 8 + 4),
     Uint8Array.from([0x6c, 0x6f, 0x6e, 0x67, 0, 0xf1]));
+});
+
+test("classic PDB /names entries can be replaced without shifting string offsets", () => {
+  const original = makeClassicPdbWithNames();
+  const rewritten = replaceClassicPdbStringTableName(original, {
+    nameOffset: 1,
+    name: "bar"
+  });
+  assert.equal(parseClassicPdb(rewritten).info.stringTable.strings.get(1), "bar");
+  assert.deepEqual(rewritten.subarray(512 * 6 + 13, 512 * 6 + 16),
+    Uint8Array.from([0x62, 0x61, 0x72]));
+  assert.throws(() => replaceClassicPdbStringTableName(original, {
+    nameOffset: 1,
+    name: "longer"
+  }), /preserve the UTF-8 byte length/);
 });
 
 test("classic PDB module symbols preserve bounded CodeView record payloads", () => {
