@@ -431,6 +431,10 @@ test("Portable PDB document names and sequence points round-trip bounded blobs",
     decodePortablePdbDocumentName(encodePortablePdbDocumentName("🧭", [1, 2]), heaps),
     "src🧭a.cs"
   );
+  assert.equal(
+    decodePortablePdbDocumentName(encodePortablePdbDocumentName("\ufeff", [1, 2]), heaps),
+    "src\ufeffa.cs"
+  );
   assert.throws(() => encodePortablePdbDocumentName("::", [1, 2]), /separator/);
   assert.throws(() => encodePortablePdbDocumentName("\ud800", [1, 2]), /valid Unicode/);
 

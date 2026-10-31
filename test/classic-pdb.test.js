@@ -210,6 +210,12 @@ test("classic PDB symbol names can be resized within existing MSF allocations", 
   assert.equal(resizedPdb.dbi.modules[0].symbols.records[0].decoded.name, "expansive");
   assert.equal(resizedPdb.dbi.modules[0].symbolBytes, 28);
   assert.equal(resizedPdb.streams[4].size, 28);
+  const bomSymbol = replaceClassicPdbSymbolName(original, {
+    moduleIndex: 0,
+    recordIndex: 0,
+    name: "\ufeff"
+  });
+  assert.equal(parseClassicPdb(bomSymbol).dbi.modules[0].symbols.records[0].decoded.name, "\ufeff");
   const shrunk = replaceClassicPdbSymbolName(original, {
     moduleIndex: 0,
     recordIndex: 0,
@@ -264,6 +270,11 @@ test("classic PDB /names entries can be replaced without shifting string offsets
   assert.equal(parseClassicPdb(rewritten).info.stringTable.strings.get(1), "bar");
   assert.deepEqual(rewritten.subarray(512 * 6 + 13, 512 * 6 + 16),
     Uint8Array.from([0x62, 0x61, 0x72]));
+  const bomName = replaceClassicPdbStringTableName(original, {
+    nameOffset: 1,
+    name: "\ufeff"
+  });
+  assert.equal(parseClassicPdb(bomName).info.stringTable.strings.get(1), "\ufeff");
   assert.throws(() => replaceClassicPdbStringTableName(original, {
     nameOffset: 1,
     name: "longer"

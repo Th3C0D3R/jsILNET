@@ -26,7 +26,7 @@ export function validatePortablePdbAssemblyReferences(pdb, assemblyRowCounts) {
 
 function decodeUtf8(bytes, context) {
   try {
-    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
   } catch (error) {
     throw new FormatError(`Invalid UTF-8 data: ${error.message}`, { context });
   }
@@ -159,7 +159,7 @@ export function encodePortablePdbDocumentName(separator, partBlobIndices) {
     throw new TypeError("Portable PDB document names require at least one blob index");
   }
   const separatorBytes = new TextEncoder().encode(separator);
-  if (new TextDecoder("utf-8", { fatal: true }).decode(separatorBytes) !== separator) {
+  if (new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(separatorBytes) !== separator) {
     throw new TypeError("Portable PDB document-name separator must contain valid Unicode");
   }
   const output = [...(separatorBytes.length === 0 ? [0] : separatorBytes)];

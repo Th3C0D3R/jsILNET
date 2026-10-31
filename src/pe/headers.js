@@ -75,7 +75,7 @@ function parseCodeViewData(bytes, offset, size) {
   return {
     format,
     ...identity,
-    path: new TextDecoder().decode(pathBytes.subarray(0, terminator)),
+    path: new TextDecoder("utf-8", { ignoreBOM: true }).decode(pathBytes.subarray(0, terminator)),
     pathOffset,
     pathByteLength: terminator
   };

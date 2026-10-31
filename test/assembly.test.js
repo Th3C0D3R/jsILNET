@@ -10,6 +10,7 @@ import {
   metadataTableNames,
   parseCliHeader,
   parseAssembly,
+  parseCustomAttribute,
   parsePE,
   parsePermissionSet,
   parseSignature,
@@ -816,6 +817,13 @@ test("CodeView PDB paths can be replaced within their record size and preserve i
   assert.equal(
     parseAssembly(shortened.serialize()).pe.debugDirectoryEntries[0].codeView.path,
     codeView.path
+  );
+  const bomPath = `\ufeff${"x".repeat(codeView.pathByteLength - 3)}`;
+  const withBom = parseAssembly(fixture);
+  withBom.replaceCodeViewPath(0, bomPath);
+  assert.equal(
+    parseAssembly(withBom.serialize()).pe.debugDirectoryEntries[0].codeView.path,
+    bomPath
   );
 
   assembly.replaceCodeViewPath(0, nextPath);
@@ -7774,6 +7782,14 @@ test("custom-attribute encoding rejects invalid Unicode and enum encodings", () 
       value: 1
     }]
   }, []), /enum types require a name/);
+  const bomString = "\ufeffleading character";
+  assert.deepEqual(parseCustomAttribute(encodeCustomAttribute({
+    fixedArguments: [bomString],
+    namedArguments: []
+  }, [{ kind: "string" }]), [{ kind: "string" }]), {
+    fixedArguments: [bomString],
+    namedArguments: []
+  });
 });
 
 test("binary and XML PermissionSets encode and parse round-trip", () => {

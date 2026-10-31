@@ -90,7 +90,7 @@ function parsePdbNamedStreams(infoStream, streams) {
     }
     let name;
     try {
-      name = new TextDecoder("utf-8", { fatal: true })
+      name = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true })
         .decode(stringBuffer.subarray(nameOffset, terminator));
     } catch (error) {
       throw new FormatError(`Classic PDB named-stream name is invalid UTF-8: ${error.message}`);
@@ -118,7 +118,7 @@ function parseDbiModules(dbiStream, moduleInfoSize, streams, pdbStrings) {
     if (offset >= end) throw new FormatError(`Classic PDB DBI ${context} is not null-terminated`);
     const bytes = dbiStream.subarray(start, offset++);
     try {
-      return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+      return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
     } catch (error) {
       throw new FormatError(`Classic PDB DBI ${context} is invalid UTF-8: ${error.message}`);
     }
@@ -229,7 +229,7 @@ function parseDbiFileInfo(dbiStream, fileInfoOffset, fileInfoSize, modules) {
       }
       try {
         filesByModule[index].push(
-          new TextDecoder("utf-8", { fatal: true }).decode(names.subarray(nameOffset, terminator))
+          new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(names.subarray(nameOffset, terminator))
         );
       } catch (error) {
         throw new FormatError(`Classic PDB DBI source-file name is invalid UTF-8: ${error.message}`);
@@ -258,7 +258,7 @@ function readCodeViewName(bytes, offset, context, allowZeroPadding = false) {
     }
   }
   try {
-    return new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(offset, end));
+    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes.subarray(offset, end));
   } catch (error) {
     throw new FormatError(`Classic PDB ${context} name is invalid UTF-8: ${error.message}`);
   }
@@ -700,7 +700,7 @@ export function parsePdbStringTable(input) {
     if (terminator < 0) throw new FormatError("Classic PDB /names string is not null-terminated");
     let value;
     try {
-      value = new TextDecoder("utf-8", { fatal: true })
+      value = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true })
         .decode(stringBytes.subarray(stringOffset, terminator));
     } catch (error) {
       throw new FormatError(`Classic PDB /names string is invalid UTF-8: ${error.message}`);
@@ -1036,7 +1036,7 @@ function encodeClassicPdbReplacementText(value, context) {
     throw new TypeError(`${context} must be a string without null characters`);
   }
   const bytes = new TextEncoder().encode(value);
-  if (new TextDecoder("utf-8", { fatal: true }).decode(bytes) !== value) {
+  if (new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes) !== value) {
     throw new TypeError(`${context} must contain valid Unicode`);
   }
   return bytes;

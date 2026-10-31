@@ -2620,7 +2620,7 @@ export class Assembly {
       throw new UnsupportedFormatError("Debug-directory entry is not a supported CodeView record");
     }
     const encodedPath = new TextEncoder().encode(path);
-    if (new TextDecoder().decode(encodedPath) !== path) {
+    if (new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(encodedPath) !== path) {
       throw new TypeError("CodeView PDB path must be valid UTF-8 text");
     }
     const pathSlotSize = entry.sizeOfData - codeView.pathOffset;

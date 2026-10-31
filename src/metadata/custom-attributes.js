@@ -15,7 +15,7 @@ function readSerString(reader) {
   const length = readCompressedUInt(reader);
   const bytes = reader.take(length);
   try {
-    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
   } catch (error) {
     throw new FormatError(`Invalid custom-attribute SerString: ${error.message}`);
   }
@@ -24,7 +24,7 @@ function readSerString(reader) {
 function encodeUtf8(value, context) {
   if (typeof value !== "string") throw new TypeError(`${context} must be a string`);
   const bytes = new TextEncoder().encode(value);
-  if (new TextDecoder("utf-8", { fatal: true }).decode(bytes) !== value) {
+  if (new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes) !== value) {
     throw new TypeError(`${context} must contain valid Unicode`);
   }
   return bytes;
