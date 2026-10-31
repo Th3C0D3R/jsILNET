@@ -138,6 +138,12 @@ function parseDbiModules(dbiStream, moduleInfoSize, streams) {
     const symbols = symbolBytes === 0
       ? null
       : parseCodeViewSymbolRecords(streams[streamIndex].bytes.subarray(0, symbolBytes));
+    const c13Offset = symbolBytes + c11Bytes;
+    const c13 = c13Bytes === 0
+      ? null
+      : parseCodeViewC13Subsections(
+        streams[streamIndex].bytes.subarray(c13Offset, c13Offset + c13Bytes)
+      );
     modules.push({
       moduleName,
       objectName,
@@ -146,6 +152,7 @@ function parseDbiModules(dbiStream, moduleInfoSize, streams) {
       c11Bytes,
       c13Bytes,
       symbols,
+      c13,
       fileCount
     });
   }
@@ -277,6 +284,139 @@ function decodeCodeViewSymbol(kind, data) {
     };
   }
   return null;
+}
+
+function parseCodeViewFileChecksums(data) {
+  const checksums = new Map();
+  let offset = 0;
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  while (offset < data.length) {
+    if (data.length - offset < 6) {
+      throw new FormatError("Classic PDB file-checksum record is truncated");
+    }
+    const recordStart = offset;
+    const fileNameOffset = view.getUint32(offset, true);
+    const checksumSize = data[offset + 4];
+    const checksumKind = data[offset + 5];
+    const expectedSize = new Map([[0, 0], [1, 16], [2, 20], [3, 32]]).get(checksumKind);
+    if (expectedSize === undefined || checksumSize !== expectedSize) {
+      throw new FormatError("Classic PDB file-checksum kind or length is invalid");
+    }
+    offset += 6;
+    if (checksumSize > data.length - offset) {
+      throw new FormatError("Classic PDB file-checksum bytes exceed their subsection");
+    }
+    const checksum = data.slice(offset, offset + checksumSize);
+    offset += checksumSize;
+    const alignedOffset = (offset + 3) & ~3;
+    if (alignedOffset > data.length || data.subarray(offset, alignedOffset).some((byte) => byte !== 0)) {
+      throw new FormatError("Classic PDB file-checksum padding is invalid");
+    }
+    offset = alignedOffset;
+    if (checksums.has(recordStart)) {
+      throw new FormatError("Classic PDB file-checksum offsets are duplicated");
+    }
+    checksums.set(recordStart, { fileNameOffset, checksumKind, checksum });
+  }
+  return checksums;
+}
+
+function parseCodeViewLines(data, fileChecksums) {
+  if (data.length < 12) throw new FormatError("Classic PDB line subsection header is truncated");
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  const relocationOffset = view.getUint32(0, true);
+  const segment = view.getUint16(4, true);
+  const flags = view.getUint16(6, true);
+  const codeSize = view.getUint32(8, true);
+  if ((flags & ~1) !== 0) throw new UnsupportedFormatError("Classic PDB line subsection has unsupported flags");
+  const hasColumns = (flags & 1) !== 0;
+  const blocks = [];
+  let offset = 12;
+  while (offset < data.length) {
+    if (data.length - offset < 12) {
+      throw new FormatError("Classic PDB line block header is truncated");
+    }
+    const fileChecksumOffset = view.getUint32(offset, true);
+    const lineCount = view.getUint32(offset + 4, true);
+    const blockSize = view.getUint32(offset + 8, true);
+    const minimumSize = 12 + lineCount * (hasColumns ? 12 : 8);
+    if (blockSize < minimumSize || blockSize > data.length - offset) {
+      throw new FormatError("Classic PDB line block size is invalid");
+    }
+    const checksum = fileChecksums.get(fileChecksumOffset);
+    if (!checksum) {
+      throw new FormatError("Classic PDB line block references a missing file-checksum record");
+    }
+    const lines = [];
+    let lineOffset = offset + 12;
+    for (let index = 0; index < lineCount; index++) {
+      const codeOffset = view.getUint32(lineOffset, true);
+      const lineFlags = view.getUint32(lineOffset + 4, true);
+      if (codeOffset > codeSize) {
+        throw new FormatError("Classic PDB line offset exceeds its code contribution");
+      }
+      lines.push({
+        offset: codeOffset,
+        startLine: lineFlags & 0x00ffffff,
+        endLineDelta: (lineFlags >>> 24) & 0x7f,
+        isStatement: (lineFlags & 0x80000000) !== 0
+      });
+      lineOffset += 8;
+    }
+    if (hasColumns) {
+      for (const line of lines) {
+        line.startColumn = view.getUint16(lineOffset, true);
+        line.endColumn = view.getUint16(lineOffset + 2, true);
+        lineOffset += 4;
+      }
+    }
+    blocks.push({
+      fileChecksumOffset,
+      fileNameOffset: checksum.fileNameOffset,
+      checksumKind: checksum.checksumKind,
+      checksum: checksum.checksum,
+      lines
+    });
+    offset += blockSize;
+  }
+  return { relocationOffset, segment, flags, codeSize, blocks };
+}
+
+export function parseCodeViewC13Subsections(input) {
+  const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
+  const subsections = [];
+  let offset = 0;
+  while (offset < bytes.length) {
+    if (bytes.length - offset < 8) {
+      throw new FormatError("Classic PDB C13 subsection header is truncated");
+    }
+    const view = new DataView(bytes.buffer, bytes.byteOffset + offset, 8);
+    const kind = view.getUint32(0, true);
+    const size = view.getUint32(4, true);
+    const dataStart = offset + 8;
+    const dataEnd = dataStart + size;
+    if (dataEnd > bytes.length) {
+      throw new FormatError("Classic PDB C13 subsection exceeds its module stream");
+    }
+    subsections.push({ kind, data: bytes.slice(dataStart, dataEnd) });
+    const alignedEnd = (dataEnd + 3) & ~3;
+    if (alignedEnd > bytes.length) {
+      throw new FormatError("Classic PDB C13 subsection alignment exceeds its module stream");
+    }
+    offset = alignedEnd;
+  }
+  const stringTables = subsections.filter((subsection) => subsection.kind === 0xf3);
+  const checksumTables = subsections.filter((subsection) => subsection.kind === 0xf4);
+  if (stringTables.length > 1 || checksumTables.length > 1) {
+    throw new FormatError("Classic PDB C13 stream contains duplicate string or checksum subsections");
+  }
+  const fileChecksums = checksumTables.length > 0
+    ? parseCodeViewFileChecksums(checksumTables[0].data)
+    : new Map();
+  const lines = subsections
+    .filter((subsection) => subsection.kind === 0xf2)
+    .map((subsection) => parseCodeViewLines(subsection.data, fileChecksums));
+  return { subsections, fileChecksums, lines };
 }
 
 export function parseCodeViewSymbolRecords(input) {

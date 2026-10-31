@@ -1,7 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { parseClassicPdb } from "../src/index.js";
-import { parseCodeViewSymbolRecords } from "../src/metadata/classic-pdb.js";
+import {
+  parseCodeViewC13Subsections,
+  parseCodeViewSymbolRecords
+} from "../src/metadata/classic-pdb.js";
 
 function makeClassicPdb() {
   const blockSize = 512;
@@ -138,4 +141,52 @@ test("classic PDB symbol decoding exposes public, data, and procedure names", ()
     flags: 2,
     name: "meth"
   });
+});
+
+test("classic PDB C13 line subsections decode bounded line and column records", () => {
+  const c13 = new Uint8Array(60);
+  const view = new DataView(c13.buffer);
+  view.setUint32(0, 0xf2, true);
+  view.setUint32(4, 36, true);
+  view.setUint32(8, 0x20, true);
+  view.setUint16(12, 2, true);
+  view.setUint16(14, 1, true);
+  view.setUint32(16, 10, true);
+  view.setUint32(20, 0, true);
+  view.setUint32(24, 1, true);
+  view.setUint32(28, 24, true);
+  view.setUint32(32, 4, true);
+  view.setUint32(36, 0x80000005, true);
+  view.setUint16(40, 3, true);
+  view.setUint16(42, 9, true);
+  view.setUint32(44, 0xf4, true);
+  view.setUint32(48, 8, true);
+  view.setUint32(52, 1, true);
+  c13[56] = 0;
+  c13[57] = 0;
+
+  const parsed = parseCodeViewC13Subsections(c13);
+  assert.equal(parsed.subsections.length, 2);
+  assert.deepEqual(parsed.lines[0], {
+    relocationOffset: 0x20,
+    segment: 2,
+    flags: 1,
+    codeSize: 10,
+    blocks: [{
+      fileChecksumOffset: 0,
+      fileNameOffset: 1,
+      checksumKind: 0,
+      checksum: new Uint8Array(),
+      lines: [{
+        offset: 4,
+        startLine: 5,
+        endLineDelta: 0,
+        isStatement: true,
+        startColumn: 3,
+        endColumn: 9
+      }]
+    }]
+  });
+  assert.throws(() => parseCodeViewC13Subsections(c13.subarray(0, 10)),
+    /subsection exceeds its module stream/);
 });
