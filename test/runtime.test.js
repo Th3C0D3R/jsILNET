@@ -20,6 +20,7 @@ import {
   serializeEmbeddedPortablePdb
 } from "../src/index.js";
 import { parseEmbeddedPortablePdbData } from "../src/pe/headers.js";
+import { refreshEmbeddedPortablePdbId } from "../src/metadata/portable-pdb.js";
 import { appendBlobHeap } from "../src/metadata/writer.js";
 
 const dotnetVersion = spawnSync("dotnet", ["--version"], { encoding: "utf8" });
@@ -345,6 +346,16 @@ test("strong-name signed PE32+ assemblies load and execute in .NET", {
       entry.type === 17
     )?.embeddedPortablePdb;
     assert.ok(embeddedPdb);
+    const refreshedOriginalPdb = refreshEmbeddedPortablePdbId(embeddedPdb);
+    const reparsedRefreshedPdb = parseEmbeddedPortablePdbData(
+      refreshedOriginalPdb.bytes,
+      0,
+      refreshedOriginalPdb.bytes.length
+    );
+    assert.deepEqual(
+      refreshEmbeddedPortablePdbId(reparsedRefreshedPdb).id,
+      refreshedOriginalPdb.id
+    );
     const embeddedPdbDebugIndex = assembly.pe.debugDirectoryEntries.findIndex((entry) =>
       entry.type === 17
     );
@@ -640,10 +651,27 @@ test("strong-name signed PE32+ assemblies load and execute in .NET", {
     const rewrittenPdb = signed.pe.debugDirectoryEntries.find((entry) =>
       entry.type === 17
     )?.embeddedPortablePdb;
-    assert.deepEqual(rewrittenPdb?.id, embeddedPdb.id);
+    const expectedPdb = refreshEmbeddedPortablePdbId(combinedPdb);
+    assert.deepEqual(rewrittenPdb?.id, expectedPdb.id);
     assert.deepEqual(rewrittenPdb?.documents, embeddedPdb.documents);
     assert.deepEqual(rewrittenPdb?.methodDebugInformation, expectedMethodDebugInformation);
     assert.deepEqual(rewrittenPdb?.customDebugInformation, expectedCustomDebugInformation);
+    const checksumEntry = signed.pe.debugDirectoryEntries.find((entry) => entry.type === 19);
+    assert.ok(checksumEntry);
+    const checksumOffset = checksumEntry.pointerToRawData !== 0
+      ? checksumEntry.pointerToRawData
+      : signed.pe.rvaToOffset(checksumEntry.addressOfRawData, checksumEntry.sizeOfData);
+    const checksumBytes = signed.pe.bytes.subarray(
+      checksumOffset,
+      checksumOffset + checksumEntry.sizeOfData
+    );
+    const checksumNameEnd = checksumBytes.indexOf(0);
+    const checksumName = new TextDecoder("ascii", { fatal: true })
+      .decode(checksumBytes.subarray(0, checksumNameEnd));
+    assert.deepEqual(
+      checksumBytes.subarray(checksumNameEnd + 1),
+      expectedPdb.hashes.get(checksumName)
+    );
     const rewrittenPdbEntry = signed.pe.debugDirectoryEntries[embeddedPdbDebugIndex];
     assert.ok(rewrittenPdbEntry.sizeOfData > 0);
     assert.notEqual(rewrittenPdbEntry.pointerToRawData, embeddedPdbEntry.pointerToRawData);

@@ -30,6 +30,7 @@ import { parseManifestResources } from "./metadata/resources.js";
 import {
   validatePortablePdbAssemblyReferences,
   validatePortablePdbCodeViewIdentity,
+  refreshEmbeddedPortablePdbId,
   replaceEmbeddedPortablePdbDocumentName as replacePortablePdbDocumentName,
   replaceEmbeddedPortablePdbSequencePoints as replacePortablePdbSequencePoints,
   replaceEmbeddedPortablePdbSource as replacePortablePdbSource,
@@ -69,6 +70,22 @@ const typeTokenOpcodes = new Set([
   "ldelem", "stelem", "unbox.any", "refanyval", "mkrefany", "initobj", "constrained.", "sizeof"
 ]);
 const customAttributeEnumTypes = new Set([0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b]);
+
+function formatPortablePdbGuid(bytes) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const first = view.getUint32(0, true).toString(16).padStart(8, "0");
+  const second = view.getUint16(4, true).toString(16).padStart(4, "0");
+  const third = view.getUint16(6, true).toString(16).padStart(4, "0");
+  const tail = [...bytes.subarray(8)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `${first}-${second}-${third}-${tail.slice(0, 4)}-${tail.slice(4)}`;
+}
+
+function readDebugRecord(pe, entry) {
+  const offset = entry.pointerToRawData !== 0
+    ? entry.pointerToRawData
+    : pe.rvaToOffset(entry.addressOfRawData, entry.sizeOfData);
+  return pe.bytes.slice(offset, offset + entry.sizeOfData);
+}
 
 function allowedTokenTables(opcodeName) {
   if (opcodeName === "calli") return [17];
@@ -1121,9 +1138,15 @@ export class Assembly {
         embeddedPortablePdb,
         this.tables.counts
       );
-      const codeView = this.pe.debugDirectoryEntries
-        .find((entry) => entry.codeView?.format === "RSDS")?.codeView;
-      if (codeView) validatePortablePdbCodeViewIdentity(embeddedPortablePdb, codeView);
+      const codeViewEntry = this.pe.debugDirectoryEntries
+        .find((entry) => entry.codeView?.format === "RSDS");
+      if (codeViewEntry) {
+        validatePortablePdbCodeViewIdentity(
+          embeddedPortablePdb,
+          codeViewEntry.codeView,
+          codeViewEntry.minorVersion === 0x504d ? codeViewEntry.timeDateStamp : undefined
+        );
+      }
     }
     if (this.tables.get(0).length !== 1) {
       throw new FormatError("Metadata must contain exactly one Module row");
@@ -1467,6 +1490,7 @@ export class Assembly {
     this._heapStreams = null;
     this._resourceEdits = new Map();
     this._embeddedPortablePdbEdits = new Map();
+    this._debugRecordEdits = new Map();
     this._clearResourcesDirectory = false;
   }
 
@@ -2694,11 +2718,91 @@ export class Assembly {
     }
     const pdb = parseEmbeddedPortablePdbData(data, 0, data.length);
     validatePortablePdbAssemblyReferences(pdb, this.tables.counts);
-    const codeView = this.pe.debugDirectoryEntries.find((candidate) =>
-      candidate.codeView?.format === "RSDS"
-    )?.codeView;
-    if (codeView) validatePortablePdbCodeViewIdentity(pdb, codeView);
-    this._embeddedPortablePdbEdits.set(debugEntryIndex, Uint8Array.from(data));
+    const previousEdit = this._embeddedPortablePdbEdits.get(debugEntryIndex);
+    if (previousEdit) {
+      const previousPdb = parseEmbeddedPortablePdbData(previousEdit, 0, previousEdit.length);
+      if (pdb.id.length !== previousPdb.id.length ||
+          pdb.id.some((byte, index) => byte !== previousPdb.id[index])) {
+        throw new FormatError("Embedded Portable PDB replacement does not match the staged PDB identity");
+      }
+    }
+    const codeViewEntry = this.pe.debugDirectoryEntries
+      .find((candidate) => candidate.codeView?.format === "RSDS");
+    if (codeViewEntry && !previousEdit) {
+      validatePortablePdbCodeViewIdentity(
+        pdb,
+        codeViewEntry.codeView,
+        codeViewEntry.minorVersion === 0x504d ? codeViewEntry.timeDateStamp : undefined
+      );
+    }
+    const refreshed = refreshEmbeddedPortablePdbId(pdb);
+    const oldGuid = formatPortablePdbGuid(pdb.id.subarray(0, 16));
+    const newTimestamp = new DataView(
+      refreshed.id.buffer,
+      refreshed.id.byteOffset,
+      refreshed.id.byteLength
+    ).getUint32(16, true);
+    const debugRecordEdits = new Map();
+    for (let index = 0; index < this.pe.debugDirectoryEntries.length; index++) {
+      const debugEntry = this.pe.debugDirectoryEntries[index];
+      if (debugEntry.codeView?.format !== "RSDS") continue;
+      const previousDebugEdit = this._debugRecordEdits.get(index);
+      const currentCodeViewBytes = previousDebugEdit?.bytes ??
+        readDebugRecord(this.pe, debugEntry);
+      const currentGuid = formatPortablePdbGuid(currentCodeViewBytes.subarray(4, 20));
+      if (currentGuid === oldGuid) {
+        if (debugEntry.codeView.age !== 1) {
+          throw new FormatError("Embedded Portable PDB CodeView age must be one");
+        }
+        const codeViewBytes = Uint8Array.from(currentCodeViewBytes);
+        codeViewBytes.set(refreshed.id.subarray(0, 16), 4);
+        debugRecordEdits.set(index, {
+          bytes: codeViewBytes,
+          ...(debugEntry.minorVersion === 0x504d
+            ? { timeDateStamp: newTimestamp }
+            : {})
+        });
+      }
+    }
+    const checksumEntries = this.pe.debugDirectoryEntries
+      .map((debugEntry, index) => ({ debugEntry, index }))
+      .filter(({ debugEntry }) => debugEntry.type === 19);
+    if (checksumEntries.length > 1) {
+      throw new UnsupportedFormatError(
+        "Embedded Portable PDB editing cannot disambiguate multiple PDB checksum records"
+      );
+    }
+    for (const { debugEntry, index } of checksumEntries) {
+      if (debugEntry.majorVersion !== 1 || debugEntry.minorVersion !== 0) {
+        throw new UnsupportedFormatError("PDB checksum debug-directory version is unsupported");
+      }
+      const checksumBytes = readDebugRecord(this.pe, debugEntry);
+      const terminator = checksumBytes.indexOf(0);
+      if (terminator <= 0 || terminator > 64 ||
+          checksumBytes.subarray(0, terminator).some((byte) => byte > 0x7f)) {
+        throw new FormatError("PDB checksum record has an invalid algorithm name");
+      }
+      let algorithm;
+      try {
+        algorithm = new TextDecoder("ascii", { fatal: true })
+          .decode(checksumBytes.subarray(0, terminator));
+      } catch (error) {
+        throw new FormatError(`PDB checksum algorithm name is invalid: ${error.message}`);
+      }
+      const digest = refreshed.hashes.get(algorithm);
+      if (!digest) {
+        throw new UnsupportedFormatError(
+          `Embedded Portable PDB checksum algorithm ${JSON.stringify(algorithm)} is unsupported`
+        );
+      }
+      if (checksumBytes.length !== terminator + 1 + digest.length) {
+        throw new FormatError("PDB checksum record has an invalid digest length");
+      }
+      checksumBytes.set(digest, terminator + 1);
+      debugRecordEdits.set(index, { bytes: checksumBytes });
+    }
+    this._embeddedPortablePdbEdits.set(debugEntryIndex, refreshed.bytes);
+    this._debugRecordEdits = debugRecordEdits;
     return this;
   }
 

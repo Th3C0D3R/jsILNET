@@ -19,9 +19,14 @@ function writeDebugDirectory(payload, tableOffset, assembly, replacements) {
   for (let index = 0; index < entries.length; index++) {
     const entry = entries[index];
     const entryOffset = tableOffset + index * 28;
-    const replacement = replacements.get(index);
+    const replacementValue = replacements.get(index);
+    const replacement = replacementValue?.bytes ?? replacementValue;
     view.setUint32(entryOffset, entry.characteristics, true);
-    view.setUint32(entryOffset + 4, entry.timeDateStamp, true);
+    view.setUint32(
+      entryOffset + 4,
+      replacementValue?.timeDateStamp ?? entry.timeDateStamp,
+      true
+    );
     view.setUint16(entryOffset + 8, entry.majorVersion, true);
     view.setUint16(entryOffset + 10, entry.minorVersion, true);
     view.setUint32(entryOffset + 12, entry.type, true);
@@ -161,14 +166,19 @@ export function serializeStructural(
   const debugDataStart = hasDebugEdits
     ? align(debugTableOffset + debugTableSize, 4)
     : 0;
+  const debugRecordEdits = new Map(assembly._embeddedPortablePdbEdits ?? []);
+  for (const [index, edit] of assembly._debugRecordEdits ?? []) {
+    debugRecordEdits.set(index, edit);
+  }
   let finalPayloadSize = hasDebugEdits ? debugDataStart : signatureEnd;
   if (hasDebugEdits) {
-    for (const [index, replacement] of [...assembly._embeddedPortablePdbEdits].sort(
+    for (const [index, replacementValue] of [...debugRecordEdits].sort(
       ([left], [right]) => left - right
     )) {
       if (!assembly.pe.debugDirectoryEntries[index]) {
         throw new FormatError(`Debug-directory entry ${index} is missing`);
       }
+      const replacement = replacementValue?.bytes ?? replacementValue;
       finalPayloadSize = align(finalPayloadSize, 4) + replacement.length;
     }
   }
@@ -188,7 +198,7 @@ export function serializeStructural(
       payload,
       debugTableOffset,
       assembly,
-      assembly._embeddedPortablePdbEdits
+      debugRecordEdits
     );
   }
   const resourcesDirectory = resourcePayload

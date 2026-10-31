@@ -1,4 +1,5 @@
 import { deflateRawSync, inflateRawSync } from "node:zlib";
+import { createHash } from "node:crypto";
 import { BinaryReader, readCompressedInt, readCompressedUInt } from "../binary/reader.js";
 import { FormatError, UnsupportedFormatError } from "../binary/errors.js";
 import {
@@ -48,7 +49,7 @@ function formatGuid(bytes) {
   return `${first}-${second}-${third}-${tail.slice(0, 4)}-${tail.slice(4)}`;
 }
 
-export function validatePortablePdbCodeViewIdentity(pdb, codeView) {
+export function validatePortablePdbCodeViewIdentity(pdb, codeView, timeDateStamp) {
   if (!pdb || !(pdb.id instanceof Uint8Array) || !codeView) {
     throw new TypeError("Portable PDB identity validation requires parsed PDB and CodeView data");
   }
@@ -59,6 +60,13 @@ export function validatePortablePdbCodeViewIdentity(pdb, codeView) {
   }
   if (codeView.age !== 1) {
     throw new FormatError("Embedded Portable PDB CodeView age must be one");
+  }
+  if (timeDateStamp !== undefined) {
+    const idStamp = new DataView(pdb.id.buffer, pdb.id.byteOffset, pdb.id.byteLength)
+      .getUint32(16, true);
+    if (timeDateStamp !== idStamp) {
+      throw new FormatError("Embedded Portable PDB identity does not match its CodeView stamp");
+    }
   }
 }
 
@@ -556,6 +564,47 @@ export function serializeEmbeddedPortablePdb(pdb) {
   new DataView(output.buffer).setUint32(4, metadata.length, true);
   output.set(compressed, 8);
   return output;
+}
+
+export function refreshEmbeddedPortablePdbId(pdb) {
+  if (!pdb?.metadataRoot?.streams || !(pdb.tables?.rows instanceof Map) ||
+      !Array.isArray(pdb.tables.counts)) {
+    throw new TypeError("Portable PDB ID generation requires parsed PDB data");
+  }
+  const streams = new Map([...pdb.metadataRoot.streams].map(([name, stream]) =>
+    [name, Uint8Array.from(stream.bytes)]
+  ));
+  const tableStreamName = streams.has("#~") ? "#~" : streams.has("#-") ? "#-" : null;
+  const pdbStream = streams.get("#Pdb");
+  if (!tableStreamName || !pdbStream || pdbStream.length < 20) {
+    throw new FormatError("Portable PDB ID generation requires #Pdb and table streams");
+  }
+  streams.set(tableStreamName, serializeTablesStream(pdb.tables, streams));
+  pdbStream.fill(0, 0, 20);
+  const metadata = serializeMetadataRoot(pdb.metadataRoot, streams);
+  const hashes = new Map();
+  for (const [algorithm, name] of [
+    ["SHA256", "sha256"],
+    ["SHA384", "sha384"],
+    ["SHA512", "sha512"]
+  ]) {
+    hashes.set(algorithm, Uint8Array.from(createHash(name).update(metadata).digest()));
+  }
+  const id = hashes.get("SHA256").slice(0, 20);
+  pdbStream.set(id);
+  const updatedStreams = new Map([...streams].map(([name, bytes]) => [
+    name,
+    { ...pdb.metadataRoot.streams.get(name), bytes }
+  ]));
+  const updatedPdb = {
+    ...pdb,
+    metadataRoot: { ...pdb.metadataRoot, streams: updatedStreams }
+  };
+  return {
+    bytes: serializeEmbeddedPortablePdb(updatedPdb),
+    id,
+    hashes
+  };
 }
 
 export function replaceEmbeddedPortablePdbDocumentName(pdb, documentRid, name, separator) {
