@@ -4438,9 +4438,6 @@ export class Assembly {
     if (!Number.isInteger(ownerRid) || ownerRid < 1 || !method) {
       throw new RangeError("Param owner must identify an existing MethodDef");
     }
-    if (method.rid !== this.methods.at(-1)?.rid) {
-      throw new UnsupportedFormatError("Params can only be appended to the last MethodDef row");
-    }
     if (typeof name !== "string" || name.includes("\0")) {
       throw new TypeError("Param name must be a null-free string");
     }
@@ -4466,17 +4463,30 @@ export class Assembly {
     if (rows.length !== this.tables.counts[8] || rows.length >= 0xffffffff) {
       throw new RangeError("Param row count is inconsistent or exceeds the metadata table limit");
     }
-    const pointerPresent = (this.tables.valid & (1n << 7n)) !== 0n;
-    const pointerRows = this.tables.rows.get(7) ?? [];
-    if (pointerPresent) {
-      const pointedRids = pointerRows.map((pointer) => pointer.Param?.rid);
-      if (pointerRows.length !== this.tables.counts[7] ||
-          pointerRows.length !== rows.length ||
-          pointedRids.some((paramRid) => !Number.isInteger(paramRid) || paramRid < 1 ||
-            paramRid > rows.length) ||
-          new Set(pointedRids).size !== rows.length) {
-        throw new UnsupportedFormatError("ParamPtr editing requires a one-to-one ParamPtr table");
-      }
+    const methodRows = this.tables.rows.get(6) ?? [];
+    if (methodRows.length !== (this.tables.counts[6] ?? 0) ||
+        methodRows.length !== this.methods.length) {
+      throw new FormatError("MethodDef row count is inconsistent with the metadata table header");
+    }
+    const ownerRow = methodRows[ownerRid - 1];
+    if (ownerRow?.rid !== ownerRid || !Number.isInteger(ownerRow.ParamList?.rid)) {
+      throw new FormatError(`MethodDef row ${ownerRid} has an inconsistent ParamList`);
+    }
+    const pointerRows = getBijectivePointerRows(this, 7, 8, "Param");
+    const pointerPresent = pointerRows !== null;
+    const listRows = pointerRows ?? rows;
+    const endRid = methodRows[ownerRid]?.ParamList.rid ?? listRows.length + 1;
+    const ownedRids = pointerRows
+      ? pointerRows.slice(ownerRow.ParamList.rid - 1, endRid - 1)
+        .map((pointer) => pointer.Param.rid)
+      : Array.from(
+        { length: Math.max(0, endRid - ownerRow.ParamList.rid) },
+        (_, index) => ownerRow.ParamList.rid + index
+      );
+    if (endRid !== listRows.length + 1 ||
+        ownedRids.length !== method.parameterRids.length ||
+        ownedRids.some((paramRid, index) => paramRid !== method.parameterRids[index])) {
+      throw new UnsupportedFormatError("Param append requires the method's parameters to be contiguous at the end");
     }
 
     const heapStreams = new Map(
@@ -4508,6 +4518,10 @@ export class Assembly {
       });
       this.tables.rows.set(7, pointerRows);
       this.tables.counts[7] = pointerRid;
+    }
+    for (let index = ownerRid; index < methodRows.length; index++) {
+      methodRows[index].ParamList.rid++;
+      methodRows[index].ParamList.raw++;
     }
     method.parameterRids.push(rid);
     method.parameters.push({ rid, flags, sequence, name });

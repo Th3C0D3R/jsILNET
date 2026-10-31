@@ -2466,6 +2466,33 @@ test("parameters append to the last MethodDef in optimized and pointer-table met
   }
 });
 
+test("parameters append before later empty MethodDef ownership ranges", () => {
+  const assembly = parseAssembly(withoutDebugDirectory());
+  const method = assembly.methods.find((candidate) => candidate.name === "Finally");
+  assert.ok(method);
+  const parsedSignature = parseSignature(method.signature);
+  assembly.replaceMethodSignature(method.rid, encodeSignature({
+    ...parsedSignature,
+    parameters: [...parsedSignature.parameters, parsedSignature.parameters[0]]
+  }));
+  const laterMethodRow = assembly.tables.row(6, method.rid + 1);
+  assert.ok(laterMethodRow);
+  const rid = assembly.addParam({
+    owner: { table: "MethodDef", rid: method.rid },
+    name: "second",
+    sequence: 2
+  });
+  assert.equal(laterMethodRow.ParamList.rid, rid + 1);
+  const reparsed = parseAssembly(assembly.serialize());
+  assert.deepEqual(reparsed.methods[method.rid - 1].parameters.at(-1), {
+    rid,
+    flags: 0,
+    sequence: 2,
+    name: "second"
+  });
+  assert.equal(reparsed.methods[method.rid].parameterRids.length, 0);
+});
+
 test("abstract methods append to the last TypeDef in optimized and pointer-table metadata", () => {
   for (const usePointerTables of [false, true]) {
     const assembly = parseAssembly(fixture);
