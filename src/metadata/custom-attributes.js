@@ -212,12 +212,7 @@ function writeFieldOrPropertyType(output, type, depth = 0) {
   }
 }
 
-export function parseCustomAttribute(bytes, fixedTypes, resolveEnum = () => {
-  throw new UnsupportedFormatError("Custom-attribute enum type is not resolvable");
-}) {
-  const reader = new BinaryReader(bytes, { context: "custom attribute" });
-  if (reader.u2() !== 1) throw new FormatError("Custom-attribute prolog is invalid");
-  const fixedArguments = fixedTypes.map((type) => readValue(reader, type, resolveEnum));
+function readNamedArguments(reader, resolveEnum) {
   const namedCount = reader.u2();
   const namedArguments = [];
   for (let index = 0; index < namedCount; index++) {
@@ -235,8 +230,45 @@ export function parseCustomAttribute(bytes, fixedTypes, resolveEnum = () => {
       value: readValue(reader, type, resolveEnum)
     });
   }
+  return namedArguments;
+}
+
+export function parseCustomAttribute(bytes, fixedTypes, resolveEnum = () => {
+  throw new UnsupportedFormatError("Custom-attribute enum type is not resolvable");
+}) {
+  const reader = new BinaryReader(bytes, { context: "custom attribute" });
+  if (reader.u2() !== 1) throw new FormatError("Custom-attribute prolog is invalid");
+  const fixedArguments = fixedTypes.map((type) => readValue(reader, type, resolveEnum));
+  const namedArguments = readNamedArguments(reader, resolveEnum);
   if (reader.remaining !== 0) throw new FormatError("Trailing bytes after custom-attribute value");
   return { fixedArguments, namedArguments };
+}
+
+export function parsePermissionSet(bytes, resolveEnum = () => {
+  throw new UnsupportedFormatError("PermissionSet enum type is not resolvable");
+}) {
+  const reader = new BinaryReader(bytes, { context: "PermissionSet" });
+  if (reader.u1() !== 0x2e) {
+    throw new UnsupportedFormatError("Only binary CLI PermissionSet blobs are supported");
+  }
+  const attributeCount = readCompressedUInt(reader);
+  if (attributeCount > Math.floor(reader.remaining / 2)) {
+    throw new FormatError("PermissionSet attribute count exceeds remaining blob data");
+  }
+  const attributes = [];
+  for (let index = 0; index < attributeCount; index++) {
+    const typeName = readSerString(reader);
+    if (typeName === null) throw new FormatError("PermissionSet attribute type name cannot be null");
+    const attributeBlob = reader.take(readCompressedUInt(reader));
+    const attributeReader = new BinaryReader(attributeBlob, { context: "PermissionSet attribute" });
+    const namedArguments = readNamedArguments(attributeReader, resolveEnum);
+    if (attributeReader.remaining !== 0) {
+      throw new FormatError("Trailing bytes after PermissionSet attribute data");
+    }
+    attributes.push({ typeName, namedArguments });
+  }
+  if (reader.remaining !== 0) throw new FormatError("Trailing bytes after PermissionSet blob");
+  return { format: "binary", attributes };
 }
 
 export function encodeCustomAttribute(value, fixedTypes) {

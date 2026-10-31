@@ -2,7 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   encodeCustomAttribute,
-  parseCustomAttribute
+  parseCustomAttribute,
+  parsePermissionSet
 } from "../src/metadata/custom-attributes.js";
 
 test("custom-attribute fixed and named primitive/string values round-trip", () => {
@@ -70,4 +71,28 @@ test("custom-attribute codecs reject excessive nested types and boxed values", (
   }
   assert.throws(() => encodeCustomAttribute({ fixedArguments: [boxed], namedArguments: [] }, [{ kind: "object" }]),
     /nesting exceeds supported depth/);
+});
+
+test("binary PermissionSet blobs decode named security-attribute values", () => {
+  const blob = Uint8Array.from([
+    0x2e, 1, 1, 0x41, 13,
+    1, 0, 0x54, 0x02, 7,
+    0x45, 0x6e, 0x61, 0x62, 0x6c, 0x65, 0x64, 1
+  ]);
+  assert.deepEqual(parsePermissionSet(blob), {
+    format: "binary",
+    attributes: [{
+      typeName: "A",
+      namedArguments: [{
+        kind: "property",
+        type: { kind: "primitive", elementType: 0x02 },
+        name: "Enabled",
+        value: true
+      }]
+    }]
+  });
+  assert.throws(() => parsePermissionSet(Uint8Array.from([0x2e, 1, 1, 0x41, 3, 0, 0, 1])),
+    /Trailing bytes after PermissionSet attribute data/);
+  assert.throws(() => parsePermissionSet(Uint8Array.from([0x3c])),
+    /Only binary CLI PermissionSet blobs are supported/);
 });

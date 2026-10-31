@@ -4978,10 +4978,17 @@ test("DeclSecurity rows preserve parent/action uniqueness and allow safe removal
     action: 2,
     permissionSet: Uint8Array.of(0x2e, 0)
   });
+  const permissionSet = Uint8Array.from([
+    0x2e, 1, 1, 0x41, 13,
+    1, 0, 0x54, 0x02, 7,
+    0x45, 0x6e, 0x61, 0x62, 0x6c, 0x65, 0x64, 1
+  ]);
   assembly.replaceDeclSecurity(methodSecurityRid, {
     action: 3,
-    permissionSet: Uint8Array.of(0x2e, 1)
+    permissionSet
   });
+  assert.equal(assembly.parseDeclSecurity(methodSecurityRid).permissionSet.attributes[0]
+    .namedArguments[0].value, true);
   const updatedPermissionSet = assembly.tables.row(14, methodSecurityRid).PermissionSet;
   assert.throws(() => assembly.replaceDeclSecurity(methodSecurityRid, {
     permissionSet: new Uint8Array()
@@ -4998,7 +5005,8 @@ test("DeclSecurity rows preserve parent/action uniqueness and allow safe removal
   assert.equal(row.Action, 3);
   assert.equal(row.Parent.target.table, 6);
   assert.equal(row.Parent.target.rid, methodRid);
-  assert.deepEqual(reparsed.heaps.getBlob(row.PermissionSet), Uint8Array.of(0x2e, 1));
+  assert.deepEqual(reparsed.parseDeclSecurity(methodSecurityRid).permissionSet.attributes[0]
+    .namedArguments[0].value, true);
   reparsed.removeDeclSecurity(methodSecurityRid);
   const withoutMethodSecurity = parseAssembly(reparsed.serialize());
   assert.equal(withoutMethodSecurity.tables.counts[14], 1);

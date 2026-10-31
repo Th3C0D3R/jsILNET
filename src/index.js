@@ -28,7 +28,8 @@ import {
 } from "./metadata/strong-name.js";
 import {
   encodeCustomAttribute as encodeCustomAttributeBlob,
-  parseCustomAttribute as parseCustomAttributeBlob
+  parseCustomAttribute as parseCustomAttributeBlob,
+  parsePermissionSet as parsePermissionSetBlob
 } from "./metadata/custom-attributes.js";
 import {
   encodeCodedIndex,
@@ -998,7 +999,8 @@ export {
 export { MetadataHeaps, parseMetadataRoot } from "./metadata/streams.js";
 export {
   encodeCustomAttribute,
-  parseCustomAttribute
+  parseCustomAttribute,
+  parsePermissionSet
 } from "./metadata/custom-attributes.js";
 export {
   encodeSignature,
@@ -1473,6 +1475,23 @@ export class Assembly {
       fixedTypes,
       enumResolver
     );
+  }
+
+  parseDeclSecurity(rid, { resolveEnum } = {}) {
+    const row = this.tables.row(14, rid);
+    if (!Number.isInteger(rid) || rid < 1 || !row) {
+      throw new RangeError(`Invalid DeclSecurity row ID ${rid}`);
+    }
+    const enumResolver = getCustomAttributeEnumResolver(this, resolveEnum);
+    return {
+      rid,
+      action: row.Action,
+      parent: row.Parent.target,
+      permissionSet: parsePermissionSetBlob(
+        this.heaps.getBlob(row.PermissionSet),
+        enumResolver
+      )
+    };
   }
 
   replaceCustomAttribute(rid, value, { resolveEnum } = {}) {
