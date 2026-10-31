@@ -63,6 +63,45 @@ test("rewritten IL assemblies load and execute in the installed .NET runtime", {
       signature: Uint8Array.of(0x00, 0x00, 0x08),
       body: Uint8Array.of(0x0e, 0x1f, 42, 0x2a)
     });
+    const tableStream = assembly.metadataRoot.streams.get("#~");
+    assert.ok(tableStream);
+    assembly.metadataRoot.streams.delete("#~");
+    assembly.metadataRoot.streams.set("#-", tableStream);
+    if (assembly._heapStreams) {
+      assembly._heapStreams.delete("#~");
+      assembly._heapStreams.set("#-", tableStream.bytes.slice());
+    }
+    const methodRows = assembly.tables.get(6);
+    const methodPointers = methodRows.map((method, index) => ({
+      table: 5,
+      tableName: "MethodPtr",
+      rid: index + 1,
+      Method: {
+        raw: method.rid,
+        table: 6,
+        tableName: "MethodDef",
+        rid: method.rid
+      }
+    }));
+    assembly.tables.rows.set(5, methodPointers);
+    assembly.tables.counts[5] = methodPointers.length;
+    assembly.tables.valid |= 1n << 5n;
+    for (const row of assembly.tables.get(2)) {
+      row.MethodList = {
+        raw: row.MethodList.rid,
+        table: 5,
+        tableName: "MethodPtr",
+        rid: row.MethodList.rid
+      };
+    }
+    assembly._metadataDirty = true;
+    assembly.insertMethod({
+      owner: { table: "TypeDef", rid: ownerRid },
+      name: "PointerInserted",
+      flags: 0x0096,
+      signature: Uint8Array.of(0x00, 0x00, 0x08),
+      body: Uint8Array.of(0x0e, 0x1f, 44, 0x2a)
+    });
     const assemblyPath = join(directory, "Fixture.dll");
     await writeFile(assemblyPath, assembly.serialize());
     const projectPath = join(directory, "RuntimeSmoke.csproj");
@@ -82,13 +121,15 @@ test("rewritten IL assemblies load and execute in the installed .NET runtime", {
       "var flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static;",
       "var inserted = assembly.GetTypes().SelectMany(candidate => candidate.GetMethods(flags))",
       "    .Single(method => method.Name == \"RuntimeInserted\");",
+      "var pointerInserted = assembly.GetTypes().SelectMany(candidate => candidate.GetMethods(flags))",
+      "    .Single(method => method.Name == \"PointerInserted\");",
       "var type = assembly.GetTypes().Single(candidate =>",
       "    candidate.GetMethods(flags).Any(method => method.Name == \"RuntimeSmoke\"));",
       "var smoke = type.GetMethod(\"RuntimeSmoke\", flags)",
       "    ?? throw new InvalidOperationException(\"RuntimeSmoke was not found\");",
       "var field = type.GetField(\"RuntimeAnswer\", flags)",
       "    ?? throw new InvalidOperationException(\"RuntimeAnswer was not found\");",
-      "Console.WriteLine($\"{smoke.Invoke(null, null)}:{field.GetRawConstantValue()}:{inserted.Invoke(null, null)}\");"
+      "Console.WriteLine($\"{smoke.Invoke(null, null)}:{field.GetRawConstantValue()}:{inserted.Invoke(null, null)}:{pointerInserted.Invoke(null, null)}\");"
     ].join("\n"));
 
     const result = spawnSync(
@@ -97,7 +138,7 @@ test("rewritten IL assemblies load and execute in the installed .NET runtime", {
       { encoding: "utf8", timeout: 120_000 }
     );
     assert.equal(result.status, 0, result.stderr || result.stdout || result.error?.message);
-    assert.equal(result.stdout.trim().split(/\r?\n/).at(-1), "42:42:43");
+    assert.equal(result.stdout.trim().split(/\r?\n/).at(-1), "42:42:43:44");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
