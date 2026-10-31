@@ -3441,6 +3441,58 @@ export class Assembly {
         );
       }
     }
+    const genericParamConstraintRows = this.tables.rows.get(44) ?? [];
+    if (genericParamConstraintRows.length !== (this.tables.counts[44] ?? 0) ||
+        genericParamConstraintRows.length !== this.genericParamConstraints.length) {
+      throw new FormatError("GenericParamConstraint row count is inconsistent with the metadata table header");
+    }
+    const genericParamConstraintRids = new Set(
+      this.genericParamConstraints
+        .filter((constraint) => genericParamRids.has(constraint.ownerRid))
+        .map((constraint) => constraint.rid)
+    );
+    if (genericParamConstraintRids.size > 0) {
+      for (const [tableId, tableRows] of this.tables.rows) {
+        const schema = metadataTableSchemas[tableId];
+        if (!schema) {
+          throw new UnsupportedFormatError(
+            `Cannot remove MethodDef row ${rid} with unknown metadata table ${tableId}`
+          );
+        }
+        for (const row of tableRows) {
+          if (tableId === 44 && genericParamConstraintRids.has(row.rid)) continue;
+          for (const [kind, value, name] of schema) {
+            const columnName = name ?? value;
+            const column = row[columnName];
+            const target = kind === "coded"
+              ? column?.target
+              : kind === "table" ? { table: value, rid: column?.rid } : null;
+            if (target?.table === 44 && genericParamConstraintRids.has(target.rid)) {
+              throw new FormatError(
+                `GenericParamConstraint row ${target.rid} is referenced by ${metadataTableNames[tableId]}.${columnName}`
+              );
+            }
+            if (kind === "u4" && (tableId === 30 || tableId === 31) &&
+                columnName === "Token" && row[columnName] >>> 24 === 44 &&
+                genericParamConstraintRids.has(row[columnName] & 0x00ffffff)) {
+              throw new FormatError(
+                `GenericParamConstraint row ${row[columnName] & 0x00ffffff} is referenced by ${metadataTableNames[tableId]}.${columnName}`
+              );
+            }
+          }
+        }
+      }
+      for (const candidate of this.methods) {
+        for (const instruction of this.getMethodBody(candidate.rid)?.instructions ?? []) {
+          const token = instruction.operand?.kind === "token" ? instruction.operand.value : 0;
+          if ((token >>> 24) === 44 && genericParamConstraintRids.has(token & 0x00ffffff)) {
+            throw new FormatError(
+              `GenericParamConstraint row ${token & 0x00ffffff} is referenced by CIL in MethodDef row ${candidate.rid}`
+            );
+          }
+        }
+      }
+    }
     const parameterRows = this.tables.rows.get(8) ?? [];
     if (parameterRows.length !== (this.tables.counts[8] ?? 0)) {
       throw new FormatError("Param row count is inconsistent with the metadata table header");
@@ -3538,6 +3590,7 @@ export class Assembly {
           );
         }
         for (const row of tableRows) {
+          if (tableId === 44 && genericParamConstraintRids.has(row.rid)) continue;
           for (const [kind, value, name] of schema) {
             const columnName = name ?? value;
             const column = row[columnName];
@@ -3592,6 +3645,17 @@ export class Assembly {
         tokenMap.set(0x2a000000 + oldRid, 0x2a000000 + remapGenericParamRid(oldRid));
       }
     }
+    const remapGenericParamConstraintRid = (oldRid) => oldRid -
+      [...genericParamConstraintRids].filter((constraintRid) => constraintRid < oldRid).length;
+    if (genericParamConstraintRids.size > 0) {
+      for (let oldRid = 1; oldRid <= genericParamConstraintRows.length; oldRid++) {
+        if (genericParamConstraintRids.has(oldRid)) continue;
+        tokenMap.set(
+          0x2c000000 + oldRid,
+          0x2c000000 + remapGenericParamConstraintRid(oldRid)
+        );
+      }
+    }
     const rowChanges = [];
     for (const [tableId, tableRows] of this.tables.rows) {
       const schema = metadataTableSchemas[tableId];
@@ -3601,10 +3665,31 @@ export class Assembly {
         );
       }
       for (const row of tableRows) {
+        if (tableId === 44 && genericParamConstraintRids.has(row.rid)) continue;
         for (const [kind, value, name, pointer] of schema) {
           const columnName = name ?? value;
           if (kind === "coded") {
             const target = row[columnName]?.target;
+            if (target?.table === 44) {
+              if (genericParamConstraintRids.has(target.rid)) {
+                throw new FormatError(
+                  `GenericParamConstraint row ${target.rid} is referenced by ${metadataTableNames[tableId]}.${columnName}`
+                );
+              }
+              const remappedRid = remapGenericParamConstraintRid(target.rid);
+              if (remappedRid !== target.rid) {
+                const remappedTarget = { ...target, rid: remappedRid };
+                rowChanges.push({
+                  row,
+                  columnName,
+                  value: {
+                    raw: encodeCodedIndex(44, remappedRid, value),
+                    target: remappedTarget
+                  }
+                });
+              }
+              continue;
+            }
             if (target?.table === 8 || target?.table === 42) {
               const removedRids = target.table === 8 ? parameterRids : genericParamRids;
               if (removedRids.has(target.rid)) {
@@ -3666,6 +3751,22 @@ export class Assembly {
               });
             }
           } else if (kind === "u4" && (tableId === 30 || tableId === 31) &&
+              columnName === "Token" && row[columnName] >>> 24 === 44) {
+            const targetRid = row[columnName] & 0x00ffffff;
+            if (genericParamConstraintRids.has(targetRid)) {
+              throw new FormatError(
+                `GenericParamConstraint row ${targetRid} is referenced by ${metadataTableNames[tableId]}.${columnName}`
+              );
+            }
+            const remappedRid = remapGenericParamConstraintRid(targetRid);
+            if (remappedRid !== targetRid) {
+              rowChanges.push({
+                row,
+                columnName,
+                value: 0x2c000000 | remappedRid
+              });
+            }
+          } else if (kind === "u4" && (tableId === 30 || tableId === 31) &&
               columnName === "Token" && row[columnName] >>> 24 === 6 &&
               (row[columnName] & 0x00ffffff) === rid) {
             throw new FormatError(`MethodDef row ${rid} is referenced by ${metadataTableNames[tableId]}.${columnName}`);
@@ -3704,6 +3805,22 @@ export class Assembly {
                 );
               }
               const remappedRid = remapGenericParamRid(targetRid);
+              if (remappedRid !== targetRid) {
+                rowChanges.push({
+                  row,
+                  columnName,
+                  value: { ...row[columnName], raw: remappedRid, rid: remappedRid }
+                });
+              }
+              continue;
+            }
+            if (targetTable === 44) {
+              if (genericParamConstraintRids.has(targetRid)) {
+                throw new FormatError(
+                  `GenericParamConstraint row ${targetRid} is referenced by ${metadataTableNames[tableId]}.${columnName}`
+                );
+              }
+              const remappedRid = remapGenericParamConstraintRid(targetRid);
               if (remappedRid !== targetRid) {
                 rowChanges.push({
                   row,
@@ -3910,6 +4027,28 @@ export class Assembly {
         constraint.ownerRid = remapGenericParamRid(constraint.ownerRid);
       }
     }
+    if (genericParamConstraintRids.size > 0) {
+      const remainingConstraints = this.genericParamConstraints.filter((constraint) =>
+        !genericParamConstraintRids.has(constraint.rid)
+      );
+      remainingConstraints.forEach((constraint) => {
+        constraint.rid = remapGenericParamConstraintRid(constraint.rid);
+      });
+      this.genericParamConstraints.splice(
+        0,
+        this.genericParamConstraints.length,
+        ...remainingConstraints
+      );
+      const remainingConstraintRows = genericParamConstraintRows.filter((constraint) =>
+        !genericParamConstraintRids.has(constraint.rid)
+      );
+      remainingConstraintRows.forEach((constraint) => {
+        constraint.rid = remapGenericParamConstraintRid(constraint.rid);
+      });
+      this.tables.rows.set(44, remainingConstraintRows);
+      this.tables.counts[44] = remainingConstraintRows.length;
+      if (remainingConstraintRows.length === 0) this.tables.valid &= ~(1n << 44n);
+    }
     if (parameterRids.size > 0 || genericParamRids.size > 0) {
       for (const attribute of this.customAttributes) {
         if (attribute.parent?.table === 8 && !parameterRids.has(attribute.parent.rid)) {
@@ -3922,6 +4061,12 @@ export class Assembly {
           attribute.parent = {
             ...attribute.parent,
             rid: remapGenericParamRid(attribute.parent.rid)
+          };
+        } else if (attribute.parent?.table === 44 &&
+            !genericParamConstraintRids.has(attribute.parent.rid)) {
+          attribute.parent = {
+            ...attribute.parent,
+            rid: remapGenericParamConstraintRid(attribute.parent.rid)
           };
         }
       }

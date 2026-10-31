@@ -2777,14 +2777,19 @@ test("trailing MethodDef removal removes trailing method-owned GenericParam rows
   assert.equal(reparsed.methods.some((method) => method.name === "GenericMethodToRemove"), false);
 });
 
-test("MethodDef removal rejects referenced owned GenericParam rows without mutation", () => {
+test("MethodDef removal deletes owned GenericParam constraints and remaps survivors", () => {
   const assembly = parseAssembly(withoutDebugDirectory());
+  const ownerRid = assembly.addTypeDef({
+    name: "ConstraintOwner",
+    flags: 0x0080
+  }) & 0x00ffffff;
+  const signature = Uint8Array.of(0x10, 0x01, 0x01, 0x01, 0x1e, 0x00);
+  const initialConstraintCount = assembly.tables.counts[44] ?? 0;
   const token = assembly.addMethod({
-    owner: { table: "TypeDef", rid: assembly.types.at(-1).rid },
+    owner: { table: "TypeDef", rid: ownerRid },
     name: "ConstrainedMethodToRemove",
-    flags: 0x0096,
-    signature: Uint8Array.of(0x10, 0x01, 0x01, 0x01, 0x1e, 0x00),
-    body: Uint8Array.of(0x06, 0x2a)
+    flags: 0x0466,
+    signature
   });
   const methodRid = token & 0x00ffffff;
   const genericParamToken = assembly.addGenericParam({
@@ -2797,14 +2802,94 @@ test("MethodDef removal rejects referenced owned GenericParam rows without mutat
     ownerRid: genericParamRid,
     constraint: { table: "TypeDef", rid: 2 }
   });
+  const survivorToken = assembly.addMethod({
+    owner: { table: "TypeDef", rid: ownerRid },
+    name: "ConstrainedMethodToKeep",
+    flags: 0x0466,
+    signature
+  });
+  const survivorRid = survivorToken & 0x00ffffff;
+  const survivorGenericParamRid = assembly.addGenericParam({
+    owner: { table: "MethodDef", rid: survivorRid },
+    name: "U",
+    number: 0
+  }) & 0x00ffffff;
+  const survivorConstraintRid = assembly.addGenericParamConstraint({
+    ownerRid: survivorGenericParamRid,
+    constraint: { table: "TypeDef", rid: 2 }
+  });
+  assembly.tables.sorted &= ~(1n << 12n);
+  const attributeTemplate = assembly.customAttributes[1];
+  const attributeValue = assembly.parseCustomAttribute(attributeTemplate.rid);
+  assembly.addCustomAttribute({
+    parent: { table: "GenericParamConstraint", rid: survivorConstraintRid },
+    constructor: attributeTemplate.constructor,
+    value: attributeValue
+  });
+  addEncToken(assembly, 31, 0x2c000000 + survivorConstraintRid);
+
+  const tokenMap = assembly.removeMethod(methodRid);
+  const remappedGenericParamToken = 0x2a000000 + survivorGenericParamRid - 1;
+  const remappedConstraintToken = 0x2c000000 + survivorConstraintRid - 1;
+  assert.equal(tokenMap.get(survivorToken), survivorToken - 1);
+  assert.equal(tokenMap.get(0x2a000000 + survivorGenericParamRid), remappedGenericParamToken);
+  assert.equal(tokenMap.get(0x2c000000 + survivorConstraintRid), remappedConstraintToken);
+  assert.equal(assembly.methods.find((item) => item.name === "ConstrainedMethodToKeep").rid,
+    survivorRid - 1);
+  assert.equal(assembly.tables.counts[42], genericParamRid);
+  assert.equal(assembly.tables.counts[44], initialConstraintCount + 1);
+  assert.equal(assembly.genericParamConstraints.find((item) =>
+    item.rid === survivorConstraintRid - 1
+  ).ownerRid, survivorGenericParamRid - 1);
+  assert.equal(assembly.tables.get(31).at(-1).Token, remappedConstraintToken);
+  assert.equal(assembly.customAttributes.at(-1).parent.rid, survivorConstraintRid - 1);
+
+  const reparsed = parseAssembly(assembly.serialize());
+  assert.equal(reparsed.tables.counts[44], initialConstraintCount + 1);
+  assert.equal(reparsed.genericParamConstraints.find((item) =>
+    item.rid === survivorConstraintRid - 1
+  ).ownerRid, survivorGenericParamRid - 1);
+  assert.equal(reparsed.customAttributes.at(-1).parent.rid, survivorConstraintRid - 1);
+});
+
+test("MethodDef removal rejects externally referenced owned constraints atomically", () => {
+  const assembly = parseAssembly(withoutDebugDirectory());
+  const ownerRid = assembly.addTypeDef({
+    name: "ReferencedConstraintOwner",
+    flags: 0x0080
+  }) & 0x00ffffff;
+  const methodToken = assembly.addMethod({
+    owner: { table: "TypeDef", rid: ownerRid },
+    name: "ConstrainedMethod",
+    flags: 0x0466,
+    signature: Uint8Array.of(0x10, 0x01, 0x01, 0x01, 0x1e, 0x00)
+  });
+  const genericParamRid = assembly.addGenericParam({
+    owner: { table: "MethodDef", rid: methodToken & 0x00ffffff },
+    name: "T",
+    number: 0
+  }) & 0x00ffffff;
+  const constraintRid = assembly.addGenericParamConstraint({
+    ownerRid: genericParamRid,
+    constraint: { table: "TypeDef", rid: 2 }
+  });
+  assembly.tables.sorted &= ~(1n << 12n);
+  const attributeTemplate = assembly.customAttributes[1];
+  assembly.addCustomAttribute({
+    parent: { table: "GenericParamConstraint", rid: constraintRid },
+    constructor: attributeTemplate.constructor,
+    value: assembly.parseCustomAttribute(attributeTemplate.rid)
+  });
   const methodCount = assembly.tables.counts[6];
   const genericParamCount = assembly.tables.counts[42];
+  const constraintCount = assembly.tables.counts[44];
 
-  assert.throws(() => assembly.removeMethod(methodRid),
-    /GenericParam row .* referenced by GenericParamConstraint.Owner/);
+  assert.throws(() => assembly.removeMethod(methodToken & 0x00ffffff),
+    /GenericParamConstraint row .* referenced by CustomAttribute\.Parent/);
   assert.equal(assembly.tables.counts[6], methodCount);
   assert.equal(assembly.tables.counts[42], genericParamCount);
-  assert.equal(assembly.methods.at(-1).rid, methodRid);
+  assert.equal(assembly.tables.counts[44], constraintCount);
+  assert.equal(assembly.genericParamConstraints.some((item) => item.rid === constraintRid), true);
 });
 
 test("non-trailing MethodDef removal remaps owned Param and GenericParam rows", () => {
