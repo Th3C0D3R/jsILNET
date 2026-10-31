@@ -5423,6 +5423,14 @@ export class Assembly {
   }
 
   addProperty({ owner, name, flags = 0, signature }) {
+    return this.#writeProperty({ owner, name, flags, signature }, false).rid;
+  }
+
+  insertProperty({ owner, name, flags = 0, signature }) {
+    return this.#writeProperty({ owner, name, flags, signature }, true);
+  }
+
+  #writeProperty({ owner, name, flags = 0, signature }, insertIntoOwner) {
     this.#ensureEditable();
     const ownerRid = metadataTableId(owner?.table) === 2 ? owner.rid : 0;
     const ownerType = this.types[ownerRid - 1];
@@ -5449,12 +5457,17 @@ export class Assembly {
     );
 
     const rows = this.tables.rows.get(23) ?? [];
+    const originalRowCount = rows.length;
     const maps = this.tables.rows.get(21) ?? [];
-    if (rows.length !== this.tables.counts[23] || rows.length >= 0xffffffff ||
+    if (rows.length !== this.tables.counts[23] || rows.length >= 0x00ffffff ||
         maps.length !== this.tables.counts[21]) {
       throw new FormatError("Property or PropertyMap row count is inconsistent with the metadata header");
     }
+    const pointerPresent = (this.tables.valid & (1n << 22n)) !== 0n;
     const pointerRows = getBijectivePointerRows(this, 22, 23, "Property");
+    if (pointerPresent && !pointerRows) {
+      throw new FormatError("PropertyPtr must be a one-to-one mapping to Property rows");
+    }
     const listCount = pointerRows?.length ?? rows.length;
     for (let index = 1; index < maps.length; index++) {
       if (maps[index - 1].Parent.rid >= maps[index].Parent.rid) {
@@ -5462,8 +5475,8 @@ export class Assembly {
       }
     }
     const ownerMap = maps.find((row) => row.Parent.rid === ownerRid);
+    const ownerMapIndex = ownerMap ? maps.indexOf(ownerMap) : -1;
     if (ownerMap) {
-      const ownerMapIndex = maps.indexOf(ownerMap);
       const endRid = maps[ownerMapIndex + 1]?.PropertyList.rid ?? listCount + 1;
       const ownedRids = pointerRows
         ? pointerRows.slice(ownerMap.PropertyList.rid - 1, endRid - 1)
@@ -5472,17 +5485,38 @@ export class Assembly {
           { length: Math.max(0, endRid - ownerMap.PropertyList.rid) },
           (_, index) => ownerMap.PropertyList.rid + index
         );
-      if (endRid !== listCount + 1 ||
+      if (endRid > listCount + 1 ||
           ownedRids.length !== ownerType.propertyRids.length ||
           ownedRids.some((rid, index) => rid !== ownerType.propertyRids[index])) {
-        throw new UnsupportedFormatError("Property append requires the owner's properties to be contiguous at the end");
+        throw new UnsupportedFormatError("Property insertion requires a valid contiguous owner range");
       }
     } else if (ownerType.propertyRids.length !== 0) {
       throw new FormatError(`TypeDef row ${ownerRid} has properties without a PropertyMap row`);
     }
+    if (insertIntoOwner && !ownerMap) {
+      throw new UnsupportedFormatError("Property insertion requires an existing PropertyMap row");
+    }
+    if (!insertIntoOwner && ownerMap &&
+        (maps[ownerMapIndex + 1]?.PropertyList.rid ?? listCount + 1) !== listCount + 1) {
+      throw new UnsupportedFormatError("Property append requires the owner's properties to be contiguous at the end");
+    }
     if (!ownerMap && maps.at(-1)?.Parent.rid >= ownerRid) {
       throw new FormatError("Appending a PropertyMap row would violate TypeDef ordering");
     }
+    const endRid = ownerMap
+      ? maps[ownerMapIndex + 1]?.PropertyList.rid ?? listCount + 1
+      : listCount + 1;
+    const ownedCount = ownerType.propertyRids.length;
+    const rid = pointerRows ? rows.length + 1 : endRid;
+    const pointerInsertionIndex = pointerRows
+      ? ownerMap
+        ? ownerMap.PropertyList.rid - 1 + ownedCount
+        : pointerRows.length
+      : -1;
+    const pointerRid = pointerInsertionIndex + 1;
+    const { tokenMap, rowChanges, tokenUpdates, patches } = pointerRows
+      ? { tokenMap: new Map(), rowChanges: [], tokenUpdates: [], patches: [] }
+      : this.#prepareTokenRowInsertion(23, rid, rows.length, "Property");
 
     const heapStreams = new Map(
       [...(this._heapStreams ?? new Map([...this.metadataRoot.streams].map(([streamName, stream]) =>
@@ -5493,35 +5527,49 @@ export class Assembly {
     const blobHeap = appendBlobHeap(heapStreams.get("#Blob") ?? new Uint8Array(), signature);
     heapStreams.set("#Strings", stringHeap.heap);
     heapStreams.set("#Blob", blobHeap.heap);
-    const rid = rows.length + 1;
-    rows.push({
+    const propertyRow = {
       table: 23,
       tableName: metadataTableNames[23],
       rid,
       Flags: flags,
       Name: stringHeap.index,
       Type: blobHeap.index
-    });
+    };
+    for (const change of rowChanges) change.row[change.columnName] = change.value;
+    for (const row of rows) {
+      if (row.rid >= rid) row.rid++;
+    }
+    rows.splice(rid - 1, 0, propertyRow);
     this.tables.rows.set(23, rows);
-    this.tables.counts[23] = rid;
+    this.tables.counts[23] = rows.length;
     this.tables.valid |= 1n << 23n;
     if (pointerRows) {
-      const pointerRid = pointerRows.length + 1;
-      pointerRows.push({
+      for (const row of pointerRows) {
+        if (row.rid >= pointerRid) row.rid++;
+      }
+      pointerRows.splice(pointerInsertionIndex, 0, {
         table: 22,
         tableName: metadataTableNames[22],
         rid: pointerRid,
         Property: { raw: rid, table: 23, tableName: metadataTableNames[23], rid }
       });
       this.tables.rows.set(22, pointerRows);
-      this.tables.counts[22] = pointerRid;
-      this.tables.valid |= 1n << 22n;
+      this.tables.counts[22] = pointerRows.length;
     }
-    if (ownerMap) {
-      const ownerMapIndex = maps.indexOf(ownerMap);
+    if (ownerMap && (pointerRows || rid > originalRowCount)) {
       for (const map of maps.slice(ownerMapIndex + 1)) {
         map.PropertyList.rid++;
         map.PropertyList.raw++;
+      }
+    }
+    for (const type of this.types) {
+      if (!pointerRows) {
+        type.propertyRids = type.propertyRids.map((propertyRid) =>
+          propertyRid >= rid ? propertyRid + 1 : propertyRid
+        );
+        for (const property of type.properties) {
+          if (property.rid >= rid) property.rid++;
+        }
       }
     }
     if (!ownerMap) {
@@ -5548,11 +5596,21 @@ export class Assembly {
     ownerType.properties.push({ rid, flags, name, signature: signature.slice() });
     this._heapStreams = heapStreams;
     this.#refreshHeaps();
+    for (const update of tokenUpdates) update.instruction.operand.value = update.replacement;
+    this._patches.push(...patches);
     this._metadataDirty = true;
-    return rid;
+    return { rid, tokenMap };
   }
 
   addEvent({ owner, name, flags = 0, eventType }) {
+    return this.#writeEvent({ owner, name, flags, eventType }, false).rid;
+  }
+
+  insertEvent({ owner, name, flags = 0, eventType }) {
+    return this.#writeEvent({ owner, name, flags, eventType }, true);
+  }
+
+  #writeEvent({ owner, name, flags = 0, eventType }, insertIntoOwner) {
     this.#ensureEditable();
     const ownerRid = metadataTableId(owner?.table) === 2 ? owner.rid : 0;
     const ownerType = this.types[ownerRid - 1];
@@ -5584,12 +5642,17 @@ export class Assembly {
     }
 
     const rows = this.tables.rows.get(20) ?? [];
+    const originalRowCount = rows.length;
     const maps = this.tables.rows.get(18) ?? [];
-    if (rows.length !== this.tables.counts[20] || rows.length >= 0xffffffff ||
+    if (rows.length !== this.tables.counts[20] || rows.length >= 0x00ffffff ||
         maps.length !== this.tables.counts[18]) {
       throw new FormatError("Event or EventMap row count is inconsistent with the metadata header");
     }
+    const pointerPresent = (this.tables.valid & (1n << 19n)) !== 0n;
     const pointerRows = getBijectivePointerRows(this, 19, 20, "Event");
+    if (pointerPresent && !pointerRows) {
+      throw new FormatError("EventPtr must be a one-to-one mapping to Event rows");
+    }
     const listCount = pointerRows?.length ?? rows.length;
     for (let index = 1; index < maps.length; index++) {
       if (maps[index - 1].Parent.rid >= maps[index].Parent.rid) {
@@ -5597,8 +5660,8 @@ export class Assembly {
       }
     }
     const ownerMap = maps.find((row) => row.Parent.rid === ownerRid);
+    const ownerMapIndex = ownerMap ? maps.indexOf(ownerMap) : -1;
     if (ownerMap) {
-      const ownerMapIndex = maps.indexOf(ownerMap);
       const endRid = maps[ownerMapIndex + 1]?.EventList.rid ?? listCount + 1;
       const ownedRids = pointerRows
         ? pointerRows.slice(ownerMap.EventList.rid - 1, endRid - 1)
@@ -5607,17 +5670,38 @@ export class Assembly {
           { length: Math.max(0, endRid - ownerMap.EventList.rid) },
           (_, index) => ownerMap.EventList.rid + index
         );
-      if (endRid !== listCount + 1 ||
+      if (endRid > listCount + 1 ||
           ownedRids.length !== ownerType.eventRids.length ||
           ownedRids.some((rid, index) => rid !== ownerType.eventRids[index])) {
-        throw new UnsupportedFormatError("Event append requires the owner's events to be contiguous at the end");
+        throw new UnsupportedFormatError("Event insertion requires a valid contiguous owner range");
       }
     } else if (ownerType.eventRids.length !== 0) {
       throw new FormatError(`TypeDef row ${ownerRid} has events without an EventMap row`);
     }
+    if (insertIntoOwner && !ownerMap) {
+      throw new UnsupportedFormatError("Event insertion requires an existing EventMap row");
+    }
+    if (!insertIntoOwner && ownerMap &&
+        (maps[ownerMapIndex + 1]?.EventList.rid ?? listCount + 1) !== listCount + 1) {
+      throw new UnsupportedFormatError("Event append requires the owner's events to be contiguous at the end");
+    }
     if (!ownerMap && maps.at(-1)?.Parent.rid >= ownerRid) {
       throw new FormatError("Appending an EventMap row would violate TypeDef ordering");
     }
+    const endRid = ownerMap
+      ? maps[ownerMapIndex + 1]?.EventList.rid ?? listCount + 1
+      : listCount + 1;
+    const ownedCount = ownerType.eventRids.length;
+    const rid = pointerRows ? rows.length + 1 : endRid;
+    const pointerInsertionIndex = pointerRows
+      ? ownerMap
+        ? ownerMap.EventList.rid - 1 + ownedCount
+        : pointerRows.length
+      : -1;
+    const pointerRid = pointerInsertionIndex + 1;
+    const { tokenMap, rowChanges, tokenUpdates, patches } = pointerRows
+      ? { tokenMap: new Map(), rowChanges: [], tokenUpdates: [], patches: [] }
+      : this.#prepareTokenRowInsertion(20, rid, rows.length, "Event");
 
     const heapStreams = new Map(
       [...(this._heapStreams ?? new Map([...this.metadataRoot.streams].map(([streamName, stream]) =>
@@ -5626,35 +5710,49 @@ export class Assembly {
     );
     const stringHeap = appendStringHeap(heapStreams.get("#Strings") ?? new Uint8Array(), name);
     heapStreams.set("#Strings", stringHeap.heap);
-    const rid = rows.length + 1;
-    rows.push({
+    const eventRow = {
       table: 20,
       tableName: metadataTableNames[20],
       rid,
       EventFlags: flags,
       Name: stringHeap.index,
       EventType: { raw: encodeCodedIndex(typeTable, typeRid, "TypeDefOrRef"), target }
-    });
+    };
+    for (const change of rowChanges) change.row[change.columnName] = change.value;
+    for (const row of rows) {
+      if (row.rid >= rid) row.rid++;
+    }
+    rows.splice(rid - 1, 0, eventRow);
     this.tables.rows.set(20, rows);
-    this.tables.counts[20] = rid;
+    this.tables.counts[20] = rows.length;
     this.tables.valid |= 1n << 20n;
     if (pointerRows) {
-      const pointerRid = pointerRows.length + 1;
-      pointerRows.push({
+      for (const row of pointerRows) {
+        if (row.rid >= pointerRid) row.rid++;
+      }
+      pointerRows.splice(pointerInsertionIndex, 0, {
         table: 19,
         tableName: metadataTableNames[19],
         rid: pointerRid,
         Event: { raw: rid, table: 20, tableName: metadataTableNames[20], rid }
       });
       this.tables.rows.set(19, pointerRows);
-      this.tables.counts[19] = pointerRid;
-      this.tables.valid |= 1n << 19n;
+      this.tables.counts[19] = pointerRows.length;
     }
-    if (ownerMap) {
-      const ownerMapIndex = maps.indexOf(ownerMap);
+    if (ownerMap && (pointerRows || rid > originalRowCount)) {
       for (const map of maps.slice(ownerMapIndex + 1)) {
         map.EventList.rid++;
         map.EventList.raw++;
+      }
+    }
+    for (const type of this.types) {
+      if (!pointerRows) {
+        type.eventRids = type.eventRids.map((eventRid) =>
+          eventRid >= rid ? eventRid + 1 : eventRid
+        );
+        for (const event of type.events) {
+          if (event.rid >= rid) event.rid++;
+        }
       }
     }
     if (!ownerMap) {
@@ -5681,8 +5779,10 @@ export class Assembly {
     ownerType.events.push({ rid, flags, name, eventType: target });
     this._heapStreams = heapStreams;
     this.#refreshHeaps();
+    for (const update of tokenUpdates) update.instruction.operand.value = update.replacement;
+    this._patches.push(...patches);
     this._metadataDirty = true;
-    return rid;
+    return { rid, tokenMap };
   }
 
   removeEvent(rid) {

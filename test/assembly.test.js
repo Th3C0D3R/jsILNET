@@ -5140,6 +5140,87 @@ test("properties and events append before later empty ownership ranges", () => {
     .events.length, 0);
 });
 
+test("insertProperty and insertEvent support non-trailing owner ranges", () => {
+  for (const pointerMode of [false, true]) {
+    const propertyAssembly = parseAssembly(withoutDebugDirectory());
+    propertyAssembly.tables.sorted &= ~(1n << 12n);
+    if (pointerMode) {
+      usePointerTable(propertyAssembly, {
+        pointerId: 22,
+        targetId: 23,
+        column: "Property",
+        listTableId: 21,
+        listColumn: "PropertyList",
+        pointerName: "PropertyPtr",
+        targetName: "Property"
+      });
+    }
+    const propertyOwner = propertyAssembly.types.at(-2);
+    const laterPropertyOwner = propertyAssembly.types.at(-1);
+    const oldPropertyCount = propertyAssembly.tables.counts[23];
+    const resultProperty = propertyAssembly.insertProperty({
+      owner: { table: "TypeDef", rid: propertyOwner.rid },
+      name: "InsertedProperty",
+      signature: Uint8Array.of(0x08, 0x00, 0x08)
+    });
+    if (pointerMode) {
+      assert.equal(resultProperty.rid, oldPropertyCount + 1);
+      assert.equal(resultProperty.tokenMap.size, 0);
+    } else {
+      assert.equal(resultProperty.rid, 2);
+      assert.equal(resultProperty.tokenMap.get(0x17000002), 0x17000003);
+    }
+    const reparsedPropertyAssembly = parseAssembly(propertyAssembly.serialize());
+    assert.equal(reparsedPropertyAssembly.types[propertyOwner.rid - 1]
+      .properties.at(-1).name, "InsertedProperty");
+    assert.deepEqual(reparsedPropertyAssembly.types[laterPropertyOwner.rid - 1]
+      .propertyRids, laterPropertyOwner.propertyRids);
+
+    const eventAssembly = parseAssembly(withoutDebugDirectory());
+    eventAssembly.tables.sorted &= ~(1n << 12n);
+    if (pointerMode) {
+      usePointerTable(eventAssembly, {
+        pointerId: 19,
+        targetId: 20,
+        column: "Event",
+        listTableId: 18,
+        listColumn: "EventList",
+        pointerName: "EventPtr",
+        targetName: "Event"
+      });
+    }
+    const eventOwner = eventAssembly.types.at(-1);
+    const laterEventOwnerRid = eventAssembly.addTypeDef({ name: "LaterEventOwner" }) &
+      0x00ffffff;
+    const eventType = eventAssembly.typeRefs.find((type) => type.name === "IDisposable");
+    assert.ok(eventType);
+    eventAssembly.addEvent({
+      owner: { table: "TypeDef", rid: laterEventOwnerRid },
+      name: "LaterEvent",
+      eventType: { table: "TypeRef", rid: eventType.rid }
+    });
+    const laterEventOwner = eventAssembly.types[laterEventOwnerRid - 1];
+    const oldEventCount = eventAssembly.tables.counts[20];
+    const resultEvent = eventAssembly.insertEvent({
+      owner: { table: "TypeDef", rid: eventOwner.rid },
+      name: "InsertedEvent",
+      eventType: { table: "TypeRef", rid: eventType.rid }
+    });
+    if (pointerMode) {
+      assert.equal(resultEvent.rid, oldEventCount + 1);
+      assert.equal(resultEvent.tokenMap.size, 0);
+    } else {
+      assert.equal(resultEvent.rid, 2);
+      assert.equal(resultEvent.tokenMap.get(0x14000002), 0x14000003);
+    }
+    const reparsedEventAssembly = parseAssembly(eventAssembly.serialize());
+    assert.equal(reparsedEventAssembly.types[eventOwner.rid - 1]
+      .events.at(-1).name, "InsertedEvent");
+    assert.deepEqual(reparsedEventAssembly.types[laterEventOwnerRid - 1]
+      .eventRids, laterEventOwner.eventRids);
+  }
+});
+
 test("InterfaceImpl rows can append to any TypeDef when the table is unsorted", () => {
   const assembly = parseAssembly(withoutDebugDirectory());
   const owner = assembly.types[1];
