@@ -6816,12 +6816,22 @@ test("MemberRef signatures validate generic variables for external generic TypeR
     name: "GetValue",
     signature: Uint8Array.from([0x10, 0x01, 0x01, 0x01, 0x13, 0x00])
   });
+  const fieldRef = assembly.insertMemberRefSorted({
+    parent: { table: "TypeRef", rid: typeRef.token & 0x00ffffff },
+    name: "Value",
+    signature: Uint8Array.from([0x06, 0x13, 0x00])
+  });
   const original = assembly.serialize();
 
   assert.throws(() => assembly.replaceMemberRef(
     memberRef.token & 0x00ffffff,
     { signature: Uint8Array.from([0x10, 0x01, 0x01, 0x01, 0x13, 0x01]) }
   ), /Type generic variable !1 exceeds its declaring type's arity/);
+  assert.throws(() => assembly.replaceMemberRef(
+    fieldRef.token & 0x00ffffff,
+    { signature: Uint8Array.from([0x06, 0x13, 0x01]) }
+  ), /Type generic variable !1 exceeds its declaring type's arity/);
+  assert.deepEqual(assembly.serialize(), original);
   assembly.tables.sorted &= ~(1n << 1n);
   assert.doesNotThrow(() => assembly.replaceTypeRef(
     typeRef.token & 0x00ffffff,
