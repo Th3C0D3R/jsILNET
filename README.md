@@ -2,7 +2,7 @@
 
 `jsILNET` is a dependency-free JavaScript library for reading, modifying, and rewriting .NET assemblies. It parses PE/CLI binary formats directly; the library does not use a .NET runtime or .NET code compiled to WebAssembly.
 
-This is an early-stage library, not a dnlib-equivalent rewriter. The implementation covers Tier 1 and a focused subset of Tier 2 in [ARCHITECTURE.md](ARCHITECTURE.md).
+This is an early-stage library, not a dnlib-equivalent rewriter. Tier 1 and Tier 2 structural rewriting are implemented for the supported input profile and explicit safety boundaries documented in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Requirements
 
