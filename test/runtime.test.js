@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash, generateKeyPairSync } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -31,6 +31,115 @@ const dotnetAvailable = dotnetVersion.status === 0;
 const targetFramework = dotnetAvailable
   ? `net${dotnetVersion.stdout.trim().split(".")[0]}.0`
   : null;
+
+test("trailing abstract MethodDef removal updates an embedded Portable PDB", {
+  skip: dotnetAvailable ? false : ".NET SDK/runtime is unavailable"
+}, async () => {
+  const directory = await mkdtemp(join(tmpdir(), "jsilnet-pdb-method-removal-"));
+  try {
+    const project = join(directory, "PdbMethodRemoval.csproj");
+    const output = join(directory, "out");
+    await writeFile(project, [
+      "<Project Sdk=\"Microsoft.NET.Sdk\">",
+      "  <PropertyGroup>",
+      `    <TargetFramework>${targetFramework}</TargetFramework>`,
+      "    <DebugType>embedded</DebugType>",
+      "  </PropertyGroup>",
+      "</Project>"
+    ].join("\n"));
+    await writeFile(join(directory, "Fixture.cs"),
+      "public interface PdbMethodRemovalFixture { void Before(); void Gone<T>(T argument); }");
+    const build = spawnSync(
+      "dotnet",
+      ["build", project, "--configuration", "Debug", "--output", output, "--nologo"],
+      { encoding: "utf8", timeout: 120_000 }
+    );
+    assert.equal(build.status, 0, build.stderr || build.stdout || build.error?.message);
+
+    const original = Uint8Array.from(await readFile(join(output, "PdbMethodRemoval.dll")));
+    const assembly = parseAssembly(original);
+    const method = assembly.methods.find((item) => item.name === "Gone");
+    const debugEntry = assembly.pe.debugDirectoryEntries.find((entry) =>
+      entry.embeddedPortablePdb
+    );
+    assert.ok(method);
+    assert.equal(method.rid, assembly.methods.length);
+    assert.ok(assembly.tables.counts[8] > 0);
+    assert.ok(assembly.tables.counts[42] > 0);
+    assert.ok(debugEntry);
+    assert.equal(debugEntry.embeddedPortablePdb.customDebugInformation.some((record) =>
+      record.Parent.target?.table === 6 && record.Parent.target.rid === method.rid
+    ), false);
+    assert.equal(debugEntry.embeddedPortablePdb.tables.get(50).some((scope) =>
+      scope.Method.rid === method.rid
+    ), false);
+
+    const nonTrailing = parseAssembly(original);
+    const beforeRejectedRemoval = nonTrailing.serialize();
+    assert.throws(() => nonTrailing.removeMethod(1), /trailing MethodDef row/);
+    assert.deepEqual(nonTrailing.serialize(), beforeRejectedRemoval);
+
+    const scoped = parseAssembly(original);
+    const scopedMethod = scoped.methods.find((item) => item.name === "Gone");
+    const scopedPdb = scoped.pe.debugDirectoryEntries.find((entry) =>
+      entry.embeddedPortablePdb
+    ).embeddedPortablePdb;
+    const scopeRows = scopedPdb.tables.rows.get(50) ?? [];
+    scopedPdb.tables.rows.set(50, [...scopeRows, {
+      rid: scopeRows.length + 1,
+      Method: { rid: scopedMethod.rid }
+    }]);
+    const beforeScopedRemoval = scoped.serialize();
+    assert.throws(() => scoped.removeMethod(scopedMethod.rid), /method-scoped debug records/);
+    assert.deepEqual(scoped.serialize(), beforeScopedRemoval);
+
+    const tokenMap = assembly.removeMethod(method.rid);
+    assert.equal(tokenMap.size, 0);
+    const rewritten = assembly.serialize();
+    const reparsed = parseAssembly(rewritten);
+    assert.equal(reparsed.methods.some((item) => item.name === "Gone"), false);
+    const updatedPdb = reparsed.pe.debugDirectoryEntries.find((entry) =>
+      entry.embeddedPortablePdb
+    )?.embeddedPortablePdb;
+    assert.ok(updatedPdb);
+    assert.equal(updatedPdb.rowCounts.get(6), reparsed.methods.length);
+    assert.equal(updatedPdb.tables.counts[49], reparsed.methods.length);
+    assert.equal(updatedPdb.methodDebugInformation.length, reparsed.methods.length);
+    for (const [table, count] of updatedPdb.rowCounts) {
+      assert.equal(count, reparsed.tables.counts[table]);
+    }
+
+    const rewrittenPath = join(output, "PdbMethodRemovalRewritten.dll");
+    const runnerDirectory = join(directory, "runner");
+    await mkdir(runnerDirectory);
+    await writeFile(rewrittenPath, rewritten);
+    await writeFile(join(runnerDirectory, "Runner.csproj"), [
+      "<Project Sdk=\"Microsoft.NET.Sdk\">",
+      "  <PropertyGroup>",
+      `    <TargetFramework>${targetFramework}</TargetFramework>`,
+      "    <OutputType>Exe</OutputType>",
+      "  </PropertyGroup>",
+      "</Project>"
+    ].join("\n"));
+    await writeFile(join(runnerDirectory, "Program.cs"), [
+      "using System;",
+      "using System.IO;",
+      "using System.Reflection;",
+      "var loaded = Assembly.LoadFrom(Path.GetFullPath(args[0]));",
+      "var fixture = loaded.GetType(\"PdbMethodRemovalFixture\");",
+      "return fixture is null || fixture.GetMethod(\"Gone\") is not null ? 1 : 0;"
+    ].join("\n"));
+    const load = spawnSync(
+      "dotnet",
+      ["run", "--project", join(runnerDirectory, "Runner.csproj"), "--configuration", "Release",
+        "--no-launch-profile", "--", rewrittenPath],
+      { encoding: "utf8", timeout: 120_000 }
+    );
+    assert.equal(load.status, 0, load.stderr || load.stdout || load.error?.message);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 test("classic PDB parser reads a compiler-produced MSF identity", {
   skip: dotnetAvailable ? false : ".NET SDK/runtime is unavailable"

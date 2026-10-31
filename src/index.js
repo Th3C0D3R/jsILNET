@@ -30,6 +30,7 @@ import { parseManifestResources } from "./metadata/resources.js";
 import {
   validatePortablePdbAssemblyReferences,
   validatePortablePdbCodeViewIdentity,
+  removeEmbeddedPortablePdbMethod as removePortablePdbMethod,
   refreshEmbeddedPortablePdbId,
   replaceEmbeddedPortablePdbMethodOffsets as replacePortablePdbMethodOffsets,
   replaceEmbeddedPortablePdbDocumentName as replacePortablePdbDocumentName,
@@ -2816,6 +2817,10 @@ export class Assembly {
   }
 
   replaceEmbeddedPortablePdb(debugEntryIndex, data) {
+    return this.#replaceEmbeddedPortablePdb(debugEntryIndex, data, this.tables.counts);
+  }
+
+  #replaceEmbeddedPortablePdb(debugEntryIndex, data, assemblyRowCounts) {
     this.#ensureEditable();
     if (!Number.isInteger(debugEntryIndex) || debugEntryIndex < 0 ||
         debugEntryIndex >= this.pe.debugDirectoryEntries.length) {
@@ -2836,7 +2841,7 @@ export class Assembly {
       );
     }
     const pdb = parseEmbeddedPortablePdbData(data, 0, data.length);
-    validatePortablePdbAssemblyReferences(pdb, this.tables.counts);
+    validatePortablePdbAssemblyReferences(pdb, assemblyRowCounts);
     const previousEdit = this._embeddedPortablePdbEdits.get(debugEntryIndex);
     if (previousEdit) {
       const previousPdb = parseEmbeddedPortablePdbData(previousEdit, 0, previousEdit.length);
@@ -4631,7 +4636,12 @@ export class Assembly {
     if (this._structuralBodies.size > 0) {
       throw new UnsupportedFormatError("Method removal cannot be combined with structural method edits");
     }
-    this.#ensureTokenRemappingSafe("MethodDef");
+    const embeddedPdbIndices = this.pe.debugDirectoryEntries.flatMap((entry, index) =>
+      entry.embeddedPortablePdb ? [index] : []
+    );
+    this.#ensureTokenRemappingSafe("MethodDef", {
+      allowEmbeddedPortablePdb: embeddedPdbIndices.length === 1
+    });
     const rows = this.tables.rows.get(6) ?? [];
     if (rows.length !== this.tables.counts[6] || rows.length !== this.methods.length) {
       throw new FormatError("MethodDef row count is inconsistent with the metadata table header");
@@ -5141,6 +5151,29 @@ export class Assembly {
     }
 
     const methodPointerPresent = pointerRows !== null;
+    if (embeddedPdbIndices.length === 1) {
+      const updatedCounts = [...this.tables.counts];
+      updatedCounts[6]--;
+      if (methodPointerPresent) updatedCounts[5]--;
+      if (parameterRids.size > 0) {
+        updatedCounts[8] -= parameterRids.size;
+        if (paramPointerRows) updatedCounts[7] -= parameterRids.size;
+      }
+      if (genericParamRids.size > 0) updatedCounts[42] -= genericParamRids.size;
+      if (genericParamConstraintRids.size > 0) {
+        updatedCounts[44] -= genericParamConstraintRids.size;
+      }
+      const debugEntryIndex = embeddedPdbIndices[0];
+      const debugEntry = this.pe.debugDirectoryEntries[debugEntryIndex];
+      const pdb = this.#getPortablePdbForEdit(debugEntryIndex, debugEntry);
+      const updatedPdb = removePortablePdbMethod(
+        pdb,
+        rid,
+        this.tables.counts,
+        updatedCounts
+      );
+      this.#replaceEmbeddedPortablePdb(debugEntryIndex, updatedPdb, updatedCounts);
+    }
     if (methodPointerPresent) {
       const remainingPointers = pointerRows.filter((pointer) => pointer.rid !== pointerRid);
       remainingPointers.forEach((pointer, index) => {
@@ -12666,11 +12699,15 @@ export class Assembly {
     return tokenMap;
   }
 
-  #ensureTokenRemappingSafe(tableName) {
+  #ensureTokenRemappingSafe(tableName, { allowEmbeddedPortablePdb = false } = {}) {
     if (this.#hasDebugDirectory) {
-      throw new UnsupportedFormatError(
-        `${tableName} token remapping is unsupported while a PE debug directory is present`
-      );
+      const embeddedPdbCount = this.pe.debugDirectoryEntries
+        .filter((entry) => entry.embeddedPortablePdb).length;
+      if (!allowEmbeddedPortablePdb || embeddedPdbCount !== 1) {
+        throw new UnsupportedFormatError(
+          `${tableName} token remapping is unsupported while a PE debug directory is present`
+        );
+      }
     }
     const supportedStreams = new Set(["#~", "#-", "#Strings", "#US", "#GUID", "#Blob"]);
     for (const streamName of this.metadataRoot.streams.keys()) {
