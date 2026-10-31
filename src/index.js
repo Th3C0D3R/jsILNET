@@ -10338,6 +10338,14 @@ export class Assembly {
         `${tableName} token remapping is unsupported while a PE debug directory is present`
       );
     }
+    const supportedStreams = new Set(["#~", "#-", "#Strings", "#US", "#GUID", "#Blob"]);
+    for (const streamName of this.metadataRoot.streams.keys()) {
+      if (!supportedStreams.has(streamName)) {
+        throw new UnsupportedFormatError(
+          `${tableName} token remapping is unsupported with unrecognized metadata stream ${streamName}`
+        );
+      }
+    }
   }
 
   #ensureAddedMethodBodiesSafe(operation) {

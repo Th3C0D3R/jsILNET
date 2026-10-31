@@ -2178,6 +2178,17 @@ test("sorted GenericParam insertion remaps dependent metadata and ENC tokens", (
     value: assembly.parseCustomAttribute(template.rid)
   });
   addEncToken(assembly, 31, later.token);
+  const countBeforeRejectedInsertion = assembly.tables.counts[42];
+  assembly.metadataRoot.streams.set("#Extra", {
+    name: "#Extra",
+    bytes: Uint8Array.of(1, 2, 3, 4)
+  });
+  assert.throws(() => assembly.insertGenericParam({
+    owner: { table: "MethodDef", rid: lowerMethod.rid },
+    name: "TRejected"
+  }), /unrecognized metadata stream #Extra/);
+  assert.equal(assembly.tables.counts[42], countBeforeRejectedInsertion);
+  assembly.metadataRoot.streams.delete("#Extra");
   const earlier = assembly.insertGenericParam({
     owner: { table: "MethodDef", rid: lowerMethod.rid },
     name: "TLower"
