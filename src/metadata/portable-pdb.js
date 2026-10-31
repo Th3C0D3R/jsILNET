@@ -9,6 +9,7 @@ import {
   serializeTablesStream
 } from "./writer.js";
 import { serializeMetadataRoot } from "./root-writer.js";
+import { encodeCodedIndex } from "./tables.js";
 
 const maxEmbeddedSourceSize = 0x10000000;
 const maxEmbeddedPortablePdbSize = 0x10000000;
@@ -777,10 +778,10 @@ export function removeEmbeddedPortablePdbMethod(pdb, methodRid, oldCounts, newCo
   }
   if (!Array.isArray(oldCounts) || !Array.isArray(newCounts) ||
       oldCounts.length < 45 || newCounts.length < 45 ||
-      !Number.isInteger(methodRid) || methodRid < 1 || methodRid !== oldCounts[6] ||
+      !Number.isInteger(methodRid) || methodRid < 1 || methodRid > oldCounts[6] ||
       newCounts[6] !== oldCounts[6] - 1) {
     throw new UnsupportedFormatError(
-      "Portable PDB method removal supports only the trailing MethodDef row"
+      "Portable PDB method removal requires one valid MethodDef row to be removed"
     );
   }
   for (const [table, count] of pdb.rowCounts) {
@@ -790,11 +791,17 @@ export function removeEmbeddedPortablePdbMethod(pdb, methodRid, oldCounts, newCo
       );
     }
   }
+  const entryPointRid = pdb.entryPointToken & 0x00ffffff;
   if (pdb.entryPointToken === (0x06000000 | methodRid)) {
     throw new UnsupportedFormatError("Portable PDB entry point cannot be removed");
   }
-  if (pdb.entryPointToken !== 0 &&
-      (pdb.entryPointToken & 0x00ffffff) > newCounts[6]) {
+  if (pdb.entryPointToken !== 0 && entryPointRid > oldCounts[6]) {
+    throw new FormatError("Portable PDB entry point references a missing MethodDef");
+  }
+  const entryPointToken = pdb.entryPointToken !== 0 && entryPointRid > methodRid
+    ? pdb.entryPointToken - 1
+    : pdb.entryPointToken;
+  if (entryPointToken !== 0 && (entryPointToken & 0x00ffffff) > newCounts[6]) {
     throw new FormatError("Portable PDB entry point references a removed MethodDef");
   }
 
@@ -803,27 +810,78 @@ export function removeEmbeddedPortablePdbMethod(pdb, methodRid, oldCounts, newCo
   if (methodRows.length !== 0 && methodRows.length !== oldCounts[6]) {
     throw new FormatError("Portable PDB MethodDebugInformation row count is inconsistent");
   }
+  if (methodRows.length === 0) rows.delete(49);
   if (methodRows.length > 0) {
-    const lastRow = methodRows.at(-1);
-    if (lastRow.rid !== methodRid) {
+    if (methodRows.some((row, index) => row.rid !== index + 1)) {
       throw new FormatError("Portable PDB MethodDebugInformation rows are not RID-aligned");
     }
-    const remainingMethodRows = methodRows.slice(0, -1);
+    const remainingMethodRows = methodRows
+      .filter((row) => row.rid !== methodRid)
+      .map((row) => row.rid > methodRid ? { ...row, rid: row.rid - 1 } : { ...row });
     if (remainingMethodRows.length > 0) rows.set(49, remainingMethodRows);
     else rows.delete(49);
   }
-  if ((rows.get(50) ?? []).some((scope) => scope.Method.rid === methodRid) ||
-      (rows.get(54) ?? []).some((stateMachine) =>
-        stateMachine.MoveNextMethod.rid === methodRid ||
-        stateMachine.KickoffMethod.rid === methodRid
-      ) ||
-      (rows.get(55) ?? []).some((record) =>
-        record.Parent.target?.table === 6 && record.Parent.target.rid === methodRid
-      )) {
+  const scopeRows = rows.get(50) ?? [];
+  if (scopeRows.some((scope) => scope.Method.rid === methodRid)) {
     throw new UnsupportedFormatError(
       "Portable PDB method removal cannot discard method-scoped debug records"
     );
   }
+  const remapMethodReference = (reference) => reference.rid > methodRid
+    ? { ...reference, raw: reference.rid - 1, rid: reference.rid - 1 }
+    : { ...reference };
+  if (rows.has(50)) {
+    rows.set(50, scopeRows.map((scope) => scope.Method.rid > methodRid
+      ? { ...scope, Method: remapMethodReference(scope.Method) }
+      : { ...scope }
+    ));
+  }
+  const stateMachineRows = rows.get(54) ?? [];
+  if (stateMachineRows.some((stateMachine) =>
+    stateMachine.MoveNextMethod.rid === methodRid ||
+    stateMachine.KickoffMethod.rid === methodRid
+  )) {
+    throw new UnsupportedFormatError(
+      "Portable PDB method removal cannot discard method-scoped debug records"
+    );
+  }
+  if (rows.has(54)) {
+    rows.set(54, stateMachineRows.map((stateMachine) => ({
+      ...stateMachine,
+      MoveNextMethod: remapMethodReference(stateMachine.MoveNextMethod),
+      KickoffMethod: remapMethodReference(stateMachine.KickoffMethod)
+    })));
+  }
+  const customDebugRows = rows.get(55) ?? [];
+  if (customDebugRows.some((record) =>
+    record.Parent.target?.table === 6 && record.Parent.target.rid === methodRid
+  )) {
+    throw new UnsupportedFormatError(
+      "Portable PDB method removal cannot discard method-scoped debug records"
+    );
+  }
+  const remappedCustomDebugRows = customDebugRows.map((record) => {
+    const target = record.Parent.target;
+    if (target?.table !== 6 || target.rid < methodRid) return { ...record };
+    const rid = target.rid - 1;
+    return {
+      ...record,
+      Parent: {
+        raw: encodeCodedIndex(6, rid, "HasCustomDebugInformation"),
+        target: { ...target, rid }
+      }
+    };
+  });
+  let previousCustomDebugParent = 0;
+  for (const record of remappedCustomDebugRows) {
+    if (record.Parent.raw < previousCustomDebugParent) {
+      throw new UnsupportedFormatError(
+        "Portable PDB method remapping would violate CustomDebugInformation order"
+      );
+    }
+    previousCustomDebugParent = record.Parent.raw;
+  }
+  if (rows.has(55)) rows.set(55, remappedCustomDebugRows);
 
   const rowCounts = new Map([...pdb.rowCounts].map(([table]) =>
     [table, newCounts[table]]
@@ -840,7 +898,7 @@ export function removeEmbeddedPortablePdbMethod(pdb, methodRid, oldCounts, newCo
   const pdbStream = new Uint8Array(32 + rowCounts.size * 4);
   pdbStream.set(pdb.id);
   const pdbView = new DataView(pdbStream.buffer);
-  pdbView.setUint32(20, pdb.entryPointToken, true);
+  pdbView.setUint32(20, entryPointToken, true);
   pdbView.setUint32(24, Number(pdb.referencedTypeSystemTables & 0xffffffffn), true);
   pdbView.setUint32(28, Number(pdb.referencedTypeSystemTables >> 32n), true);
   let countOffset = 32;

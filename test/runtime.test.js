@@ -75,9 +75,17 @@ test("trailing abstract MethodDef removal updates an embedded Portable PDB", {
     ), false);
 
     const nonTrailing = parseAssembly(original);
-    const beforeRejectedRemoval = nonTrailing.serialize();
-    assert.throws(() => nonTrailing.removeMethod(1), /trailing MethodDef row/);
-    assert.deepEqual(nonTrailing.serialize(), beforeRejectedRemoval);
+    const nonTrailingTokenMap = nonTrailing.removeMethod(1);
+    assert.equal(nonTrailingTokenMap.get(0x06000002), 0x06000001);
+    const nonTrailingReparsed = parseAssembly(nonTrailing.serialize());
+    assert.equal(nonTrailingReparsed.methods.some((item) => item.name === "Before"), false);
+    assert.equal(nonTrailingReparsed.methods.find((item) => item.name === "Gone")?.rid, 1);
+    const nonTrailingPdb = nonTrailingReparsed.pe.debugDirectoryEntries.find((entry) =>
+      entry.embeddedPortablePdb
+    )?.embeddedPortablePdb;
+    assert.ok(nonTrailingPdb);
+    assert.equal(nonTrailingPdb.rowCounts.get(6), nonTrailingReparsed.methods.length);
+    assert.equal(nonTrailingPdb.methodDebugInformation.length, nonTrailingReparsed.methods.length);
 
     const scoped = parseAssembly(original);
     const scopedMethod = scoped.methods.find((item) => item.name === "Gone");
@@ -136,6 +144,86 @@ test("trailing abstract MethodDef removal updates an embedded Portable PDB", {
       { encoding: "utf8", timeout: 120_000 }
     );
     assert.equal(load.status, 0, load.stderr || load.stdout || load.error?.message);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("MethodDef removal updates or protects the CLI entry-point token", {
+  skip: dotnetAvailable ? false : ".NET SDK/runtime is unavailable"
+}, async () => {
+  const directory = await mkdtemp(join(tmpdir(), "jsilnet-cli-entrypoint-"));
+  try {
+    const project = join(directory, "EntryPoint.csproj");
+    const output = join(directory, "out");
+    await writeFile(project, [
+      "<Project Sdk=\"Microsoft.NET.Sdk\">",
+      "  <PropertyGroup>",
+      `    <TargetFramework>${targetFramework}</TargetFramework>`,
+      "    <OutputType>Exe</OutputType>",
+      "    <DebugType>embedded</DebugType>",
+      "  </PropertyGroup>",
+      "</Project>"
+    ].join("\n"));
+    await writeFile(join(directory, "Program.cs"), [
+      "public interface IUnused { void Removed(); }",
+      "public static class Program { public static void Main() { int value = 42; _ = value; } }"
+    ].join("\n"));
+    const build = spawnSync(
+      "dotnet",
+      ["build", project, "--configuration", "Release", "--output", output, "--nologo"],
+      { encoding: "utf8", timeout: 120_000 }
+    );
+    assert.equal(build.status, 0, build.stderr || build.stdout || build.error?.message);
+
+    const assemblyPath = join(output, "EntryPoint.dll");
+    const original = Uint8Array.from(await readFile(assemblyPath));
+    const assembly = parseAssembly(original);
+    const removed = assembly.methods.find((method) => method.name === "Removed");
+    const main = assembly.methods.find((method) => method.name === "Main");
+    assert.ok(removed);
+    assert.ok(main);
+    assert.ok(removed.rid < main.rid);
+    assert.equal(assembly.cli.entryPointToken, 0x06000000 + main.rid);
+    const pdbEntry = assembly.pe.debugDirectoryEntries.find((entry) =>
+      entry.embeddedPortablePdb
+    );
+    assert.ok(pdbEntry);
+    assert.equal(pdbEntry.embeddedPortablePdb.tables.get(50).some((scope) =>
+      scope.Method.rid === removed.rid
+    ), false);
+    assert.ok(pdbEntry.embeddedPortablePdb.tables.get(50).some((scope) =>
+      scope.Method.rid === main.rid
+    ));
+
+    const rejected = parseAssembly(original);
+    const entryPointRid = rejected.cli.entryPointToken & 0x00ffffff;
+    const beforeRejectedRemoval = rejected.serialize();
+    assert.throws(() => rejected.removeMethod(entryPointRid), /CLI entry point/);
+    assert.deepEqual(rejected.serialize(), beforeRejectedRemoval);
+
+    assembly.removeMethod(removed.rid);
+    const rewritten = assembly.serialize();
+    const reparsed = parseAssembly(rewritten);
+    const rewrittenMain = reparsed.methods.find((method) => method.name === "Main");
+    assert.ok(rewrittenMain);
+    assert.equal(reparsed.cli.entryPointToken, 0x06000000 + rewrittenMain.rid);
+    const rewrittenPdb = reparsed.pe.debugDirectoryEntries.find((entry) =>
+      entry.embeddedPortablePdb
+    )?.embeddedPortablePdb;
+    assert.ok(rewrittenPdb);
+    assert.equal(rewrittenPdb.rowCounts.get(6), reparsed.methods.length);
+    const remappedScope = rewrittenPdb.tables.get(50).find((scope) =>
+      scope.Method.rid === rewrittenMain.rid
+    );
+    assert.ok(remappedScope);
+    assert.equal(remappedScope.Method.raw, rewrittenMain.rid);
+    await writeFile(assemblyPath, rewritten);
+    const execution = spawnSync("dotnet", [assemblyPath], {
+      encoding: "utf8",
+      timeout: 120_000
+    });
+    assert.equal(execution.status, 0, execution.stderr || execution.stdout || execution.error?.message);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

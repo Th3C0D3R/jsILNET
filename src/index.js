@@ -4516,6 +4516,19 @@ export class Assembly {
     const { tokenMap, rowChanges, tokenUpdates, patches } = pointerRows
       ? { tokenMap: new Map(), rowChanges: [], tokenUpdates: [], patches: [] }
       : this.#prepareTokenRowInsertion(6, rid, methodRows.length, "MethodDef");
+    const cliEntryPointToken = this._cliEntryPointToken ?? this.cli.entryPointToken;
+    const isManagedMethodEntryPoint =
+      (this.cli.flags & 0x10) === 0 &&
+      (cliEntryPointToken >>> 24) === 6;
+    const cliEntryPointRid = cliEntryPointToken & 0x00ffffff;
+    if (isManagedMethodEntryPoint &&
+        (cliEntryPointRid === 0 || cliEntryPointRid > originalMethodCount)) {
+      throw new FormatError("CLI entry point references a missing MethodDef");
+    }
+    const remappedCliEntryPointToken = isManagedMethodEntryPoint &&
+      cliEntryPointRid >= rid
+      ? cliEntryPointToken + 1
+      : cliEntryPointToken;
     const insertedBody = hasBody ? bodyBytes.slice() : null;
     if (parsedBody && insertedBody) {
       for (const instruction of parsedBody.instructions) {
@@ -4626,6 +4639,15 @@ export class Assembly {
     this._heapStreams = heapStreams;
     this.#refreshHeaps();
     for (const update of tokenUpdates) update.instruction.operand.value = update.replacement;
+    if (remappedCliEntryPointToken !== cliEntryPointToken) {
+      const entryPointBytes = new Uint8Array(4);
+      new DataView(entryPointBytes.buffer).setUint32(0, remappedCliEntryPointToken, true);
+      patches.push({
+        offset: this.cli.offset + 20,
+        bytes: entryPointBytes
+      });
+      this._cliEntryPointToken = remappedCliEntryPointToken;
+    }
     this._patches.push(...patches);
     this._metadataDirty = true;
     return { token: 0x06000000 + rid, tokenMap };
@@ -4649,6 +4671,22 @@ export class Assembly {
     if (!Number.isInteger(rid) || rid < 1 || rid > rows.length) {
       throw new RangeError(`Invalid MethodDef row ID ${rid}`);
     }
+    const cliEntryPointToken = this._cliEntryPointToken ?? this.cli.entryPointToken;
+    const isManagedMethodEntryPoint =
+      (this.cli.flags & 0x10) === 0 &&
+      (cliEntryPointToken >>> 24) === 6;
+    const cliEntryPointRid = cliEntryPointToken & 0x00ffffff;
+    if (isManagedMethodEntryPoint &&
+        (cliEntryPointRid === 0 || cliEntryPointRid > rows.length)) {
+      throw new FormatError("CLI entry point references a missing MethodDef");
+    }
+    if (isManagedMethodEntryPoint && cliEntryPointRid === rid) {
+      throw new FormatError(`MethodDef row ${rid} is the CLI entry point`);
+    }
+    const remappedCliEntryPointToken = isManagedMethodEntryPoint &&
+      cliEntryPointRid > rid
+      ? cliEntryPointToken - 1
+      : cliEntryPointToken;
     const shiftsMethodRids = rid < rows.length;
     if (shiftsMethodRids && this._addedMethodBodies.size > 0) {
       throw new UnsupportedFormatError(
@@ -5173,6 +5211,15 @@ export class Assembly {
         updatedCounts
       );
       this.#replaceEmbeddedPortablePdb(debugEntryIndex, updatedPdb, updatedCounts);
+    }
+    if (remappedCliEntryPointToken !== cliEntryPointToken) {
+      const entryPointBytes = new Uint8Array(4);
+      new DataView(entryPointBytes.buffer).setUint32(0, remappedCliEntryPointToken, true);
+      patches.push({
+        offset: this.cli.offset + 20,
+        bytes: entryPointBytes
+      });
+      this._cliEntryPointToken = remappedCliEntryPointToken;
     }
     if (methodPointerPresent) {
       const remainingPointers = pointerRows.filter((pointer) => pointer.rid !== pointerRid);

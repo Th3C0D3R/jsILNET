@@ -3567,6 +3567,38 @@ test("non-trailing MethodDef removal remaps later metadata and CIL tokens", () =
   assert.ok(reparsedCall);
 });
 
+test("insertMethod remaps a managed CLI entry-point token", () => {
+  const bytes = withoutDebugDirectory();
+  const original = parseAssembly(bytes);
+  const laterMethod = original.types.at(-1).methods[0];
+  assert.ok(laterMethod);
+  const cli = parseCliHeader(parsePE(bytes));
+  new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+    .setUint32(cli.offset + 20, 0x06000000 + laterMethod.rid, true);
+
+  const assembly = parseAssembly(bytes);
+  const owner = assembly.types.at(-2);
+  owner.flags |= 0x0080;
+  assembly.tables.row(2, owner.rid).Flags = owner.flags;
+  assembly.tables.sorted &= ~(1n << 12n);
+  const { token, tokenMap } = assembly.insertMethod({
+    owner: { table: "TypeDef", rid: owner.rid },
+    name: "InsertedBeforeEntryPoint",
+    flags: 0x0446,
+    signature: Uint8Array.from([0x20, 0x01, 0x01, 0x08])
+  });
+  assert.equal(tokenMap.get(0x06000000 + laterMethod.rid), 0x06000000 + laterMethod.rid + 1);
+  const reparsed = parseAssembly(assembly.serialize());
+  assert.equal(
+    reparsed.cli.entryPointToken,
+    tokenMap.get(0x06000000 + laterMethod.rid)
+  );
+  assert.equal(
+    reparsed.types[owner.rid - 1].methods.at(-1).name,
+    "InsertedBeforeEntryPoint"
+  );
+});
+
 test("trailing MethodDef removal preserves #- MethodPtr ownership", () => {
   const assembly = parseAssembly(withoutDebugDirectory());
   const tableStream = assembly.metadataRoot.streams.get("#~");
