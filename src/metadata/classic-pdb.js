@@ -2,6 +2,17 @@ import { FormatError, UnsupportedFormatError } from "../binary/errors.js";
 
 const msfMagic = new TextEncoder().encode("Microsoft C/C++ MSF 7.00\r\n\u001aDS\0\0\0");
 const absentStream = 0xffffffff;
+const codeViewNumericFormats = new Map([
+  [0x8000, [1, (view, offset) => view.getInt8(offset)]],
+  [0x8001, [2, (view, offset) => view.getInt16(offset, true)]],
+  [0x8002, [2, (view, offset) => view.getUint16(offset, true)]],
+  [0x8003, [4, (view, offset) => view.getInt32(offset, true)]],
+  [0x8004, [4, (view, offset) => view.getUint32(offset, true)]],
+  [0x8005, [4, (view, offset) => view.getFloat32(offset, true)]],
+  [0x8006, [8, (view, offset) => view.getFloat64(offset, true)]],
+  [0x8009, [8, (view, offset) => view.getBigInt64(offset, true)]],
+  [0x800a, [8, (view, offset) => view.getBigUint64(offset, true)]]
+]);
 
 function formatGuid(bytes) {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -248,6 +259,22 @@ function readCodeViewName(bytes, offset, context, allowZeroPadding = false) {
   }
 }
 
+function decodeCodeViewNumeric(data, offset) {
+  if (offset > data.length - 2) {
+    throw new FormatError("Classic PDB constant symbol numeric value is truncated");
+  }
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  const leaf = view.getUint16(offset, true);
+  if (leaf < 0x8000) return { value: leaf, size: 2 };
+  const format = codeViewNumericFormats.get(leaf);
+  if (!format) return null;
+  const valueOffset = offset + 2;
+  if (valueOffset > data.length - format[0]) {
+    throw new FormatError("Classic PDB constant symbol numeric value is truncated");
+  }
+  return { value: format[1](view, valueOffset), size: 2 + format[0] };
+}
+
 function decodeCodeViewSymbol(kind, data) {
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
   if (kind === 0x110e) {
@@ -268,6 +295,17 @@ function decodeCodeViewSymbol(kind, data) {
       offset: view.getUint32(4, true),
       segment: view.getUint16(8, true),
       name: readCodeViewName(data, 10, "data symbol")
+    };
+  }
+  if (kind === 0x1107) {
+    if (data.length < 6) throw new FormatError("Classic PDB constant symbol is truncated");
+    const numeric = decodeCodeViewNumeric(data, 4);
+    if (!numeric) return null;
+    return {
+      kind: "constant",
+      typeIndex: view.getUint32(0, true),
+      value: numeric.value,
+      name: readCodeViewName(data, 4 + numeric.size, "constant symbol")
     };
   }
   if ([0x110f, 0x1110, 0x1146, 0x1147].includes(kind)) {

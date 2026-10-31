@@ -189,6 +189,21 @@ test("classic PDB symbol decoding exposes public, data, and procedure names", ()
     register: 17,
     name: "reg"
   });
+
+  const constant = new Uint8Array(10);
+  const constantView = new DataView(constant.buffer);
+  constantView.setUint32(0, 0x1005, true);
+  constantView.setUint16(4, 0x8001, true);
+  constantView.setInt16(6, -9, true);
+  constant.set([0x63, 0], 8);
+  assert.deepEqual(decodeRecord(0x1107, constant), {
+    kind: "constant",
+    typeIndex: 0x1005,
+    value: -9,
+    name: "c"
+  });
+  assert.throws(() => decodeRecord(0x1107, constant.subarray(0, 7)),
+    /numeric value is truncated/);
 });
 
 test("classic PDB C13 line subsections decode bounded line and column records", () => {
