@@ -5344,6 +5344,125 @@ test("ParamPtr reordering can move parameters across methods with valid sequence
   assert.deepEqual(invalidAssembly.tables.get(7).map((row) => row.Param.rid), [1, 2, 3, 4, 5, 6]);
 });
 
+test("MethodPtr reordering can move unreferenced abstract methods across interfaces", () => {
+  const assembly = parseAssembly(withoutDebugDirectory());
+  usePointerTable(assembly, {
+    pointerId: 5,
+    targetId: 6,
+    column: "Method",
+    listTableId: 2,
+    listColumn: "MethodList",
+    pointerName: "MethodPtr",
+    targetName: "MethodDef"
+  });
+  const firstOwnerRid = assembly.addTypeDef({ name: "FirstInterface", flags: 0x00a0 }) & 0x00ffffff;
+  const secondOwnerRid = assembly.addTypeDef({ name: "SecondInterface", flags: 0x00a0 }) & 0x00ffffff;
+  const firstMethod = assembly.addMethod({
+    owner: { table: "TypeDef", rid: firstOwnerRid },
+    name: "FirstContract",
+    flags: 0x0446,
+    signature: Uint8Array.of(0, 0, 1)
+  }) & 0x00ffffff;
+  const secondMethod = assembly.addMethod({
+    owner: { table: "TypeDef", rid: secondOwnerRid },
+    name: "SecondContract",
+    flags: 0x0446,
+    signature: Uint8Array.of(0, 0, 1)
+  }) & 0x00ffffff;
+  const order = assembly.tables.get(5).map((row) => row.Method.rid);
+  const firstIndex = order.indexOf(firstMethod);
+  const secondIndex = order.indexOf(secondMethod);
+  [order[firstIndex], order[secondIndex]] = [order[secondIndex], order[firstIndex]];
+  assembly.reorderPointerTable("MethodPtr", order);
+  assert.deepEqual(assembly.types[firstOwnerRid - 1].methodRids, [secondMethod]);
+  assert.deepEqual(assembly.types[secondOwnerRid - 1].methodRids, [firstMethod]);
+  const reparsed = parseAssembly(assembly.serialize());
+  assert.equal(reparsed.methods[secondMethod - 1].name, "SecondContract");
+  assert.deepEqual(reparsed.types[firstOwnerRid - 1].methodRids, [secondMethod]);
+  assert.deepEqual(reparsed.types[secondOwnerRid - 1].methodRids, [firstMethod]);
+
+  const invalidAssembly = parseAssembly(fixture);
+  usePointerTable(invalidAssembly, {
+    pointerId: 5,
+    targetId: 6,
+    column: "Method",
+    listTableId: 2,
+    listColumn: "MethodList",
+    pointerName: "MethodPtr",
+    targetName: "MethodDef"
+  });
+  const invalidOrder = invalidAssembly.tables.get(5).map((row) => row.Method.rid);
+  [invalidOrder[0], invalidOrder[2]] = [invalidOrder[2], invalidOrder[0]];
+  assert.throws(() => invalidAssembly.reorderPointerTable("MethodPtr", invalidOrder),
+    /abstract TypeDef/);
+  assert.deepEqual(invalidAssembly.tables.get(5).map((row) => row.Method.rid),
+    invalidAssembly.methods.map((method) => method.rid));
+});
+
+test("PropertyPtr and EventPtr can move unassociated rows across owners", () => {
+  const propertyAssembly = parseAssembly(withoutDebugDirectory());
+  usePointerTable(propertyAssembly, {
+    pointerId: 22,
+    targetId: 23,
+    column: "Property",
+    listTableId: 21,
+    listColumn: "PropertyList",
+    pointerName: "PropertyPtr",
+    targetName: "Property"
+  });
+  const propertyOwners = [
+    propertyAssembly.addTypeDef({ name: "PropertyOwnerA" }) & 0x00ffffff,
+    propertyAssembly.addTypeDef({ name: "PropertyOwnerB" }) & 0x00ffffff
+  ];
+  const propertyRids = propertyOwners.map((rid, index) => propertyAssembly.addProperty({
+    owner: { table: "TypeDef", rid },
+    name: `Property${index}`,
+    signature: Uint8Array.of(0x08, 0x00, 0x08)
+  }));
+  const propertyOrder = propertyAssembly.tables.get(22).map((row) => row.Property.rid);
+  const propertyIndexA = propertyOrder.indexOf(propertyRids[0]);
+  const propertyIndexB = propertyOrder.indexOf(propertyRids[1]);
+  [propertyOrder[propertyIndexA], propertyOrder[propertyIndexB]] =
+    [propertyOrder[propertyIndexB], propertyOrder[propertyIndexA]];
+  propertyAssembly.reorderPointerTable("PropertyPtr", propertyOrder);
+  assert.deepEqual(propertyAssembly.types[propertyOwners[0] - 1].propertyRids, [propertyRids[1]]);
+  assert.deepEqual(propertyAssembly.types[propertyOwners[1] - 1].propertyRids, [propertyRids[0]]);
+  const reparsedProperties = parseAssembly(propertyAssembly.serialize());
+  assert.deepEqual(reparsedProperties.types[propertyOwners[0] - 1].propertyRids, [propertyRids[1]]);
+
+  const eventAssembly = parseAssembly(withoutDebugDirectory());
+  usePointerTable(eventAssembly, {
+    pointerId: 19,
+    targetId: 20,
+    column: "Event",
+    listTableId: 18,
+    listColumn: "EventList",
+    pointerName: "EventPtr",
+    targetName: "Event"
+  });
+  const eventOwners = [
+    eventAssembly.addTypeDef({ name: "EventOwnerA" }) & 0x00ffffff,
+    eventAssembly.addTypeDef({ name: "EventOwnerB" }) & 0x00ffffff
+  ];
+  const eventType = eventAssembly.typeRefs.find((type) => type.name === "IDisposable");
+  assert.ok(eventType);
+  const eventRids = eventOwners.map((rid, index) => eventAssembly.addEvent({
+    owner: { table: "TypeDef", rid },
+    name: `Event${index}`,
+    eventType: { table: "TypeRef", rid: eventType.rid }
+  }));
+  const eventOrder = eventAssembly.tables.get(19).map((row) => row.Event.rid);
+  const eventIndexA = eventOrder.indexOf(eventRids[0]);
+  const eventIndexB = eventOrder.indexOf(eventRids[1]);
+  [eventOrder[eventIndexA], eventOrder[eventIndexB]] =
+    [eventOrder[eventIndexB], eventOrder[eventIndexA]];
+  eventAssembly.reorderPointerTable("EventPtr", eventOrder);
+  assert.deepEqual(eventAssembly.types[eventOwners[0] - 1].eventRids, [eventRids[1]]);
+  assert.deepEqual(eventAssembly.types[eventOwners[1] - 1].eventRids, [eventRids[0]]);
+  const reparsedEvents = parseAssembly(eventAssembly.serialize());
+  assert.deepEqual(reparsedEvents.types[eventOwners[0] - 1].eventRids, [eventRids[1]]);
+});
+
 test("Property and Event removal rejects live references and remaps surviving rows", () => {
   const assembly = parseAssembly(withoutDebugDirectory());
   const owner = assembly.types.at(-1);

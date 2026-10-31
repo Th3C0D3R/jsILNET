@@ -4740,7 +4740,10 @@ export class Assembly {
       throw new TypeError("Pointer table must be FieldPtr, MethodPtr, ParamPtr, EventPtr, or PropertyPtr");
     }
     const allowsCrossOwnerFields = pointerTableId === 3;
+    const allowsCrossOwnerMethods = pointerTableId === 5;
     const allowsCrossOwnerParameters = pointerTableId === 7;
+    const allowsCrossOwnerEvents = pointerTableId === 19;
+    const allowsCrossOwnerProperties = pointerTableId === 22;
     if ((this.tables.valid & (1n << BigInt(pointerTableId))) === 0n) {
       throw new UnsupportedFormatError(`${metadataTableNames[pointerTableId]} is not present`);
     }
@@ -4788,7 +4791,9 @@ export class Assembly {
       offset += oldGroup.length;
       const oldSet = new Set(oldGroup);
       const movesRowsAcrossOwners = nextGroup.some((rid) => !oldSet.has(rid));
-      if (!allowsCrossOwnerFields && !allowsCrossOwnerParameters && movesRowsAcrossOwners) {
+      const allowsCrossOwnerRows = allowsCrossOwnerFields || allowsCrossOwnerMethods ||
+        allowsCrossOwnerParameters || allowsCrossOwnerEvents || allowsCrossOwnerProperties;
+      if (!allowsCrossOwnerRows && movesRowsAcrossOwners) {
         throw new UnsupportedFormatError("Pointer reordering cannot change row ownership");
       }
       const nextRecords = nextGroup.map((rid) => recordsByRid.get(rid));
@@ -4806,6 +4811,13 @@ export class Assembly {
             getGenericParameterArity(this.genericParams, 2, owner.rid),
             this
           );
+          if ((this.tables.rows.get(16) ?? []).some((layout) =>
+            layout.Field.rid === record.rid
+          ) && (owner.flags & 0x0018) !== 0x0010) {
+            throw new UnsupportedFormatError(
+              `Field row ${record.rid} has an explicit offset and requires an explicit-layout owner`
+            );
+          }
         }
       }
       if (allowsCrossOwnerParameters && movesRowsAcrossOwners) {
@@ -4827,6 +4839,86 @@ export class Assembly {
             );
           }
           sequences.add(record.sequence);
+        }
+      }
+      if (allowsCrossOwnerMethods && movesRowsAcrossOwners) {
+        if ((owner.flags & (0x0080 | 0x0020)) === 0) {
+          throw new UnsupportedFormatError(
+            "Pointer reordering cannot move abstract methods to a non-abstract TypeDef"
+          );
+        }
+        for (const record of nextRecords) {
+          if (record.rva !== 0 || (record.flags & 0x0440) !== 0x0440 ||
+              record.genericParams.length > 0) {
+            throw new UnsupportedFormatError(
+              "Cross-owner MethodPtr reordering supports only bodyless, non-generic abstract virtual methods"
+            );
+          }
+          const signature = parseSignature(record.signature, { counts: this.tables.counts });
+          if (signature.kind !== "method") {
+            throw new FormatError(`MethodDef row ${record.rid} has a non-method signature`);
+          }
+          validateGenericVariableReferences(
+            signature,
+            getGenericParameterArity(this.genericParams, 2, owner.rid),
+            this,
+            null,
+            signature.genericParameterCount ?? 0
+          );
+          const hasMethodSemantics = (this.tables.rows.get(24) ?? []).some((row) =>
+            row.Method.rid === record.rid
+          );
+          const hasMethodImpl = (this.tables.rows.get(25) ?? []).some((row) =>
+            row.MethodBody.target?.table === 6 && row.MethodBody.target.rid === record.rid ||
+            row.MethodDeclaration.target?.table === 6 && row.MethodDeclaration.target.rid === record.rid
+          );
+          if (hasMethodSemantics || hasMethodImpl) {
+            throw new UnsupportedFormatError(
+              "Pointer reordering cannot change row ownership for methods with semantics or MethodImpl rows"
+            );
+          }
+        }
+      }
+      if (allowsCrossOwnerEvents && movesRowsAcrossOwners) {
+        for (const record of nextRecords) {
+          const hasSemantics = (this.tables.rows.get(24) ?? []).some((row) =>
+            row.Association.target?.table === 20 && row.Association.target.rid === record.rid
+          );
+          if (hasSemantics) {
+            throw new UnsupportedFormatError(
+              "Pointer reordering cannot change row ownership for events with MethodSemantics rows"
+            );
+          }
+          if (record.eventType.table === 27) {
+            const typeArity = getGenericParameterArity(this.genericParams, 2, owner.rid);
+            const typeSpec = this.typeSpecs[record.eventType.rid - 1];
+            if (!typeSpec) {
+              throw new FormatError(`Event row ${record.rid} references missing TypeSpec row ${record.eventType.rid}`);
+            }
+            validateTypeSpecDefinitions(this, typeSpec.parsedSignature);
+            validateTypeSpecGenericContext(this, record.eventType.rid, typeArity);
+          }
+        }
+      }
+      if (allowsCrossOwnerProperties && movesRowsAcrossOwners) {
+        for (const record of nextRecords) {
+          const hasSemantics = (this.tables.rows.get(24) ?? []).some((row) =>
+            row.Association.target?.table === 23 && row.Association.target.rid === record.rid
+          );
+          if (hasSemantics) {
+            throw new UnsupportedFormatError(
+              "Pointer reordering cannot change row ownership for properties with MethodSemantics rows"
+            );
+          }
+          const signature = parseSignature(record.signature, { counts: this.tables.counts });
+          if (signature.kind !== "property") {
+            throw new FormatError(`Property row ${record.rid} has a non-property signature`);
+          }
+          validateGenericVariableReferences(
+            signature,
+            getGenericParameterArity(this.genericParams, 2, owner.rid),
+            this
+          );
         }
       }
       assignments.push({ owner, nextGroup, nextRecords });
