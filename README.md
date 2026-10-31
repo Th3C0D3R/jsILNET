@@ -30,7 +30,7 @@ This is an early-stage library, not a dnlib-equivalent rewriter. The implementat
 - Append `TypeRef`, `MemberRef`, and `AssemblyRef` rows and required string/blob heap entries while recalculating metadata index widths and rebuilding metadata streams.
 - Append fields to a TypeDef whose FieldList reaches the end of the field list (including when later types have empty ranges) and replace field names/flags without changing their tokens; `#-` append is supported when FieldPtr is one-to-one with Field.
 - Append validated concrete IL method bodies or bodyless abstract virtual methods to a TypeDef whose MethodList reaches the end of the method list (including when later types have empty ranges), including one-to-one `#-` MethodPtr layouts; generic methods are supported when their matching GenericParam rows are added.
-- Append parameter rows to the last MethodDef, with signature-sequence checks and support for one-to-one ParamPtr metadata.
+- Append parameter rows to a MethodDef whose ParamList reaches the end of the list, with signature-sequence checks and support for one-to-one ParamPtr metadata.
 - Append properties and events to a TypeDef whose ownership range reaches the end of the corresponding list (including when later owners have empty ranges), and remove unreferenced rows; `#-` PropertyPtr/EventPtr layouts are supported when each pointer table is a one-to-one mapping to its target rows.
 - Append `TypeSpec` rows after validating type references and locally known generic-instance arities.
 - Append `MethodSpec` rows with validated generic instantiation signatures.
