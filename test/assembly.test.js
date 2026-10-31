@@ -2037,6 +2037,83 @@ test("StandAloneSig rows append method/local signatures and return stable tokens
   assert.equal(reparsed.standAloneSigs.at(-1).parsedSignature.kind, "method");
 });
 
+test("StandAloneSig insertion remaps local headers, CIL, metadata, and ENC tokens", () => {
+  const assembly = parseAssembly(withoutLocalSignatureTokens(withoutDebugDirectory()));
+  const localSignature = assembly.standAloneSigs.find(({ parsedSignature }) =>
+    parsedSignature.kind === "locals"
+  );
+  assert.ok(localSignature);
+  const callSiteToken = assembly.addStandAloneSig({
+    signature: Uint8Array.of(0x00, 0x00, 0x01)
+  });
+  const callSiteRid = callSiteToken & 0x00ffffff;
+  const method = assembly.methods.find((item) => assembly.getMethodBody(item.rid)?.format === "fat");
+  assert.ok(method);
+  const body = assembly.getMethodBody(method.rid);
+  body.localVarSigToken = 0x11000000 + localSignature.rid;
+  const callSite = assembly.methods.map((item) => ({
+    method: item,
+    instruction: assembly.getInstructions(item.rid)
+      .find((candidate) => candidate.opcode.name === "call")
+  })).find((entry) => entry.instruction);
+  assert.ok(callSite);
+  const calli = listOpcodes().find((opcode) => opcode.name === "calli");
+  assert.ok(calli);
+  callSite.instruction.opcode = calli;
+  callSite.instruction.operand.value = callSiteToken;
+  assembly._patches.push({
+    offset: callSite.instruction.opcodeOffset,
+    bytes: Uint8Array.of(calli.code)
+  });
+
+  const attributeRow = assembly.tables.row(12, 1);
+  assembly.tables.sorted &= ~(1n << 12n);
+  attributeRow.Parent = {
+    raw: encodeCodedIndex(17, callSiteRid, "HasCustomAttribute"),
+    target: { table: 17, tableName: "StandAloneSig", rid: callSiteRid }
+  };
+  assembly.customAttributes[0].parent = attributeRow.Parent.target;
+  assembly.tables.rows.set(31, [{
+    table: 31,
+    tableName: "ENCMap",
+    rid: 1,
+    Token: callSiteToken
+  }]);
+  assembly.tables.counts[31] = 1;
+  assembly.tables.valid |= 1n << 31n;
+
+  const inserted = assembly.insertStandAloneSig({
+    beforeRid: 1,
+    signature: Uint8Array.of(0x07, 0x00)
+  });
+  assert.equal(inserted.token, 0x11000001);
+  assert.equal(inserted.tokenMap.get(0x11000000 + localSignature.rid),
+    0x11000000 + localSignature.rid + 1);
+  assert.equal(inserted.tokenMap.get(callSiteToken), callSiteToken + 1);
+  assert.equal(body.localVarSigToken, 0x11000000 + localSignature.rid + 1);
+  assert.equal(callSite.instruction.operand.value, callSiteToken + 1);
+  assert.equal(assembly.tables.row(12, 1).Parent.target.rid, callSiteRid + 1);
+  assert.equal(assembly.customAttributes[0].parent.rid, callSiteRid + 1);
+  assert.equal(assembly.tables.row(31, 1).Token, callSiteToken + 1);
+
+  const reparsed = parseAssembly(assembly.serialize());
+  assert.deepEqual(reparsed.standAloneSigs[0].signature, Uint8Array.of(0x07, 0x00));
+  assert.equal(reparsed.getMethodBody(method.rid).localVarSigToken,
+    0x11000000 + localSignature.rid + 1);
+  assert.equal(reparsed.getInstructions(callSite.method.rid)
+    .find((instruction) => instruction.offset === callSite.instruction.offset).operand.value,
+  callSiteToken + 1);
+  assert.equal(reparsed.tables.row(12, 1).Parent.target.rid, callSiteRid + 1);
+  assert.equal(reparsed.tables.row(31, 1).Token, callSiteToken + 1);
+
+  const invalidAssembly = parseAssembly(withoutDebugDirectory());
+  assert.throws(() => invalidAssembly.insertStandAloneSig({
+    beforeRid: 0,
+    signature: Uint8Array.of(0x07, 0x00)
+  }), /Invalid StandAloneSig insertion position/);
+  assert.equal(invalidAssembly.modified, false);
+});
+
 test("StandAloneSig removal protects live local-signature and CIL references", () => {
   const localReferenceAssembly = parseAssembly(withoutDebugDirectory());
   const initialCount = localReferenceAssembly.tables.counts[17];

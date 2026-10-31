@@ -9121,6 +9121,113 @@ export class Assembly {
     return 0x11000000 + rid;
   }
 
+  insertStandAloneSig({ beforeRid, signature }) {
+    this.#ensureEditable();
+    if (!(signature instanceof Uint8Array) || signature.length === 0) {
+      throw new TypeError("StandAloneSig signature must be a non-empty Uint8Array");
+    }
+    const parsedSignature = parseSignature(signature, { counts: this.tables.counts });
+    if (!["method", "locals"].includes(parsedSignature.kind)) {
+      throw new FormatError("StandAloneSig must contain a method or local-variable signature");
+    }
+    const rows = this.tables.rows.get(17) ?? [];
+    if (rows.length !== (this.tables.counts[17] ?? 0) || rows.length !== this.standAloneSigs.length) {
+      throw new FormatError("StandAloneSig row count is inconsistent with parsed signature records");
+    }
+    if (!Number.isInteger(beforeRid) || beforeRid < 1 || beforeRid > rows.length + 1) {
+      throw new RangeError(`Invalid StandAloneSig insertion position ${beforeRid}`);
+    }
+    if (rows.length >= 0x00ffffff) {
+      throw new RangeError("StandAloneSig token row ID exceeds 24-bit range");
+    }
+    const { tokenMap, rowChanges, tokenUpdates, patches } =
+      this.#prepareTokenRowInsertion(17, beforeRid, rows.length, "StandAloneSig");
+    const localSignatureUpdates = [];
+    if (beforeRid <= rows.length) {
+      for (const method of this.methods) {
+        const body = this.getMethodBody(method.rid);
+        if (!body) continue;
+        const localToken = body.localVarSigToken;
+        if (localToken !== 0) {
+          const localRid = localToken & 0x00ffffff;
+          if ((localToken >>> 24) !== 17 || localRid < 1 || localRid > rows.length) {
+            throw new FormatError(`MethodDef row ${method.rid} has an invalid local signature token`);
+          }
+          if (localRid >= beforeRid) {
+            if (body.format !== "fat") {
+              throw new FormatError("A tiny method body cannot contain a local signature token");
+            }
+            const replacement = localToken + 1;
+            patches.push({
+              offset: body.headerOffset + 8,
+              bytes: Uint8Array.of(
+                replacement & 0xff,
+                (replacement >>> 8) & 0xff,
+                (replacement >>> 16) & 0xff,
+                (replacement >>> 24) & 0xff
+              )
+            });
+            localSignatureUpdates.push({ body, replacement });
+          }
+        }
+        for (const instruction of body.instructions) {
+          const token = instruction.operand?.kind === "token" ? instruction.operand.value : 0;
+          if ((token >>> 24) === 17) {
+            const targetRid = token & 0x00ffffff;
+            if (targetRid < 1 || targetRid > rows.length) {
+              throw new FormatError(`CIL references missing StandAloneSig row ${targetRid}`);
+            }
+          }
+        }
+      }
+    }
+    const heapStreams = new Map(
+      [...(this._heapStreams ?? new Map([...this.metadataRoot.streams].map(([streamName, stream]) =>
+        [streamName, stream.bytes]
+      )))].map(([streamName, bytes]) => [streamName, bytes.slice()])
+    );
+    const blob = appendBlobHeap(heapStreams.get("#Blob") ?? new Uint8Array(), signature);
+    heapStreams.set("#Blob", blob.heap);
+    const rid = beforeRid;
+    const newRow = {
+      table: 17,
+      tableName: metadataTableNames[17],
+      rid,
+      Signature: blob.index
+    };
+
+    for (const change of rowChanges) change.row[change.columnName] = change.value;
+    rows.splice(rid - 1, 0, newRow);
+    rows.forEach((row, index) => {
+      row.rid = index + 1;
+    });
+    this.tables.rows.set(17, rows);
+    this.tables.counts[17] = rows.length;
+    this.tables.valid |= 1n << 17n;
+    const signatures = this.standAloneSigs.map((entry) => ({
+      ...entry,
+      rid: entry.rid >= rid ? entry.rid + 1 : entry.rid
+    }));
+    signatures.splice(rid - 1, 0, {
+      rid,
+      signature: signature.slice(),
+      parsedSignature
+    });
+    this.standAloneSigs = signatures;
+    for (const attribute of this.customAttributes) {
+      attribute.parent = this.tables.row(12, attribute.rid).Parent.target;
+    }
+    for (const update of tokenUpdates) update.instruction.operand.value = update.replacement;
+    for (const update of localSignatureUpdates) {
+      update.body.localVarSigToken = update.replacement;
+    }
+    this._patches.push(...patches);
+    this._heapStreams = heapStreams;
+    this.#refreshHeaps();
+    this._metadataDirty = true;
+    return { token: 0x11000000 + rid, tokenMap };
+  }
+
   replaceStandAloneSig(rid, { signature } = {}) {
     this.#ensureEditable();
     const row = this.tables.row(17, rid);
