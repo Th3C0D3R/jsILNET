@@ -679,6 +679,10 @@ export function replaceEmbeddedPortablePdbSource(pdb, documentRid, source, { com
   new DataView(value.buffer).setUint32(0, useCompressed ? rawSource.length : 0, true);
   value.set(payload, 4);
 
+  return replacePortablePdbCustomDebugInformationValue(pdb, debugInfo, value);
+}
+
+function replacePortablePdbCustomDebugInformationValue(pdb, debugInfo, value) {
   const streams = new Map([...pdb.metadataRoot.streams].map(([streamName, stream]) =>
     [streamName, { ...stream, bytes: Uint8Array.from(stream.bytes) }]
   ));
@@ -696,4 +700,32 @@ export function replaceEmbeddedPortablePdbSource(pdb, documentRid, source, { com
     metadataRoot: { ...pdb.metadataRoot, streams },
     tables: { ...pdb.tables, rows }
   });
+}
+
+export function replaceEmbeddedPortablePdbSourceLink(pdb, sourceLink) {
+  if (!pdb?.metadataRoot?.streams || !(pdb.tables?.rows instanceof Map) ||
+      !Array.isArray(pdb.tables.counts) || !Array.isArray(pdb.customDebugInformation)) {
+    throw new TypeError("Portable PDB SourceLink editing requires parsed PDB data");
+  }
+  if (sourceLink === null || Array.isArray(sourceLink) || typeof sourceLink !== "object" ||
+      sourceLink.documents === null || Array.isArray(sourceLink.documents) ||
+      typeof sourceLink.documents !== "object" ||
+      Object.values(sourceLink.documents).some((mapping) => typeof mapping !== "string")) {
+    throw new TypeError("SourceLink requires a documents object with string mappings");
+  }
+  const debugInfo = pdb.customDebugInformation.find((row) =>
+    row.kind === sourceLinkKind && row.Parent.target?.table === 0
+  );
+  if (!debugInfo) {
+    throw new UnsupportedFormatError("Portable PDB has no module-scoped SourceLink record");
+  }
+  const json = JSON.stringify(sourceLink);
+  if (typeof json !== "string") {
+    throw new TypeError("SourceLink value could not be serialized as JSON");
+  }
+  const encoded = new TextEncoder().encode(json);
+  if (decodeUtf8(encoded, "Portable PDB SourceLink") !== json) {
+    throw new TypeError("SourceLink JSON must contain valid Unicode text");
+  }
+  return replacePortablePdbCustomDebugInformationValue(pdb, debugInfo, encoded);
 }

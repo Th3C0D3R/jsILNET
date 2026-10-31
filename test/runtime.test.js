@@ -15,10 +15,12 @@ import {
   replaceClassicPdbStringTableName,
   replaceClassicPdbSymbolName,
   replaceEmbeddedPortablePdbSequencePoints,
+  replaceEmbeddedPortablePdbSourceLink,
   replaceEmbeddedPortablePdbSource,
   serializeEmbeddedPortablePdb
 } from "../src/index.js";
 import { parseEmbeddedPortablePdbData } from "../src/pe/headers.js";
+import { appendBlobHeap } from "../src/metadata/writer.js";
 
 const dotnetVersion = spawnSync("dotnet", ["--version"], { encoding: "utf8" });
 const dotnetAvailable = dotnetVersion.status === 0;
@@ -377,6 +379,119 @@ test("strong-name signed PE32+ assemblies load and execute in .NET", {
     assert.deepEqual(reparsedPdb.methodDebugInformation, embeddedPdb.methodDebugInformation);
     assert.deepEqual(reparsedPdb.stateMachineMethods, embeddedPdb.stateMachineMethods);
     assert.deepEqual(reparsedPdb.customDebugInformation, embeddedPdb.customDebugInformation);
+    assert.throws(
+      () => replaceEmbeddedPortablePdbSourceLink(embeddedPdb, {
+        documents: { "**/*.cs": 42 }
+      }),
+      /string mappings/
+    );
+    const sourceLinkRecord = embeddedPdb.customDebugInformation.find((record) =>
+      record.sourceLink
+    );
+    if (sourceLinkRecord) {
+      const sourceLink = {
+        ...sourceLinkRecord.sourceLink,
+        documents: {
+          ...sourceLinkRecord.sourceLink.documents,
+          "**/*.cs": "https://example.invalid/source/*"
+        }
+      };
+      const sourceLinkPdbBytes = replaceEmbeddedPortablePdbSourceLink(
+        embeddedPdb,
+        sourceLink
+      );
+      const sourceLinkPdb = parseEmbeddedPortablePdbData(
+        sourceLinkPdbBytes,
+        0,
+        sourceLinkPdbBytes.length
+      );
+      assert.deepEqual(
+        sourceLinkPdb.customDebugInformation.find((record) =>
+          record.rid === sourceLinkRecord.rid
+        ).sourceLink,
+        sourceLink
+      );
+    } else {
+      const streams = new Map([...embeddedPdb.metadataRoot.streams].map(([name, stream]) =>
+        [name, { ...stream, bytes: Uint8Array.from(stream.bytes) }]
+      ));
+      const [guid1, guid2, guid3, guid4, guid5] =
+        "cc110556-a091-4d38-9fec-25ab9a351a6a".split("-");
+      const sourceLinkGuid = Uint8Array.from([
+        ...guid1.match(/../g).reverse().map((part) => Number.parseInt(part, 16)),
+        ...guid2.match(/../g).reverse().map((part) => Number.parseInt(part, 16)),
+        ...guid3.match(/../g).reverse().map((part) => Number.parseInt(part, 16)),
+        ...guid4.match(/../g).map((part) => Number.parseInt(part, 16)),
+        ...guid5.match(/../g).map((part) => Number.parseInt(part, 16))
+      ]);
+      const guidStream = streams.get("#GUID");
+      const sourceLinkKindIndex = guidStream.bytes.length / 16 + 1;
+      const expandedGuidStream = new Uint8Array(guidStream.bytes.length + 16);
+      expandedGuidStream.set(guidStream.bytes);
+      expandedGuidStream.set(sourceLinkGuid, guidStream.bytes.length);
+      guidStream.bytes = expandedGuidStream;
+      const blobStream = streams.get("#Blob");
+      const sourceLinkValue = appendBlobHeap(
+        blobStream.bytes,
+        new TextEncoder().encode(JSON.stringify({ documents: { "**/*.cs": "old" } }))
+      );
+      blobStream.bytes = sourceLinkValue.heap;
+      const parent = { raw: 39, target: { table: 0, rid: 1 } };
+      const sourceLinkRow = {
+        table: 55,
+        tableName: "CustomDebugInformation",
+        rid: 1,
+        Parent: parent,
+        Kind: sourceLinkKindIndex,
+        Value: sourceLinkValue.index
+      };
+      const debugRows = embeddedPdb.tables.rows.get(55) ?? [];
+      const rows = new Map(embeddedPdb.tables.rows);
+      rows.set(55, [
+        sourceLinkRow,
+        ...debugRows.map((row) => ({ ...row, rid: row.rid + 1 }))
+      ]);
+      const sourceLinkPdb = {
+        ...embeddedPdb,
+        metadataRoot: { ...embeddedPdb.metadataRoot, streams },
+        tables: {
+          ...embeddedPdb.tables,
+          valid: embeddedPdb.tables.valid | (1n << 55n),
+          counts: [...embeddedPdb.tables.counts],
+          rows
+        },
+        customDebugInformation: [
+          {
+            rid: 1,
+            Parent: { target: { table: 0, rid: 1 } },
+            kind: "cc110556-a091-4d38-9fec-25ab9a351a6a",
+            sourceLink: { documents: { "**/*.cs": "old" } }
+          },
+          ...embeddedPdb.customDebugInformation.map((record) => ({
+            ...record,
+            rid: record.rid + 1
+          }))
+        ]
+      };
+      const updatedSourceLink = {
+        documents: { "**/*.cs": "https://example.invalid/source/*" }
+      };
+      const sourceLinkPdbBytes = replaceEmbeddedPortablePdbSourceLink(
+        sourceLinkPdb,
+        updatedSourceLink
+      );
+      const reparsedSourceLink = parseEmbeddedPortablePdbData(
+        sourceLinkPdbBytes,
+        0,
+        sourceLinkPdbBytes.length
+      );
+      assert.deepEqual(
+        reparsedSourceLink.customDebugInformation.find((record) =>
+          record.kind === "cc110556-a091-4d38-9fec-25ab9a351a6a"
+        ).sourceLink,
+        updatedSourceLink
+      );
+    }
     const embeddedSourceRecord = embeddedPdb.customDebugInformation.find((record) =>
       record.embeddedSource instanceof Uint8Array
     );
