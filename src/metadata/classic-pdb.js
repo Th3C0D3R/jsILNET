@@ -991,25 +991,31 @@ export function replaceClassicPdbSymbolName(input, { moduleIndex, recordIndex, n
   if (nameOffset === null || typeof record.decoded?.name !== "string") {
     throw new UnsupportedFormatError("Classic PDB symbol record does not expose a replaceable name");
   }
-  const originalName = new TextEncoder().encode(record.decoded.name);
-  if (replacement.length !== originalName.length) {
-    throw new UnsupportedFormatError("Classic PDB symbol replacement must preserve the UTF-8 name length");
+  const paddingSize = record.data.length - nameOffset - replacement.length - 1;
+  if (paddingSize < 0 || paddingSize > 3) {
+    throw new UnsupportedFormatError(
+      "Classic PDB symbol replacement must fit its existing name slot and CodeView padding"
+    );
   }
+  const nameSlot = new Uint8Array(record.data.length - nameOffset);
+  nameSlot.set(replacement);
+  nameSlot[replacement.length] = 0;
+  if (paddingSize > 0) nameSlot.fill(0xf0 + paddingSize, replacement.length + 1);
   const stream = pdb.streams[module.streamIndex];
   if (!stream?.blockIndices?.length) {
     throw new FormatError("Classic PDB symbol stream has no allocated MSF blocks");
   }
   const streamOffset = record.offset + 4 + nameOffset;
-  if (streamOffset > stream.size - replacement.length) {
+  if (streamOffset > stream.size - nameSlot.length) {
     throw new FormatError("Classic PDB symbol name exceeds its module stream");
   }
   const output = Uint8Array.from(bytes);
-  for (let index = 0; index < replacement.length; index++) {
+  for (let index = 0; index < nameSlot.length; index++) {
     const position = streamOffset + index;
     const blockIndex = Math.floor(position / pdb.blockSize);
     const block = stream.blockIndices[blockIndex];
     if (block === undefined) throw new FormatError("Classic PDB symbol name exceeds its MSF block list");
-    output[block * pdb.blockSize + position % pdb.blockSize] = replacement[index];
+    output[block * pdb.blockSize + position % pdb.blockSize] = nameSlot[index];
   }
   parseClassicPdb(output);
   return output;

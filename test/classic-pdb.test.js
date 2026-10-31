@@ -56,7 +56,7 @@ function makeClassicPdbWithSymbols() {
   view.setUint32(directoryOffset + 8, 52, true);
   view.setUint32(directoryOffset + 12, 0xffffffff, true);
   view.setUint32(directoryOffset + 16, 144, true);
-  view.setUint32(directoryOffset + 20, 22, true);
+  view.setUint32(directoryOffset + 20, 24, true);
   view.setUint32(directoryOffset + 24, 5, true);
   view.setUint32(directoryOffset + 28, 6, true);
   view.setUint32(directoryOffset + 32, 7, true);
@@ -80,19 +80,19 @@ function makeClassicPdbWithSymbols() {
   view.setUint16(dbiOffset + 20, 0xffff, true);
   view.setUint32(dbiOffset + 24, 80, true);
   view.setUint16(dbiOffset + 64 + 34, 4, true);
-  view.setUint32(dbiOffset + 64 + 36, 22, true);
+  view.setUint32(dbiOffset + 64 + 36, 24, true);
   bytes.set([0x74, 0x65, 0x73, 0x74, 0], dbiOffset + 64 + 64);
   bytes.set([0x74, 0x65, 0x73, 0x74, 0x2e, 0x6f, 0x62, 0x6a, 0],
     dbiOffset + 64 + 69);
 
   const symbolsOffset = blockSize * 7;
   view.setUint32(symbolsOffset, 4, true);
-  view.setUint16(symbolsOffset + 4, 16, true);
+  view.setUint16(symbolsOffset + 4, 18, true);
   view.setUint16(symbolsOffset + 6, 0x110e, true);
   view.setUint32(symbolsOffset + 8, 1, true);
   view.setUint32(symbolsOffset + 12, 0x20, true);
   view.setUint16(symbolsOffset + 16, 1, true);
-  bytes.set([0x70, 0x75, 0x62, 0], symbolsOffset + 18);
+  bytes.set([0x70, 0x75, 0x62, 0, 0xf2, 0xf2], symbolsOffset + 18);
   return bytes;
 }
 
@@ -125,19 +125,19 @@ test("classic PDB symbol names can be replaced without changing MSF layout", () 
   const rewritten = replaceClassicPdbSymbolName(original, {
     moduleIndex: 0,
     recordIndex: 0,
-    name: "new"
+    name: "long"
   });
   assert.notEqual(rewritten, original);
-  assert.equal(parseClassicPdb(rewritten).dbi.modules[0].symbols.records[0].decoded.name, "new");
+  assert.equal(parseClassicPdb(rewritten).dbi.modules[0].symbols.records[0].decoded.name, "long");
 
   const expected = Uint8Array.from(original);
-  expected.set([0x6e, 0x65, 0x77], 512 * 7 + 18);
+  expected.set([0x6c, 0x6f, 0x6e, 0x67, 0, 0xf1], 512 * 7 + 18);
   assert.deepEqual(rewritten, expected);
   assert.throws(() => replaceClassicPdbSymbolName(original, {
     moduleIndex: 0,
     recordIndex: 0,
     name: "longer"
-  }), /preserve the UTF-8 name length/);
+  }), /fit its existing name slot/);
   assert.throws(() => replaceClassicPdbSymbolName(original, {
     moduleIndex: 0,
     recordIndex: 0,
