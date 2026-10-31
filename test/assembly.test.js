@@ -4989,6 +4989,16 @@ test("DeclSecurity rows preserve parent/action uniqueness and allow safe removal
   });
   assert.equal(assembly.parseDeclSecurity(methodSecurityRid).permissionSet.attributes[0]
     .namedArguments[0].value, true);
+  const enumPermissionSet = Uint8Array.from([
+    0x2e, 1, 1, 0x41, 15,
+    1, 0, 0x53, 0x55, 4, 0x4d, 0x6f, 0x64, 0x65,
+    1, 0x4d, 2, 0, 0, 0
+  ]);
+  assembly.replaceDeclSecurity(methodSecurityRid, { permissionSet: enumPermissionSet });
+  assert.equal(assembly.parseDeclSecurity(methodSecurityRid, {
+    resolveEnum: (name) => name === "Mode" ? 0x08 : undefined
+  }).permissionSet.attributes[0].namedArguments[0].value, 2);
+  assembly.replaceDeclSecurity(methodSecurityRid, { permissionSet });
   const updatedPermissionSet = assembly.tables.row(14, methodSecurityRid).PermissionSet;
   assert.throws(() => assembly.replaceDeclSecurity(methodSecurityRid, {
     permissionSet: new Uint8Array()
