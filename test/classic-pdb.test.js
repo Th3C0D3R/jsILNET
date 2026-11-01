@@ -18,6 +18,7 @@ import {
   insertClassicPdbDataSymbol,
   insertClassicPdbThreadDataSymbol,
   replaceClassicPdbConstantSymbol,
+  replaceClassicPdbPublicSymbol,
   replaceClassicPdbThreadDataSymbol
 } from "../src/index.js";
 import {
@@ -484,6 +485,89 @@ test("classic PDB public symbols can be appended before module data", () => {
     name: "Invalid"
   }), /unsigned 16-bit integer/);
   assert.deepEqual(original, unchanged);
+});
+
+test("classic PDB public symbol fields can be replaced in place", () => {
+  const original = makeClassicPdbWithSymbols({
+    lineInfo: true,
+    trailingModuleBytes: Uint8Array.of(0x31, 0x32, 0x33)
+  });
+  const overlay = Uint8Array.of(0x91, 0x82, 0x73);
+  const overlaid = new Uint8Array(original.length + overlay.length);
+  overlaid.set(original);
+  overlaid.set(overlay, original.length);
+  const inserted = insertClassicPdbPublicSymbol(overlaid, {
+    moduleIndex: 0,
+    flags: 3,
+    offset: 0x1234,
+    segment: 2,
+    name: "ReplacePublic"
+  });
+  const insertedPdb = parseClassicPdb(inserted);
+  const module = insertedPdb.dbi.modules[0];
+  const stream = insertedPdb.streams[module.streamIndex];
+  const recordIndex = module.symbols.records.length - 1;
+  const rewritten = replaceClassicPdbPublicSymbol(inserted, {
+    moduleIndex: 0,
+    recordIndex,
+    flags: 5,
+    offset: 0x5678,
+    segment: 7
+  });
+  const rewrittenPdb = parseClassicPdb(rewritten);
+  const rewrittenModule = rewrittenPdb.dbi.modules[0];
+  const decoded = rewrittenModule.symbols.records[recordIndex].decoded;
+  assert.equal(decoded.kind, "public");
+  assert.equal(decoded.flags, 5);
+  assert.equal(decoded.offset, 0x5678);
+  assert.equal(decoded.segment, 7);
+  assert.equal(decoded.name, "ReplacePublic");
+  assert.equal(rewrittenPdb.streams[rewrittenModule.streamIndex].size, stream.size);
+  assert.deepEqual(
+    rewrittenPdb.streams[rewrittenModule.streamIndex].bytes.subarray(rewrittenModule.symbolBytes),
+    stream.bytes.subarray(module.symbolBytes)
+  );
+  assert.deepEqual(rewritten.subarray(-overlay.length), overlay);
+
+  const partial = replaceClassicPdbPublicSymbol(rewritten, {
+    moduleIndex: 0,
+    recordIndex,
+    offset: 0
+  });
+  const partialSymbol =
+    parseClassicPdb(partial).dbi.modules[0].symbols.records[recordIndex].decoded;
+  assert.equal(partialSymbol.offset, 0);
+  assert.equal(partialSymbol.flags, 5);
+  assert.equal(partialSymbol.segment, 7);
+  assert.equal(partialSymbol.name, "ReplacePublic");
+
+  const unchanged = Uint8Array.from(inserted);
+  assert.throws(() => replaceClassicPdbPublicSymbol(inserted, {
+    moduleIndex: 0,
+    recordIndex,
+    segment: 0x10000
+  }), /unsigned 16-bit integer/);
+  assert.deepEqual(inserted, unchanged);
+  assert.throws(() => replaceClassicPdbPublicSymbol(inserted, {
+    moduleIndex: 0,
+    recordIndex
+  }), /must include at least one field/);
+  assert.deepEqual(inserted, unchanged);
+  const withData = insertClassicPdbDataSymbol(inserted, {
+    moduleIndex: 0,
+    typeIndex: 0x1001,
+    offset: 10,
+    segment: 1,
+    name: "NotPublic"
+  });
+  const beforeWrongKind = Uint8Array.from(withData);
+  const dataIndex = parseClassicPdb(withData).dbi.modules[0].symbols.records.length - 1;
+  assert.throws(() => replaceClassicPdbPublicSymbol(withData, {
+    moduleIndex: 0,
+    recordIndex: dataIndex,
+    flags: 1
+  }), /not a supported public symbol/);
+  assert.deepEqual(withData, beforeWrongKind);
 });
 
 test("classic PDB local data symbols can be appended before module data", () => {

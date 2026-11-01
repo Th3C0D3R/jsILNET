@@ -2305,6 +2305,61 @@ export function replaceClassicPdbConstantSymbol(input, options = {}) {
   return replaceClassicPdbSymbolRecord(bytes, pdb, module, moduleIndex, record, recordBytes);
 }
 
+export function replaceClassicPdbPublicSymbol(input, options = {}) {
+  const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
+  const { moduleIndex, recordIndex } = options;
+  const updatesFlags = Object.hasOwn(options, "flags");
+  const updatesOffset = Object.hasOwn(options, "offset");
+  const updatesSegment = Object.hasOwn(options, "segment");
+  if (!updatesFlags && !updatesOffset && !updatesSegment) {
+    throw new TypeError("Classic PDB public-symbol replacement must include at least one field");
+  }
+  if (!Number.isInteger(moduleIndex) || moduleIndex < 0) {
+    throw new RangeError("Classic PDB module index must be a non-negative integer");
+  }
+  if (!Number.isInteger(recordIndex) || recordIndex < 0) {
+    throw new RangeError("Classic PDB symbol record index must be a non-negative integer");
+  }
+  const pdb = parseClassicPdb(bytes);
+  const module = pdb.dbi?.modules[moduleIndex];
+  if (!module?.symbols) {
+    throw new RangeError(`Classic PDB module ${moduleIndex} has no symbol records`);
+  }
+  const record = module.symbols.records[recordIndex];
+  if (!record) throw new RangeError(`Classic PDB symbol record ${recordIndex} does not exist`);
+  if (record.kind !== 0x110e || record.decoded?.kind !== "public") {
+    throw new UnsupportedFormatError("Classic PDB symbol record is not a supported public symbol");
+  }
+  const flags = updatesFlags ? options.flags : record.decoded.flags;
+  const offset = updatesOffset ? options.offset : record.decoded.offset;
+  const segment = updatesSegment ? options.segment : record.decoded.segment;
+  if (!Number.isInteger(flags) || flags < 0 || flags > 0xffffffff) {
+    throw new RangeError("Classic PDB public-symbol flags must be an unsigned 32-bit integer");
+  }
+  if (!Number.isInteger(offset) || offset < 0 || offset > 0xffffffff) {
+    throw new RangeError("Classic PDB public-symbol offset must be an unsigned 32-bit integer");
+  }
+  if (!Number.isInteger(segment) || segment < 0 || segment > 0xffff) {
+    throw new RangeError("Classic PDB public-symbol segment must be an unsigned 16-bit integer");
+  }
+  const fields = new Uint8Array(10);
+  const view = new DataView(fields.buffer);
+  view.setUint32(0, flags, true);
+  view.setUint32(4, offset, true);
+  view.setUint16(8, segment, true);
+  const nameBytes = encodeClassicPdbReplacementText(
+    record.decoded.name,
+    "Classic PDB public-symbol names"
+  );
+  const recordBytes = encodeClassicPdbNamedSymbolRecord(
+    record.kind,
+    fields,
+    nameBytes,
+    record.offset
+  );
+  return replaceClassicPdbSymbolRecord(bytes, pdb, module, moduleIndex, record, recordBytes);
+}
+
 export function replaceClassicPdbSymbolName(input, { moduleIndex, recordIndex, name } = {}) {
   const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
   if (!Number.isInteger(moduleIndex) || moduleIndex < 0) {

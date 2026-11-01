@@ -149,6 +149,8 @@ Replacing an EmbeddedSource payload also recomputes its Document hash for recogn
 
 `insertClassicPdbPublicSymbol` appends a validated `S_PUB32` record before C11/C13 module data, creating the CodeView symbol signature when the module has no symbols; DBI/MSF sizes are updated and output is reparsed.
 
+`replaceClassicPdbPublicSymbol` updates selected `S_PUB32` fields in place without changing the record size or symbol name.
+
 `insertClassicPdbDataSymbol` appends a validated module-local `S_LDATA32` record using the shared named-symbol encoder and stream rebuild path.
 
 `insertClassicPdbConstantSymbol` appends an `S_CONSTANT` record with bounded CodeView integer or floating-point numeric leaves; integer values are preserved exactly through signed/unsigned 64-bit encodings.

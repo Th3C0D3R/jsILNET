@@ -17,6 +17,7 @@ This document records detailed feature coverage, exported APIs, behavioral limit
 - `insertClassicPdbFileChecksum` appends a C13 file-checksum record, and `removeClassicPdbFileChecksum` removes an unreferenced one while remapping later line-block checksum offsets. Both rebuild affected module/MSF streams and reparse output; checksum records still referenced by line blocks cannot be removed.
 - `removeClassicPdbSymbol` removes standalone public, data, or constant symbols and rebuilds the module stream as needed; modules containing scoped or unknown symbols are refused to avoid invalidating symbol offsets.
 - `insertClassicPdbPublicSymbol` appends an `S_PUB32` symbol before C11/C13 data, creating a symbol signature when needed and updating DBI/MSF sizes.
+- `replaceClassicPdbPublicSymbol` updates the flags, address, and/or segment of an `S_PUB32` record in place while preserving its name and record size.
 - `insertClassicPdbDataSymbol` appends a validated module-local `S_LDATA32` record before C11/C13 data with its type index, address, segment, and name.
 - `insertClassicPdbThreadDataSymbol` appends a validated module-local `S_LTHREAD32` record; standalone thread-data symbols can also be removed with `removeClassicPdbSymbol`.
 - `replaceClassicPdbThreadDataSymbol` updates the type index, address, and/or segment of a module-local `S_LTHREAD32` record without resizing it; the name and module stream layout are preserved.

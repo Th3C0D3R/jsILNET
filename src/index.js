@@ -23,6 +23,7 @@ import {
   replaceClassicPdbLineBlock as replaceClassicPdbLineBlockFile,
   replaceClassicPdbLineInfo as replaceClassicPdbLineInfoFile,
   replaceClassicPdbModuleNames as replaceClassicPdbModuleNamesFile,
+  replaceClassicPdbPublicSymbol as replaceClassicPdbPublicSymbolFile,
   replaceClassicPdbStringTableName as replaceClassicPdbStringTableNameFile,
   replaceClassicPdbThreadDataSymbol as replaceClassicPdbThreadDataSymbolFile,
   replaceClassicPdbSymbolName as replaceClassicPdbSymbolNameFile
@@ -1582,6 +1583,7 @@ export {
   replaceClassicPdbLineBlockFile as replaceClassicPdbLineBlock,
   replaceClassicPdbLineInfoFile as replaceClassicPdbLineInfo,
   replaceClassicPdbModuleNamesFile as replaceClassicPdbModuleNames,
+  replaceClassicPdbPublicSymbolFile as replaceClassicPdbPublicSymbol,
   replaceClassicPdbStringTableNameFile as replaceClassicPdbStringTableName,
   replaceClassicPdbThreadDataSymbolFile as replaceClassicPdbThreadDataSymbol,
   replaceClassicPdbSymbolNameFile as replaceClassicPdbSymbolName
