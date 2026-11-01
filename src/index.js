@@ -66,6 +66,7 @@ import {
   replaceEmbeddedPortablePdbDocumentMetadata as replacePortablePdbDocumentMetadata,
   replaceEmbeddedPortablePdbTypeDefinitionDocuments as replacePortablePdbTypeDefinitionDocuments,
   replaceEmbeddedPortablePdbDocumentName as replacePortablePdbDocumentName,
+  replaceEmbeddedPortablePdbLocalScope as replacePortablePdbLocalScope,
   replaceEmbeddedPortablePdbSequencePoints as replacePortablePdbSequencePoints,
   replaceEmbeddedPortablePdbSource as replacePortablePdbSource,
   replaceEmbeddedPortablePdbSourceLink as replacePortablePdbSourceLink
@@ -1961,6 +1962,7 @@ export {
   replaceEmbeddedPortablePdbDocumentMetadata,
   replaceEmbeddedPortablePdbTypeDefinitionDocuments,
   replaceEmbeddedPortablePdbDocumentName,
+  replaceEmbeddedPortablePdbLocalScope,
   replaceEmbeddedPortablePdbSequencePoints,
   addEmbeddedPortablePdbSource,
   removeEmbeddedPortablePdbSource,
@@ -4179,6 +4181,46 @@ export class Assembly {
       methodRid,
       sequencePoints
     );
+    return this.replaceEmbeddedPortablePdb(debugEntryIndex, data);
+  }
+
+  replaceEmbeddedPortablePdbLocalScope(debugEntryIndex, localScopeRid, options) {
+    this.#ensureEditable();
+    if (!Number.isInteger(debugEntryIndex) || debugEntryIndex < 0 ||
+        debugEntryIndex >= this.pe.debugDirectoryEntries.length) {
+      throw new RangeError(`Invalid debug-directory entry index ${debugEntryIndex}`);
+    }
+    const entry = this.pe.debugDirectoryEntries[debugEntryIndex];
+    if (entry.type !== 17 || !entry.embeddedPortablePdb) {
+      throw new UnsupportedFormatError("Debug-directory entry is not an embedded Portable PDB");
+    }
+    const pdb = this.#getPortablePdbForEdit(debugEntryIndex, entry);
+    const localScope = pdb.tables.rows.get(50)?.[localScopeRid - 1];
+    if (!localScope || localScope.rid !== localScopeRid) {
+      throw new RangeError(`Invalid Portable PDB LocalScope row ID ${localScopeRid}`);
+    }
+    if (this._portablePdbOffsetBaselines.has(localScope.Method.rid)) {
+      throw new UnsupportedFormatError(
+        "Portable PDB LocalScope offsets cannot be replaced after IL offset remapping has been staged"
+      );
+    }
+    const data = replacePortablePdbLocalScope(pdb, localScopeRid, options);
+    const updatedPdb = parseEmbeddedPortablePdbData(data, 0, data.length);
+    const updatedScope = updatedPdb.tables.rows.get(50)?.[localScopeRid - 1];
+    const body = this.getMethodBody(localScope.Method.rid);
+    if (!updatedScope || !body) {
+      throw new FormatError(
+        `Portable PDB LocalScope row ${localScopeRid} does not resolve to a method body`
+      );
+    }
+    const isBoundary = (offset) => offset === body.codeSize ||
+      body.instructions.some((instruction) => instruction.offset === offset);
+    const endOffset = updatedScope.StartOffset + updatedScope.Length;
+    if (!isBoundary(updatedScope.StartOffset) || !isBoundary(endOffset)) {
+      throw new FormatError(
+        `Portable PDB LocalScope row ${localScopeRid} does not align with MethodDef ${localScope.Method.rid} instruction boundaries`
+      );
+    }
     return this.replaceEmbeddedPortablePdb(debugEntryIndex, data);
   }
 

@@ -1809,6 +1809,59 @@ export function replaceEmbeddedPortablePdbSequencePoints(pdb, methodRid, sequenc
   });
 }
 
+export function replaceEmbeddedPortablePdbLocalScope(pdb, localScopeRid, options) {
+  if (!pdb?.metadataRoot?.streams || !(pdb.tables?.rows instanceof Map) ||
+      !Array.isArray(pdb.tables.counts) || !pdb.heaps?.getString || !pdb.heaps?.getBlob) {
+    throw new TypeError("Portable PDB LocalScope editing requires parsed PDB data");
+  }
+  if (!Number.isInteger(localScopeRid) || localScopeRid < 1 ||
+      localScopeRid > (pdb.tables.counts[50] ?? 0)) {
+    throw new RangeError(`Invalid Portable PDB LocalScope row ID ${localScopeRid}`);
+  }
+  if (!options || typeof options !== "object" || Array.isArray(options)) {
+    throw new TypeError("Portable PDB LocalScope replacement options must be an object");
+  }
+  const keys = Object.keys(options);
+  if (keys.length === 0 || keys.some((key) => key !== "startOffset" && key !== "length")) {
+    throw new TypeError("Portable PDB LocalScope replacement requires startOffset and/or length");
+  }
+  const scopes = pdb.tables.rows.get(50) ?? [];
+  const original = scopes[localScopeRid - 1];
+  if (!original || original.rid !== localScopeRid) {
+    throw new FormatError(`Portable PDB LocalScope row ${localScopeRid} is missing`);
+  }
+  if (Object.hasOwn(options, "startOffset") &&
+      (!Number.isInteger(options.startOffset) || options.startOffset < 0 ||
+       options.startOffset >= 0x80000000)) {
+    throw new RangeError("Portable PDB LocalScope startOffset must be a nonnegative 31-bit integer");
+  }
+  if (Object.hasOwn(options, "length") &&
+      (!Number.isInteger(options.length) || options.length < 1 ||
+       options.length >= 0x80000000)) {
+    throw new RangeError("Portable PDB LocalScope length must be a positive 31-bit integer");
+  }
+  const replacement = {
+    ...original,
+    ...(Object.hasOwn(options, "startOffset") ? { StartOffset: options.startOffset } : {}),
+    ...(Object.hasOwn(options, "length") ? { Length: options.length } : {})
+  };
+  const updatedScopes = scopes.map((scope) =>
+    scope.rid === localScopeRid ? replacement : { ...scope }
+  );
+  validateLocalScopes(
+    updatedScopes,
+    pdb.tables.rows.get(51) ?? [],
+    pdb.tables.rows.get(52) ?? [],
+    pdb.heaps
+  );
+  const rows = new Map(pdb.tables.rows);
+  rows.set(50, updatedScopes);
+  return serializeEmbeddedPortablePdb({
+    ...pdb,
+    tables: { ...pdb.tables, rows }
+  });
+}
+
 export function replaceEmbeddedPortablePdbMethodOffsets(
   pdb,
   methodRid,

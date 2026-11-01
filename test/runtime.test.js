@@ -23,6 +23,7 @@ import {
   replaceClassicPdbLineBlock,
   replaceClassicPdbLineInfo,
   replaceClassicPdbSymbolName,
+  replaceEmbeddedPortablePdbLocalScope,
   replaceEmbeddedPortablePdbSequencePoints,
   replaceEmbeddedPortablePdbSourceLink,
   addEmbeddedPortablePdbSourceLink,
@@ -1149,6 +1150,116 @@ test("IL edits rebase state-machine hoisted-local scopes", {
         resumeOffset: step.resumeOffset + 1
       }))
     });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("embedded Portable PDB LocalScope replacement validates method boundaries", {
+  skip: dotnetAvailable ? false : ".NET SDK/runtime is unavailable"
+}, async () => {
+  const directory = await mkdtemp(join(tmpdir(), "jsilnet-pdb-local-scope-edit-"));
+  try {
+    const project = join(directory, "PdbLocalScopeEdit.csproj");
+    const output = join(directory, "out");
+    await writeFile(project, [
+      "<Project Sdk=\"Microsoft.NET.Sdk\">",
+      "  <PropertyGroup>",
+      `    <TargetFramework>${targetFramework}</TargetFramework>`,
+      "    <DebugType>embedded</DebugType>",
+      "  </PropertyGroup>",
+      "</Project>"
+    ].join("\n"));
+    await writeFile(join(directory, "Fixture.cs"), [
+      "public static class PdbLocalScopeEditFixture {",
+      "  public static int Calculate(int value) {",
+      "    int total = value + 1;",
+      "    if (value > 0) {",
+      "      int inner = value + 2;",
+      "      total += inner;",
+      "    }",
+      "    return total;",
+      "  }",
+      "}"
+    ].join("\n"));
+    const build = spawnSync(
+      "dotnet",
+      ["build", project, "--configuration", "Debug", "--output", output, "--nologo"],
+      { encoding: "utf8", timeout: 120_000 }
+    );
+    assert.equal(build.status, 0, build.stderr || build.stdout || build.error?.message);
+
+    const original = Uint8Array.from(await readFile(join(output, "PdbLocalScopeEdit.dll")));
+    const assembly = parseAssembly(original);
+    const debugIndex = assembly.pe.debugDirectoryEntries.findIndex((entry) =>
+      entry.embeddedPortablePdb
+    );
+    assert.notEqual(debugIndex, -1);
+    const pdb = assembly.pe.debugDirectoryEntries[debugIndex].embeddedPortablePdb;
+    const scopeRows = pdb.tables.rows.get(50) ?? [];
+    const scopeEdit = scopeRows.map((scope) => {
+      const body = assembly.getMethodBody(scope.Method.rid);
+      if (!body) return null;
+      const start = scope.StartOffset;
+      const end = start + scope.Length;
+      const hasChild = scopeRows.some((candidate) =>
+        candidate.Method.rid === scope.Method.rid &&
+        candidate.rid !== scope.rid &&
+        candidate.StartOffset >= start &&
+        candidate.StartOffset + candidate.Length <= end
+      );
+      if (hasChild) return null;
+      const boundaries = [
+        ...body.instructions.map((instruction) => instruction.offset),
+        body.codeSize
+      ];
+      const shorterEnd = Math.max(...boundaries.filter((offset) =>
+        offset > start && offset < end
+      ));
+      return Number.isFinite(shorterEnd)
+        ? { scope, body, shorterLength: shorterEnd - start }
+        : null;
+    }).find(Boolean);
+    assert.ok(scopeEdit, "compiler PDB should contain a leaf scope with an interior instruction boundary");
+
+    const standaloneBytes = replaceEmbeddedPortablePdbLocalScope(
+      pdb,
+      scopeEdit.scope.rid,
+      { length: scopeEdit.shorterLength }
+    );
+    const standalonePdb = parseEmbeddedPortablePdbData(
+      standaloneBytes,
+      0,
+      standaloneBytes.length
+    );
+    assert.equal(
+      standalonePdb.tables.rows.get(50)[scopeEdit.scope.rid - 1].Length,
+      scopeEdit.shorterLength
+    );
+
+    const beforeInvalidEdit = assembly.serialize();
+    assert.throws(
+      () => assembly.replaceEmbeddedPortablePdbLocalScope(
+        debugIndex,
+        scopeEdit.scope.rid,
+        { startOffset: scopeEdit.body.codeSize + 1 }
+      ),
+      /instruction boundaries/
+    );
+    assert.deepEqual(assembly.serialize(), beforeInvalidEdit);
+    assembly.replaceEmbeddedPortablePdbLocalScope(
+      debugIndex,
+      scopeEdit.scope.rid,
+      { length: scopeEdit.shorterLength }
+    );
+    const rewritten = parseAssembly(assembly.serialize());
+    const rewrittenPdb = rewritten.pe.debugDirectoryEntries.find((entry) =>
+      entry.embeddedPortablePdb
+    ).embeddedPortablePdb;
+    assert.equal(
+      rewrittenPdb.tables.rows.get(50)[scopeEdit.scope.rid - 1].Length,
+      scopeEdit.shorterLength
+    );
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
