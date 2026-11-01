@@ -136,6 +136,34 @@ test("Portable PDB compilation CDI decoders validate strings and record bounds",
     ])),
     /reserved bits/
   );
+
+  const typeDefinitionDocumentGuid = Uint8Array.from([
+    0xbc, 0x74, 0x2e, 0x93, 0xa9, 0xdb, 0x78, 0x44,
+    0x8d, 0x46, 0x0f, 0x32, 0xa7, 0xba, 0xb3, 0xd3
+  ]);
+  const decodeTypeDefinitionDocuments = (value, documentCount = 2, parentTable = 2) =>
+    decodePortablePdbCustomDebugInformation(
+      { Kind: 1, Value: 1, Parent: { target: { table: parentTable } } },
+      {
+        getGuid: () => typeDefinitionDocumentGuid,
+        getBlob: () => value
+      },
+      documentCount
+    );
+  assert.deepEqual(
+    decodeTypeDefinitionDocuments(Uint8Array.of(1, 2)).typeDefinitionDocuments,
+    [1, 2]
+  );
+  assert.throws(() => decodeTypeDefinitionDocuments(Uint8Array.of(0)), /invalid Document row 0/);
+  assert.throws(() => decodeTypeDefinitionDocuments(Uint8Array.of(3)), /invalid Document row 3/);
+  assert.throws(
+    () => decodeTypeDefinitionDocuments(Uint8Array.of(0x80)),
+    /exceeds the available/
+  );
+  assert.throws(
+    () => decodeTypeDefinitionDocuments(Uint8Array.of(1), 2, 0),
+    /must belong to a TypeDef/
+  );
 });
 
 test("trailing abstract MethodDef removal updates an embedded Portable PDB", {
@@ -180,6 +208,9 @@ test("trailing abstract MethodDef removal updates an embedded Portable PDB", {
     const metadataReferences = compilerPdb.customDebugInformation.find((record) =>
       Array.isArray(record.compilationMetadataReferences)
     );
+    const typeDefinitionDocuments = compilerPdb.customDebugInformation.find((record) =>
+      Array.isArray(record.typeDefinitionDocuments)
+    );
     assert.ok(
       compilationOptions?.compilationOptions.some((option) =>
         option.name === "language" && option.value === "C#"
@@ -194,11 +225,11 @@ test("trailing abstract MethodDef removal updates an embedded Portable PDB", {
     assert.ok(metadataReferences.compilationMetadataReferences.every((reference) =>
       reference.fileName.length > 0 && reference.mvid.length === 16
     ));
-    const unsafeTypeRefRemap = parseAssembly(original);
-    assert.throws(
-      () => unsafeTypeRefRemap.insertTypeRefSorted({ name: "Inserted.Before.Scoped" }),
-      /token remapping is unsupported while a PE debug directory is present/
-    );
+    assert.ok(typeDefinitionDocuments?.typeDefinitionDocuments.length > 0);
+    assert.equal(typeDefinitionDocuments?.Parent.target?.table, 2);
+    assert.ok(typeDefinitionDocuments?.typeDefinitionDocuments.every((rid) =>
+      rid > 0 && rid <= compilerPdb.documents.length
+    ));
     const typeRefRemap = parseAssembly(original);
     const typeRefPdbIndex = typeRefRemap.pe.debugDirectoryEntries.findIndex((entry) =>
       entry.embeddedPortablePdb
@@ -207,7 +238,8 @@ test("trailing abstract MethodDef removal updates an embedded Portable PDB", {
       .embeddedPortablePdb;
     retainPortablePdbCustomDebugInformation(typeRefPdb, (record) =>
       Array.isArray(record.compilationOptions) ||
-      Array.isArray(record.compilationMetadataReferences)
+      Array.isArray(record.compilationMetadataReferences) ||
+      Array.isArray(record.typeDefinitionDocuments)
     );
     const typeRefSourceLinkPdbBytes = addEmbeddedPortablePdbSourceLink(typeRefPdb, {
       documents: { "**/*.cs": "https://example.invalid/sources/*" }
@@ -248,6 +280,9 @@ test("trailing abstract MethodDef removal updates an embedded Portable PDB", {
     assert.ok(typeRefRemappedPdb?.customDebugInformation.some((record) =>
       Array.isArray(record.compilationMetadataReferences)
     ));
+    assert.ok(typeRefRemappedPdb?.customDebugInformation.some((record) =>
+      Array.isArray(record.typeDefinitionDocuments)
+    ));
     typeRefRemap.removeTypeRef(insertedTypeRefToken & 0x00ffffff);
     const typeRefRemovalReparsed = parseAssembly(typeRefRemap.serialize());
     const typeRefRemovalPdb = typeRefRemovalReparsed.pe.debugDirectoryEntries.find((entry) =>
@@ -266,6 +301,26 @@ test("trailing abstract MethodDef removal updates an embedded Portable PDB", {
     assert.ok(typeRefRemovalPdb?.customDebugInformation.some((record) =>
       Array.isArray(record.compilationMetadataReferences)
     ));
+    assert.ok(typeRefRemovalPdb?.customDebugInformation.some((record) =>
+      Array.isArray(record.typeDefinitionDocuments)
+    ));
+    const typeDefGuard = parseAssembly(original);
+    const typeDefPdbIndex = typeDefGuard.pe.debugDirectoryEntries.findIndex((entry) =>
+      entry.embeddedPortablePdb
+    );
+    const typeDefPdb = typeDefGuard.pe.debugDirectoryEntries[typeDefPdbIndex]
+      .embeddedPortablePdb;
+    retainPortablePdbCustomDebugInformation(typeDefPdb, (record) =>
+      Array.isArray(record.typeDefinitionDocuments)
+    );
+    typeDefGuard.replaceEmbeddedPortablePdb(
+      typeDefPdbIndex,
+      serializeEmbeddedPortablePdb(typeDefPdb)
+    );
+    assert.throws(
+      () => typeDefGuard.insertTypeDef({ beforeRid: 2, name: "Inserted.Type" }),
+      /TypeDef token remapping is unsupported while a PE debug directory is present/
+    );
 
     const appendedReference = parseAssembly(original);
     const appendedReferencePdb = appendedReference.pe.debugDirectoryEntries.find((entry) =>

@@ -25,6 +25,7 @@ const defaultNamespaceKind = "58b2eab6-209f-4e4e-a22c-b2d0f910c782";
 const dynamicLocalVariablesKind = "83c563c4-b4f3-47d5-b824-ba5441477ea8";
 const compilationMetadataReferencesKind = "7e4d4708-096e-4c5c-aeda-cb10ba6a740d";
 const compilationOptionsKind = "b5feec05-8cd0-4a83-96da-466284bb4bd8";
+const typeDefinitionDocumentKind = "932e74bc-dba9-4478-8d46-0f32a7bab3d3";
 const embeddedSourceGuidBytes = Uint8Array.from([
   0x1b, 0x57, 0x8a, 0x0e, 0x26, 0x69, 0x6e, 0x46,
   0xb4, 0xad, 0x8a, 0xb0, 0x46, 0x11, 0xf5, 0xfe
@@ -150,7 +151,7 @@ export function validatePortablePdbCodeViewIdentity(pdb, codeView, timeDateStamp
   }
 }
 
-export function decodePortablePdbCustomDebugInformation(row, heaps) {
+export function decodePortablePdbCustomDebugInformation(row, heaps, documentCount = 0xffffffff) {
   const kindBytes = heaps.getGuid(row.Kind);
   if (!kindBytes) throw new FormatError("Portable PDB custom debug information has a nil Kind");
   const kind = formatGuid(kindBytes);
@@ -286,6 +287,23 @@ export function decodePortablePdbCustomDebugInformation(row, heaps) {
       offset += 25;
     }
     return { kind, compilationMetadataReferences: references };
+  }
+  if (kind === typeDefinitionDocumentKind) {
+    if (row.Parent.target?.table !== 2) {
+      throw new FormatError("TypeDefinitionDocument custom debug information must belong to a TypeDef");
+    }
+    const reader = new BinaryReader(value, { context: "Portable PDB TypeDefinitionDocument" });
+    const documents = [];
+    while (reader.remaining > 0) {
+      const documentRid = readCompressedUInt(reader);
+      if (documentRid === 0 || documentRid > documentCount) {
+        throw new FormatError(
+          `Portable PDB TypeDefinitionDocument references invalid Document row ${documentRid}`
+        );
+      }
+      documents.push(documentRid);
+    }
+    return { kind, typeDefinitionDocuments: documents };
   }
   return { kind };
 }
@@ -692,7 +710,7 @@ export function parsePortablePdbTables(tables, heaps, typeSystemCounts) {
   }
   const customDebugInformation = tables.get(55).map((row) => ({
     ...row,
-    ...decodePortablePdbCustomDebugInformation(row, heaps)
+    ...decodePortablePdbCustomDebugInformation(row, heaps, documents.length)
   }));
   return { documents, methodDebugInformation, stateMachineMethods, customDebugInformation };
 }

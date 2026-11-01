@@ -970,7 +970,7 @@ function validateTypeSpecUseSites(assembly, typeSpecOverride) {
   validateMethodSpecUseSites(assembly, null, typeSpecOverride);
 }
 
-function canPreservePortablePdbCustomDebugInformation(pdb) {
+function canPreservePortablePdbCustomDebugInformation(pdb, tableName) {
   return pdb.customDebugInformation.every((record) =>
     (record.embeddedSource instanceof Uint8Array && record.Parent.target?.table === 48) ||
     (record.sourceLink && record.Parent.target?.table === 0) ||
@@ -978,7 +978,10 @@ function canPreservePortablePdbCustomDebugInformation(pdb) {
     (record.dynamicLocalVariables instanceof Uint8Array &&
       [51, 52].includes(record.Parent.target?.table)) ||
     (Array.isArray(record.compilationOptions) && record.Parent.target?.table === 0) ||
-    (Array.isArray(record.compilationMetadataReferences) && record.Parent.target?.table === 0)
+    (Array.isArray(record.compilationMetadataReferences) && record.Parent.target?.table === 0) ||
+    (Array.isArray(record.typeDefinitionDocuments) &&
+      record.Parent.target?.table === 2 &&
+      tableName !== "TypeDef")
   );
 }
 
@@ -13412,7 +13415,7 @@ export class Assembly {
       const portablePdbCanPreserveTokenRemapping =
         embeddedPdbEntries.length === 1 &&
         !["MethodDef", "StandAloneSig"].includes(tableName) &&
-        canPreservePortablePdbCustomDebugInformation(portablePdb) &&
+        canPreservePortablePdbCustomDebugInformation(portablePdb, tableName) &&
         this.pe.debugDirectoryEntries.every((entry) => [2, 16, 17, 19].includes(entry.type));
       if ((!allowEmbeddedPortablePdb && !portablePdbCanPreserveTokenRemapping) ||
           embeddedPdbEntries.length !== 1) {
