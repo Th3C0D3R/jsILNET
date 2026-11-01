@@ -1873,6 +1873,33 @@ test("TypeSpec generic instances validate generic TypeRef arity", () => {
   assert.equal(parseAssembly(reparsed.serialize()).typeSpecs.length, originalTypeSpecCount + 1);
 });
 
+test("TypeSpec generic arities are validated through custom modifiers", () => {
+  const assembly = parseAssembly(withoutDebugDirectory());
+  assembly.tables.sorted &= ~(1n << 1n);
+  const typeRefRid = assembly.addTypeRef({ name: "External.Generic`2" }) & 0x00ffffff;
+  const innerTypeSpecRid = assembly.addTypeSpec({
+    signature: Uint8Array.from([
+      0x15, 0x12, ...appendCompressedUInt(encodeCodedIndex(1, typeRefRid, "TypeDefOrRef")),
+      0x02, 0x08, 0x08
+    ])
+  }) & 0x00ffffff;
+  assembly.addTypeSpec({
+    signature: Uint8Array.from([
+      0x1f,
+      ...appendCompressedUInt(encodeCodedIndex(27, innerTypeSpecRid, "TypeDefOrRef")),
+      0x08
+    ])
+  });
+  const reparsed = parseAssembly(assembly.serialize());
+  const before = reparsed.serialize();
+
+  assert.throws(() => reparsed.replaceTypeRef(typeRefRid, {
+    name: "External.Generic`1"
+  }), /2 arguments for TypeRef arity 1/);
+  assert.equal(reparsed.typeRefs[typeRefRid - 1].name, "External.Generic`2");
+  assert.deepEqual(reparsed.serialize(), before);
+});
+
 test("TypeRef rename revalidates generic TypeSpec arity before mutation", () => {
   const assembly = parseAssembly(withoutDebugDirectory());
   assembly.tables.sorted &= ~(1n << 1n);

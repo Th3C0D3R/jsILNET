@@ -336,6 +336,11 @@ function validateTypeSpecDefinitions(
     }
   };
   if (type.kind === "modified") {
+    for (const modifier of type.modifiers) {
+      if (modifier.type.table === 27) {
+        validateTypeSpecReference(modifier.type.rid);
+      }
+    }
     validateTypeSpecDefinitions(
       assembly,
       type.type,
