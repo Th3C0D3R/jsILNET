@@ -299,11 +299,48 @@ function getTypeRefGenericArity(assembly, rid, typeRefOverride = null) {
   return arity;
 }
 
-function validateTypeSpecDefinitions(assembly, type, typeRefOverride = null) {
+function validateTypeSpecDefinitions(
+  assembly,
+  type,
+  typeRefOverride = null,
+  activeTypeSpecs = new Set(),
+  typeSpecOverride = null
+) {
+  const validateTypeSpecReference = (rid) => {
+    const referencedTypeSpec = typeSpecOverride?.rid === rid
+      ? typeSpecOverride
+      : assembly.typeSpecs[rid - 1];
+    if (!referencedTypeSpec) {
+      throw new FormatError(`TypeSpec signature references missing TypeSpec row ${rid}`);
+    }
+    if (activeTypeSpecs.has(rid)) {
+      throw new FormatError(`TypeSpec row ${rid} contains a recursive TypeSpec reference`);
+    }
+    activeTypeSpecs.add(rid);
+    try {
+      validateTypeSpecDefinitions(
+        assembly,
+        referencedTypeSpec.parsedSignature,
+        typeRefOverride,
+        activeTypeSpecs,
+        typeSpecOverride
+      );
+    } finally {
+      activeTypeSpecs.delete(rid);
+    }
+  };
   if (type.kind === "modified") {
-    validateTypeSpecDefinitions(assembly, type.type, typeRefOverride);
+    validateTypeSpecDefinitions(
+      assembly,
+      type.type,
+      typeRefOverride,
+      activeTypeSpecs,
+      typeSpecOverride
+    );
   } else if (type.kind === "genericInstance") {
-    if (type.genericType.table === 2) {
+    if (type.genericType.table === 27) {
+      validateTypeSpecReference(type.genericType.rid);
+    } else if (type.genericType.table === 2) {
       const expectedArity = getGenericParameterArity(assembly.genericParams, 2, type.genericType.rid);
       if (type.arguments.length !== expectedArity) {
         throw new FormatError(
@@ -321,14 +358,41 @@ function validateTypeSpecDefinitions(assembly, type, typeRefOverride = null) {
       }
     }
     for (const argument of type.arguments) {
-      validateTypeSpecDefinitions(assembly, argument, typeRefOverride);
+      validateTypeSpecDefinitions(
+        assembly,
+        argument,
+        typeRefOverride,
+        activeTypeSpecs,
+        typeSpecOverride
+      );
     }
   } else if (["array", "szArray", "pointer", "byRef", "pinned"].includes(type.kind)) {
-    validateTypeSpecDefinitions(assembly, type.type, typeRefOverride);
+    validateTypeSpecDefinitions(
+      assembly,
+      type.type,
+      typeRefOverride,
+      activeTypeSpecs,
+      typeSpecOverride
+    );
+  } else if ((type.kind === "class" || type.kind === "valueType") &&
+      type.type.table === 27) {
+    validateTypeSpecReference(type.type.rid);
   } else if (type.kind === "functionPointer") {
-    validateTypeSpecDefinitions(assembly, type.signature.returnType, typeRefOverride);
+    validateTypeSpecDefinitions(
+      assembly,
+      type.signature.returnType,
+      typeRefOverride,
+      activeTypeSpecs,
+      typeSpecOverride
+    );
     for (const parameter of type.signature.parameters) {
-      validateTypeSpecDefinitions(assembly, parameter, typeRefOverride);
+      validateTypeSpecDefinitions(
+        assembly,
+        parameter,
+        typeRefOverride,
+        activeTypeSpecs,
+        typeSpecOverride
+      );
     }
   }
 }
@@ -9897,7 +9961,13 @@ export class Assembly {
       throw new TypeError("TypeSpec signature must be a Uint8Array");
     }
     const parsedSignature = parseTypeSignature(signature, { counts: this.tables.counts });
-    validateTypeSpecDefinitions(this, parsedSignature);
+    validateTypeSpecDefinitions(
+      this,
+      parsedSignature,
+      null,
+      new Set(),
+      { ...typeSpec, signature: signature.slice(), parsedSignature }
+    );
     validateTypeSpecUseSites(this, {
       ...typeSpec,
       signature: signature.slice(),

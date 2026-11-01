@@ -1956,6 +1956,22 @@ test("TypeSpec generic variables in field signatures use their declaring type co
   assert.deepEqual(field.signature, originalSignature);
 });
 
+test("TypeSpec replacement rejects recursive TypeSpec references atomically", () => {
+  const assembly = parseAssembly(fixture);
+  const typeSpec = assembly.typeSpecs[0];
+  assert.ok(typeSpec);
+  const recursiveSignature = Uint8Array.from([
+    0x12,
+    ...appendCompressedUInt(encodeCodedIndex(27, typeSpec.rid, "TypeDefOrRef"))
+  ]);
+  const before = assembly.serialize();
+  assert.throws(
+    () => assembly.replaceTypeSpecSignature(typeSpec.rid, recursiveSignature),
+    /recursive TypeSpec reference/
+  );
+  assert.deepEqual(assembly.serialize(), before);
+});
+
 test("TypeSpec replacement revalidates nested generic-context use sites atomically", () => {
   const assembly = parseAssembly(fixture);
   const genericType = assembly.types.find((type) => type.name === "Sample`1");
