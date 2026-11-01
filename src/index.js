@@ -291,18 +291,44 @@ function getGenericParameterArity(parameters, ownerTable, ownerRid) {
   );
 }
 
-function getTypeRefGenericArity(assembly, rid, typeRefOverride = null) {
+function getTypeRefGenericArity(
+  assembly,
+  rid,
+  typeRefOverride = null,
+  activeTypeRefs = new Set()
+) {
+  if (activeTypeRefs.has(rid)) {
+    throw new FormatError(`TypeRef row ${rid} has a recursive ResolutionScope reference`);
+  }
   const typeRef = typeRefOverride?.rid === rid
     ? typeRefOverride
     : assembly.typeRefs[rid - 1];
   if (!typeRef) throw new FormatError(`Generic instance references missing TypeRef row ${rid}`);
-  const aritySuffix = /`([0-9]+)$/.exec(typeRef.name);
-  if (!aritySuffix) return null;
-  const arity = Number(aritySuffix[1]);
-  if (!Number.isSafeInteger(arity)) {
-    throw new FormatError(`TypeRef row ${rid} has an unsupported generic arity suffix`);
+  activeTypeRefs.add(rid);
+  try {
+    const aritySuffix = /`([0-9]+)$/.exec(typeRef.name);
+    if (!aritySuffix) return null;
+    let arity = Number(aritySuffix[1]);
+    if (!Number.isSafeInteger(arity)) {
+      throw new FormatError(`TypeRef row ${rid} has an unsupported generic arity suffix`);
+    }
+    if (typeRef.resolutionScope?.table === 1) {
+      const enclosingArity = getTypeRefGenericArity(
+        assembly,
+        typeRef.resolutionScope.rid,
+        typeRefOverride,
+        activeTypeRefs
+      );
+      if (enclosingArity === null) return null;
+      arity += enclosingArity;
+      if (!Number.isSafeInteger(arity)) {
+        throw new FormatError(`TypeRef row ${rid} has an unsupported generic arity`);
+      }
+    }
+    return arity;
+  } finally {
+    activeTypeRefs.delete(rid);
   }
-  return arity;
 }
 
 function validateTypeSpecDefinitions(
@@ -9127,7 +9153,7 @@ export class Assembly {
       return this;
     }
     if (nextName !== typeRef.name) {
-      const typeRefOverride = { rid, name: nextName };
+      const typeRefOverride = { ...typeRef, rid, name: nextName };
       for (const typeSpec of this.typeSpecs) {
         validateTypeSpecDefinitions(this, typeSpec.parsedSignature, typeRefOverride);
       }

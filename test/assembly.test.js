@@ -1873,6 +1873,36 @@ test("TypeSpec generic instances validate generic TypeRef arity", () => {
   assert.equal(parseAssembly(reparsed.serialize()).typeSpecs.length, originalTypeSpecCount + 1);
 });
 
+test("nested generic TypeRef arity includes enclosing TypeRefs", () => {
+  const assembly = parseAssembly(withoutDebugDirectory());
+  assembly.tables.sorted &= ~(1n << 1n);
+  const outerRid = assembly.addTypeRef({
+    name: "Outer`1",
+    namespace: "External"
+  }) & 0x00ffffff;
+  const innerRid = assembly.addTypeRef({
+    scope: { table: "TypeRef", rid: outerRid },
+    name: "Inner`1"
+  }) & 0x00ffffff;
+  const typeSpec = assembly.addTypeSpec({
+    signature: Uint8Array.from([
+      0x15, 0x12, ...appendCompressedUInt(encodeCodedIndex(1, innerRid, "TypeDefOrRef")),
+      0x02, 0x08, 0x08
+    ])
+  });
+  assert.equal(typeSpec >>> 24, 27);
+  const reparsed = parseAssembly(assembly.serialize());
+  const before = reparsed.serialize();
+
+  assert.throws(() => reparsed.replaceTypeRef(outerRid, {
+    name: "Outer`2"
+  }), /2 arguments for TypeRef arity 3/);
+  assert.throws(() => reparsed.replaceTypeRef(innerRid, {
+    name: "Inner`2"
+  }), /2 arguments for TypeRef arity 3/);
+  assert.deepEqual(reparsed.serialize(), before);
+});
+
 test("TypeSpec generic arities are validated through custom modifiers", () => {
   const assembly = parseAssembly(withoutDebugDirectory());
   assembly.tables.sorted &= ~(1n << 1n);
