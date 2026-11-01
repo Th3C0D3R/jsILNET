@@ -136,15 +136,33 @@ export class BinaryReader {
 export function readCompressedUInt(reader) {
   const first = reader.u1();
   if ((first & 0x80) === 0) return first;
-  if ((first & 0xc0) === 0x80) return ((first & 0x3f) << 8) | reader.u1();
+  const offset = reader.absoluteOffset - 1;
+  let value;
+  if ((first & 0xc0) === 0x80) {
+    value = ((first & 0x3f) << 8) | reader.u1();
+    if (value < 0x80) {
+      throw new FormatError("Non-canonical compressed unsigned integer", {
+        offset,
+        context: reader.context
+      });
+    }
+    return value;
+  }
   if ((first & 0xe0) === 0xc0) {
-    return ((first & 0x1f) * 0x1000000) +
+    value = ((first & 0x1f) * 0x1000000) +
       (reader.u1() << 16) +
       (reader.u1() << 8) +
       reader.u1();
+    if (value < 0x4000) {
+      throw new FormatError("Non-canonical compressed unsigned integer", {
+        offset,
+        context: reader.context
+      });
+    }
+    return value;
   }
   throw new FormatError("Invalid compressed unsigned integer prefix", {
-    offset: reader.absoluteOffset - 1,
+    offset,
     context: reader.context
   });
 }
@@ -153,18 +171,22 @@ export function readCompressedInt(reader) {
   const first = reader.u1();
   let encoded;
   let signOffset;
+  let width;
   if ((first & 0x80) === 0) {
     encoded = first;
     signOffset = 0x40;
+    width = 1;
   } else if ((first & 0xc0) === 0x80) {
     encoded = ((first & 0x3f) << 8) | reader.u1();
     signOffset = 0x2000;
+    width = 2;
   } else if ((first & 0xe0) === 0xc0) {
     encoded = (first & 0x1f) * 0x1000000 +
       reader.u1() * 0x10000 +
       reader.u1() * 0x100 +
       reader.u1();
     signOffset = 0x10000000;
+    width = 4;
   } else {
     throw new FormatError("Invalid compressed signed integer prefix", {
       offset: reader.absoluteOffset - 1,
@@ -172,5 +194,13 @@ export function readCompressedInt(reader) {
     });
   }
   const value = Math.floor(encoded / 2);
-  return (encoded & 1) === 0 ? value : value - signOffset;
+  const signedValue = (encoded & 1) === 0 ? value : value - signOffset;
+  if ((width === 2 && signedValue >= -64 && signedValue <= 63) ||
+      (width === 4 && signedValue >= -0x2000 && signedValue <= 0x1fff)) {
+    throw new FormatError("Non-canonical compressed signed integer", {
+      offset: reader.absoluteOffset - width,
+      context: reader.context
+    });
+  }
+  return signedValue;
 }

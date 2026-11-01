@@ -329,7 +329,7 @@ test("metadata heap readers reject malformed unreferenced entries", () => {
   ])), /exceeds the available/);
   assert.throws(() => new MetadataHeaps(new Map([
     ["#Blob", { bytes: Uint8Array.from([0, 0x80, 0x01, 0xaa]) }]
-  ])), /Noncanonical length prefix/);
+  ])), /Non-canonical compressed unsigned integer/);
   assert.throws(() => new MetadataHeaps(new Map([
     ["#US", { bytes: Uint8Array.from([0, 1, 2]) }]
   ])), /Invalid UTF-16LE user-string encoding/);

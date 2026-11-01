@@ -18,6 +18,10 @@ test("compressed unsigned integers decode all legal widths", () => {
   assert.equal(readCompressedUInt(new BinaryReader(Uint8Array.from([0x7f]))), 0x7f);
   assert.equal(readCompressedUInt(new BinaryReader(Uint8Array.from([0x80, 0x80]))), 0x80);
   assert.equal(readCompressedUInt(new BinaryReader(Uint8Array.from([0xc0, 0x00, 0x40, 0x00]))), 0x4000);
+  assert.throws(() => readCompressedUInt(new BinaryReader(Uint8Array.from([0x80, 0x7f]))),
+    /Non-canonical compressed unsigned integer/);
+  assert.throws(() => readCompressedUInt(new BinaryReader(Uint8Array.from([0xc0, 0x00, 0x00, 0x7f]))),
+    /Non-canonical compressed unsigned integer/);
   assert.throws(() => readCompressedUInt(new BinaryReader(Uint8Array.from([0xe0]))), /Invalid compressed/);
 });
 
@@ -34,6 +38,10 @@ test("compressed signed integers sign-extend each encoded width", () => {
   ]) {
     assert.equal(readCompressedInt(new BinaryReader(Uint8Array.from(bytes))), expected);
   }
+  assert.throws(() => readCompressedInt(new BinaryReader(Uint8Array.from([0x80, 0x7e]))),
+    /Non-canonical compressed signed integer/);
+  assert.throws(() => readCompressedInt(new BinaryReader(Uint8Array.from([0xc0, 0x00, 0x3f, 0xfe]))),
+    /Non-canonical compressed signed integer/);
   assert.throws(() => readCompressedInt(new BinaryReader(Uint8Array.of(0xe0))), /Invalid compressed signed integer prefix/);
 });
 
