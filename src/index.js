@@ -1044,6 +1044,9 @@ function getCustomAttributeConstructor(assembly, attribute, resolveEnum) {
   if (signature.kind !== "method" || !signature.hasThis || signature.generic) {
     throw new UnsupportedFormatError(`CustomAttribute row ${attribute.rid} has an unsupported constructor signature`);
   }
+  if (signature.returnType.kind !== "primitive" || signature.returnType.elementType !== 0x01) {
+    throw new FormatError(`CustomAttribute row ${attribute.rid} constructor must return void`);
+  }
   if (constructor.table === 6 && !ownerType) {
     throw new FormatError(`CustomAttribute row ${attribute.rid} constructor has no declaring type`);
   }

@@ -7815,6 +7815,15 @@ test("custom attributes with supported constructor types parse and replace round
   assert.equal(reparsed.parseCustomAttribute(8).namedArguments[0].value, "Runtime display");
 });
 
+test("custom attribute constructors must return void", () => {
+  const assembly = parseAssembly(fixture);
+  const attribute = assembly.customAttributes.find((item) => item.rid === 2);
+  assert.equal(attribute.constructor.table, 10);
+  assembly.memberRefs[attribute.constructor.rid - 1].signature =
+    Uint8Array.of(0x20, 0x01, 0x08, 0x05);
+  assert.throws(() => assembly.parseCustomAttribute(attribute.rid), /constructor must return void/);
+});
+
 test("custom-attribute encoding rejects invalid Unicode and enum encodings", () => {
   const encodeNamedString = (name, value) => encodeCustomAttribute({
     fixedArguments: [],
