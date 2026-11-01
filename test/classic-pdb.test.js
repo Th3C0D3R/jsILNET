@@ -805,6 +805,27 @@ test("classic PDB C13 file checksums can be replaced and resized with line refer
     multipleModule.c13.lines[0].blocks[1].lines[0]
   );
   assert.equal(resizedModule.c13Bytes, multipleModule.c13Bytes + 16);
+
+  const noChecksum = parseClassicPdb(replaceClassicPdbFileChecksum(multipleChecksums, {
+    moduleIndex: 0,
+    fileChecksumOffset: 0,
+    checksum: new Uint8Array()
+  }));
+  const noChecksumModule = noChecksum.dbi.modules[0];
+  assert.equal(noChecksumModule.c13.fileChecksums.get(0).checksumKind, 0);
+  assert.deepEqual([...noChecksumModule.c13.fileChecksums.keys()], [0, 8]);
+  assert.equal(noChecksumModule.c13.lines[0].blocks[1].fileChecksumOffset, 8);
+
+  const overlay = Uint8Array.of(0xde, 0xad, 0xbe, 0xef);
+  const withOverlay = new Uint8Array(multipleChecksums.length + overlay.length);
+  withOverlay.set(multipleChecksums);
+  withOverlay.set(overlay, multipleChecksums.length);
+  const resizedWithOverlay = replaceClassicPdbFileChecksum(withOverlay, {
+    moduleIndex: 0,
+    fileChecksumOffset: 0,
+    checksum: sha256Checksum
+  });
+  assert.deepEqual(resizedWithOverlay.subarray(-overlay.length), overlay);
 });
 
 test("classic PDB string table resolves file names from checksum offsets", () => {
