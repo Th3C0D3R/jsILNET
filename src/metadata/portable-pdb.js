@@ -6,6 +6,7 @@ import {
   appendBlobHeap,
   appendCompressedInt,
   appendCompressedUInt,
+  appendStringHeap,
   serializeTablesStream
 } from "./writer.js";
 import { serializeMetadataRoot } from "./root-writer.js";
@@ -1858,6 +1859,145 @@ export function replaceEmbeddedPortablePdbLocalScope(pdb, localScopeRid, options
   rows.set(50, updatedScopes);
   return serializeEmbeddedPortablePdb({
     ...pdb,
+    tables: { ...pdb.tables, rows }
+  });
+}
+
+export function replaceEmbeddedPortablePdbLocalVariable(pdb, localVariableRid, options) {
+  if (!pdb?.metadataRoot?.streams || !(pdb.tables?.rows instanceof Map) ||
+      !Array.isArray(pdb.tables.counts) || !pdb.heaps?.getString || !pdb.heaps?.getBlob) {
+    throw new TypeError("Portable PDB LocalVariable editing requires parsed PDB data");
+  }
+  if (!Number.isInteger(localVariableRid) || localVariableRid < 1 ||
+      localVariableRid > (pdb.tables.counts[51] ?? 0)) {
+    throw new RangeError(`Invalid Portable PDB LocalVariable row ID ${localVariableRid}`);
+  }
+  if (!options || typeof options !== "object" || Array.isArray(options)) {
+    throw new TypeError("Portable PDB LocalVariable replacement options must be an object");
+  }
+  const keys = Object.keys(options);
+  if (keys.length === 0 ||
+      keys.some((key) => key !== "name" && key !== "attributes" && key !== "index")) {
+    throw new TypeError(
+      "Portable PDB LocalVariable replacement requires name, attributes, and/or index"
+    );
+  }
+  const variables = pdb.tables.rows.get(51) ?? [];
+  const original = variables[localVariableRid - 1];
+  if (!original || original.rid !== localVariableRid) {
+    throw new FormatError(`Portable PDB LocalVariable row ${localVariableRid} is missing`);
+  }
+  if (Object.hasOwn(options, "attributes") &&
+      (!Number.isInteger(options.attributes) || options.attributes < 0 ||
+       (options.attributes & ~1) !== 0)) {
+    throw new RangeError("Portable PDB LocalVariable attributes may only set the pinned flag");
+  }
+  if (Object.hasOwn(options, "index") &&
+      (!Number.isInteger(options.index) || options.index < 0 || options.index > 0xffff)) {
+    throw new RangeError("Portable PDB LocalVariable index must be an unsigned 16-bit integer");
+  }
+  const streams = new Map([...pdb.metadataRoot.streams].map(([name, stream]) =>
+    [name, { ...stream, bytes: Uint8Array.from(stream.bytes) }]
+  ));
+  let nameIndex = original.Name;
+  if (Object.hasOwn(options, "name")) {
+    if (typeof options.name !== "string" || options.name.includes("\0")) {
+      throw new TypeError("Portable PDB LocalVariable names must be null-free strings");
+    }
+    const encodedName = new TextEncoder().encode(options.name);
+    if (new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(encodedName) !== options.name) {
+      throw new TypeError("Portable PDB LocalVariable names must contain valid Unicode");
+    }
+    const stringStream = streams.get("#Strings");
+    if (!stringStream) throw new FormatError("Portable PDB metadata is missing its #Strings heap");
+    const appended = appendStringHeap(stringStream.bytes, options.name);
+    stringStream.bytes = appended.heap;
+    nameIndex = appended.index;
+  }
+  const replacement = {
+    ...original,
+    ...(Object.hasOwn(options, "attributes") ? { Attributes: options.attributes } : {}),
+    ...(Object.hasOwn(options, "index") ? { Index: options.index } : {}),
+    ...(Object.hasOwn(options, "name") ? { Name: nameIndex } : {})
+  };
+  const updatedVariables = variables.map((variable) =>
+    variable.rid === localVariableRid ? replacement : { ...variable }
+  );
+  const validationHeaps = {
+    getString: (index) => Object.hasOwn(options, "name") && index === nameIndex
+      ? options.name
+      : pdb.heaps.getString(index),
+    getBlob: (index) => pdb.heaps.getBlob(index)
+  };
+  validateLocalScopes(
+    pdb.tables.rows.get(50) ?? [],
+    updatedVariables,
+    pdb.tables.rows.get(52) ?? [],
+    validationHeaps
+  );
+  const rows = new Map(pdb.tables.rows);
+  rows.set(51, updatedVariables);
+  return serializeEmbeddedPortablePdb({
+    ...pdb,
+    metadataRoot: { ...pdb.metadataRoot, streams },
+    tables: { ...pdb.tables, rows }
+  });
+}
+
+export function replaceEmbeddedPortablePdbLocalConstant(pdb, localConstantRid, options) {
+  if (!pdb?.metadataRoot?.streams || !(pdb.tables?.rows instanceof Map) ||
+      !Array.isArray(pdb.tables.counts) || !pdb.heaps?.getString || !pdb.heaps?.getBlob) {
+    throw new TypeError("Portable PDB LocalConstant editing requires parsed PDB data");
+  }
+  if (!Number.isInteger(localConstantRid) || localConstantRid < 1 ||
+      localConstantRid > (pdb.tables.counts[52] ?? 0)) {
+    throw new RangeError(`Invalid Portable PDB LocalConstant row ID ${localConstantRid}`);
+  }
+  if (!options || typeof options !== "object" || Array.isArray(options) ||
+      Object.keys(options).length !== 1 || !Object.hasOwn(options, "name")) {
+    throw new TypeError("Portable PDB LocalConstant replacement requires a name");
+  }
+  if (typeof options.name !== "string" || options.name.includes("\0")) {
+    throw new TypeError("Portable PDB LocalConstant names must be null-free strings");
+  }
+  const encodedName = new TextEncoder().encode(options.name);
+  if (new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(encodedName) !== options.name) {
+    throw new TypeError("Portable PDB LocalConstant names must contain valid Unicode");
+  }
+  const constants = pdb.tables.rows.get(52) ?? [];
+  const original = constants[localConstantRid - 1];
+  if (!original || original.rid !== localConstantRid) {
+    throw new FormatError(`Portable PDB LocalConstant row ${localConstantRid} is missing`);
+  }
+  const streams = new Map([...pdb.metadataRoot.streams].map(([name, stream]) =>
+    [name, { ...stream, bytes: Uint8Array.from(stream.bytes) }]
+  ));
+  const stringStream = streams.get("#Strings");
+  if (!stringStream) throw new FormatError("Portable PDB metadata is missing its #Strings heap");
+  const appended = appendStringHeap(stringStream.bytes, options.name);
+  stringStream.bytes = appended.heap;
+  const updatedConstants = constants.map((constant) =>
+    constant.rid === localConstantRid
+      ? { ...constant, Name: appended.index }
+      : { ...constant }
+  );
+  const validationHeaps = {
+    getString: (index) => index === appended.index
+      ? options.name
+      : pdb.heaps.getString(index),
+    getBlob: (index) => pdb.heaps.getBlob(index)
+  };
+  validateLocalScopes(
+    pdb.tables.rows.get(50) ?? [],
+    pdb.tables.rows.get(51) ?? [],
+    updatedConstants,
+    validationHeaps
+  );
+  const rows = new Map(pdb.tables.rows);
+  rows.set(52, updatedConstants);
+  return serializeEmbeddedPortablePdb({
+    ...pdb,
+    metadataRoot: { ...pdb.metadataRoot, streams },
     tables: { ...pdb.tables, rows }
   });
 }

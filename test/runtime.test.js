@@ -24,6 +24,8 @@ import {
   replaceClassicPdbLineInfo,
   replaceClassicPdbSymbolName,
   replaceEmbeddedPortablePdbLocalScope,
+  replaceEmbeddedPortablePdbLocalVariable,
+  replaceEmbeddedPortablePdbLocalConstant,
   replaceEmbeddedPortablePdbSequencePoints,
   replaceEmbeddedPortablePdbSourceLink,
   addEmbeddedPortablePdbSourceLink,
@@ -1174,6 +1176,8 @@ test("embedded Portable PDB LocalScope replacement validates method boundaries",
       "public static class PdbLocalScopeEditFixture {",
       "  public static int Calculate(int value) {",
       "    int total = value + 1;",
+      "    const int constant = 3;",
+      "    total += constant;",
       "    if (value > 0) {",
       "      int inner = value + 2;",
       "      total += inner;",
@@ -1221,6 +1225,16 @@ test("embedded Portable PDB LocalScope replacement validates method boundaries",
         : null;
     }).find(Boolean);
     assert.ok(scopeEdit, "compiler PDB should contain a leaf scope with an interior instruction boundary");
+    const localVariable = (pdb.tables.rows.get(51) ?? []).find((row) =>
+      pdb.heaps.getString(row.Name).length > 0
+    );
+    assert.ok(localVariable, "compiler PDB should contain a named local variable");
+    const replacementName = `${pdb.heaps.getString(localVariable.Name)}_edited`;
+    const localConstant = (pdb.tables.rows.get(52) ?? []).find((row) =>
+      pdb.heaps.getString(row.Name).length > 0
+    );
+    assert.ok(localConstant, "compiler PDB should contain a named local constant");
+    const replacementConstantName = `${pdb.heaps.getString(localConstant.Name)}_edited`;
 
     const standaloneBytes = replaceEmbeddedPortablePdbLocalScope(
       pdb,
@@ -1236,6 +1250,38 @@ test("embedded Portable PDB LocalScope replacement validates method boundaries",
       standalonePdb.tables.rows.get(50)[scopeEdit.scope.rid - 1].Length,
       scopeEdit.shorterLength
     );
+    const standaloneVariableBytes = replaceEmbeddedPortablePdbLocalVariable(
+      pdb,
+      localVariable.rid,
+      { name: replacementName }
+    );
+    const standaloneVariablePdb = parseEmbeddedPortablePdbData(
+      standaloneVariableBytes,
+      0,
+      standaloneVariableBytes.length
+    );
+    assert.equal(
+      standaloneVariablePdb.heaps.getString(
+        standaloneVariablePdb.tables.rows.get(51)[localVariable.rid - 1].Name
+      ),
+      replacementName
+    );
+    const standaloneConstantBytes = replaceEmbeddedPortablePdbLocalConstant(
+      pdb,
+      localConstant.rid,
+      { name: replacementConstantName }
+    );
+    const standaloneConstantPdb = parseEmbeddedPortablePdbData(
+      standaloneConstantBytes,
+      0,
+      standaloneConstantBytes.length
+    );
+    assert.equal(
+      standaloneConstantPdb.heaps.getString(
+        standaloneConstantPdb.tables.rows.get(52)[localConstant.rid - 1].Name
+      ),
+      replacementConstantName
+    );
 
     const beforeInvalidEdit = assembly.serialize();
     assert.throws(
@@ -1246,11 +1292,37 @@ test("embedded Portable PDB LocalScope replacement validates method boundaries",
       ),
       /instruction boundaries/
     );
+    assert.throws(
+      () => assembly.replaceEmbeddedPortablePdbLocalVariable(
+        debugIndex,
+        localVariable.rid,
+        { attributes: 2 }
+      ),
+      /pinned flag/
+    );
+    assert.throws(
+      () => assembly.replaceEmbeddedPortablePdbLocalConstant(
+        debugIndex,
+        localConstant.rid,
+        { name: "invalid\0name" }
+      ),
+      /null-free/
+    );
     assert.deepEqual(assembly.serialize(), beforeInvalidEdit);
     assembly.replaceEmbeddedPortablePdbLocalScope(
       debugIndex,
       scopeEdit.scope.rid,
       { length: scopeEdit.shorterLength }
+    );
+    assembly.replaceEmbeddedPortablePdbLocalVariable(
+      debugIndex,
+      localVariable.rid,
+      { name: replacementName }
+    );
+    assembly.replaceEmbeddedPortablePdbLocalConstant(
+      debugIndex,
+      localConstant.rid,
+      { name: replacementConstantName }
     );
     const rewritten = parseAssembly(assembly.serialize());
     const rewrittenPdb = rewritten.pe.debugDirectoryEntries.find((entry) =>
@@ -1259,6 +1331,18 @@ test("embedded Portable PDB LocalScope replacement validates method boundaries",
     assert.equal(
       rewrittenPdb.tables.rows.get(50)[scopeEdit.scope.rid - 1].Length,
       scopeEdit.shorterLength
+    );
+    assert.equal(
+      rewrittenPdb.heaps.getString(
+        rewrittenPdb.tables.rows.get(51)[localVariable.rid - 1].Name
+      ),
+      replacementName
+    );
+    assert.equal(
+      rewrittenPdb.heaps.getString(
+        rewrittenPdb.tables.rows.get(52)[localConstant.rid - 1].Name
+      ),
+      replacementConstantName
     );
   } finally {
     await rm(directory, { recursive: true, force: true });
