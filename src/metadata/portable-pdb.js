@@ -1570,6 +1570,115 @@ export function remapEmbeddedPortablePdbLocalSignatures(
   });
 }
 
+export function remapEmbeddedPortablePdbTypeDefinitions(
+  pdb,
+  typeRid,
+  oldCounts,
+  newCounts,
+  operation
+) {
+  if (!pdb?.metadataRoot?.streams || !(pdb.tables?.rows instanceof Map) ||
+      !Array.isArray(pdb.tables.counts) || !(pdb.rowCounts instanceof Map) ||
+      !Array.isArray(pdb.customDebugInformation)) {
+    throw new TypeError("Portable PDB TypeDef remapping requires parsed PDB data");
+  }
+  if (!Array.isArray(oldCounts) || !Array.isArray(newCounts) ||
+      oldCounts.length < 45 || newCounts.length < 45 ||
+      !Number.isInteger(typeRid) || typeRid < 1 ||
+      !["insert", "remove"].includes(operation) ||
+      (operation === "insert" &&
+        (typeRid > newCounts[2] || newCounts[2] !== oldCounts[2] + 1)) ||
+      (operation === "remove" &&
+        (typeRid > oldCounts[2] || newCounts[2] !== oldCounts[2] - 1))) {
+    throw new UnsupportedFormatError(
+      "Portable PDB TypeDef remapping requires one valid TypeDef insertion or removal"
+    );
+  }
+  for (const [table, count] of pdb.rowCounts) {
+    if (count !== oldCounts[table]) {
+      throw new FormatError(
+        `Portable PDB row count for type-system table ${table} does not match assembly metadata`
+      );
+    }
+    if (table !== 2 && newCounts[table] !== count) {
+      throw new FormatError(
+        `TypeDef remapping unexpectedly changed type-system table ${table}`
+      );
+    }
+  }
+
+  const rows = new Map(pdb.tables.rows);
+  const customDebugRows = rows.get(55) ?? [];
+  if (customDebugRows.length !== pdb.customDebugInformation.length) {
+    throw new FormatError("Portable PDB CustomDebugInformation row count is inconsistent");
+  }
+  const customDebugRecords = new Map(
+    pdb.customDebugInformation.map((record) => [record.rid, record])
+  );
+  const remappedCustomDebugRows = sortPortablePdbCustomDebugInformation(
+    customDebugRows.flatMap((row) => {
+      const record = customDebugRecords.get(row.rid);
+      if (!record) {
+        throw new FormatError(
+          `Portable PDB CustomDebugInformation row ${row.rid} is missing its decoded record`
+        );
+      }
+      const target = record.Parent.target;
+      if (target?.table !== 2) return [{ ...row }];
+      if (operation === "remove" && target.rid === typeRid) return [];
+      const rid = operation === "insert"
+        ? target.rid >= typeRid ? target.rid + 1 : target.rid
+        : target.rid > typeRid ? target.rid - 1 : target.rid;
+      if (rid === target.rid) return [{ ...row }];
+      return [{
+        ...row,
+        Parent: {
+          raw: encodeCodedIndex(2, rid, "HasCustomDebugInformation"),
+          target: { ...target, rid }
+        }
+      }];
+    })
+  );
+  if (remappedCustomDebugRows.length > 0) rows.set(55, remappedCustomDebugRows);
+  else rows.delete(55);
+
+  const rowCounts = new Map([...pdb.rowCounts].map(([table]) =>
+    [table, newCounts[table]]
+  ));
+  const tableCounts = [...pdb.tables.counts];
+  for (let table = 0; table < 45; table++) {
+    tableCounts[table] = newCounts[table];
+  }
+  tableCounts[55] = remappedCustomDebugRows.length;
+  const valid = remappedCustomDebugRows.length > 0
+    ? pdb.tables.valid | (1n << 55n)
+    : pdb.tables.valid & ~(1n << 55n);
+
+  const pdbStream = new Uint8Array(32 + rowCounts.size * 4);
+  pdbStream.set(pdb.id);
+  const pdbView = new DataView(pdbStream.buffer);
+  pdbView.setUint32(20, pdb.entryPointToken, true);
+  pdbView.setUint32(24, Number(pdb.referencedTypeSystemTables & 0xffffffffn), true);
+  pdbView.setUint32(28, Number(pdb.referencedTypeSystemTables >> 32n), true);
+  let countOffset = 32;
+  for (const [table, count] of [...rowCounts].sort(([left], [right]) => left - right)) {
+    pdbView.setUint32(countOffset, count, true);
+    countOffset += 4;
+  }
+  const streams = new Map([...pdb.metadataRoot.streams].map(([name, stream]) =>
+    [name, { ...stream, bytes: Uint8Array.from(stream.bytes) }]
+  ));
+  const pdbMetadataStream = streams.get("#Pdb");
+  if (!pdbMetadataStream) throw new FormatError("Portable PDB is missing its #Pdb stream");
+  pdbMetadataStream.bytes = pdbStream;
+  return serializeEmbeddedPortablePdb({
+    ...pdb,
+    metadataRoot: { ...pdb.metadataRoot, streams },
+    rowCounts,
+    tables: { ...pdb.tables, rows, counts: tableCounts, valid }
+  });
+}
+
 export function removeEmbeddedPortablePdbMethod(pdb, methodRid, oldCounts, newCounts) {
   if (!pdb?.metadataRoot?.streams || !(pdb.tables?.rows instanceof Map) ||
       !Array.isArray(pdb.tables.counts) || !(pdb.rowCounts instanceof Map)) {

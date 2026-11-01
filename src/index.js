@@ -35,6 +35,7 @@ import {
   updateEmbeddedPortablePdbRowCounts,
   insertEmbeddedPortablePdbMethod as insertPortablePdbMethod,
   remapEmbeddedPortablePdbLocalSignatures as remapPortablePdbLocalSignatures,
+  remapEmbeddedPortablePdbTypeDefinitions as remapPortablePdbTypeDefinitions,
   removeEmbeddedPortablePdbMethod as removePortablePdbMethod,
   refreshEmbeddedPortablePdbId,
   addEmbeddedPortablePdbSourceLink as addPortablePdbSourceLink,
@@ -970,7 +971,7 @@ function validateTypeSpecUseSites(assembly, typeSpecOverride) {
   validateMethodSpecUseSites(assembly, null, typeSpecOverride);
 }
 
-function canPreservePortablePdbCustomDebugInformation(pdb, tableName) {
+function canPreservePortablePdbCustomDebugInformation(pdb) {
   return pdb.customDebugInformation.every((record) =>
     (record.embeddedSource instanceof Uint8Array && record.Parent.target?.table === 48) ||
     (record.sourceLink && record.Parent.target?.table === 0) ||
@@ -980,8 +981,7 @@ function canPreservePortablePdbCustomDebugInformation(pdb, tableName) {
     (Array.isArray(record.compilationOptions) && record.Parent.target?.table === 0) ||
     (Array.isArray(record.compilationMetadataReferences) && record.Parent.target?.table === 0) ||
     (Array.isArray(record.typeDefinitionDocuments) &&
-      record.Parent.target?.table === 2 &&
-      tableName !== "TypeDef")
+      record.Parent.target?.table === 2)
   );
 }
 
@@ -2731,6 +2731,18 @@ export class Assembly {
         previous = current;
       }
     }
+    let portablePdbUpdate = null;
+    if (beforeRid <= rows.length) {
+      const oldCounts = [...this.tables.counts];
+      const newCounts = [...oldCounts];
+      newCounts[2]++;
+      portablePdbUpdate = this.#preparePortablePdbTypeDefRemapping(
+        beforeRid,
+        oldCounts,
+        newCounts,
+        "insert"
+      );
+    }
 
     const heapStreams = new Map(
       [...(this._heapStreams ?? new Map([...this.metadataRoot.streams].map(([streamName, stream]) =>
@@ -2919,6 +2931,7 @@ export class Assembly {
     }
     this._patches.push(...patches);
     this._metadataDirty = true;
+    this.#applyPortablePdbTypeDefRemapping(portablePdbUpdate);
     return { token: 0x02000000 + rid, tokenMap };
   }
 
@@ -3239,6 +3252,15 @@ export class Assembly {
       exceptionTokenUpdates.push(...catchRemaps.updates);
     }
 
+    const oldCounts = [...this.tables.counts];
+    const newCounts = [...oldCounts];
+    newCounts[2]--;
+    const portablePdbUpdate = this.#preparePortablePdbTypeDefRemapping(
+      rid,
+      oldCounts,
+      newCounts,
+      "remove"
+    );
     const remainingRows = rows.filter((row) => row.rid !== rid);
     const remainingTypes = this.types.filter((candidate) => candidate.rid !== rid);
     if (remainingRows.length !== remainingTypes.length) {
@@ -3316,6 +3338,7 @@ export class Assembly {
     }
     this._patches.push(...patches);
     this._metadataDirty = true;
+    this.#applyPortablePdbTypeDefRemapping(portablePdbUpdate);
     return shiftsTypeRids ? tokenMap : this;
   }
 
@@ -3478,6 +3501,39 @@ export class Assembly {
     this._embeddedPortablePdbEdits.set(debugEntryIndex, refreshed.bytes);
     this._debugRecordEdits = debugRecordEdits;
     return this;
+  }
+
+  #preparePortablePdbTypeDefRemapping(typeRid, oldCounts, newCounts, operation) {
+    const entries = this.pe.debugDirectoryEntries
+      .map((entry, index) => ({ entry, index }))
+      .filter(({ entry }) => entry.embeddedPortablePdb);
+    if (entries.length === 0) return null;
+    if (entries.length !== 1) {
+      throw new UnsupportedFormatError(
+        "TypeDef remapping requires exactly one embedded Portable PDB"
+      );
+    }
+    const { entry, index } = entries[0];
+    const staged = this._embeddedPortablePdbEdits.get(index);
+    const pdb = staged
+      ? parseEmbeddedPortablePdbData(staged, 0, staged.length)
+      : entry.embeddedPortablePdb;
+    return {
+      index,
+      data: remapPortablePdbTypeDefinitions(
+        pdb,
+        typeRid,
+        oldCounts,
+        newCounts,
+        operation
+      )
+    };
+  }
+
+  #applyPortablePdbTypeDefRemapping(update) {
+    if (update) {
+      this.#replaceEmbeddedPortablePdb(update.index, update.data, this.tables.counts);
+    }
   }
 
   #synchronizeEmbeddedPortablePdbRowCounts() {
@@ -13491,7 +13547,7 @@ export class Assembly {
       const portablePdbCanPreserveTokenRemapping =
         embeddedPdbEntries.length === 1 &&
         !["MethodDef", "StandAloneSig"].includes(tableName) &&
-        canPreservePortablePdbCustomDebugInformation(portablePdb, tableName) &&
+        canPreservePortablePdbCustomDebugInformation(portablePdb) &&
         this.pe.debugDirectoryEntries.every((entry) => [2, 16, 17, 19].includes(entry.type));
       if ((!allowEmbeddedPortablePdb && !portablePdbCanPreserveTokenRemapping) ||
           embeddedPdbEntries.length !== 1) {

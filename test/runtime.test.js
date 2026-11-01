@@ -454,6 +454,91 @@ test("MethodDef insertion and removal remap recognized method-scoped CDI", {
   }
 });
 
+test("TypeDefinitionDocument CDI follows TypeDef insertion and removal", {
+  skip: dotnetAvailable ? false : ".NET SDK/runtime is unavailable"
+}, async () => {
+  const directory = await mkdtemp(join(tmpdir(), "jsilnet-pdb-typedef-cdi-"));
+  try {
+    const project = join(directory, "PdbTypeDefCdi.csproj");
+    const output = join(directory, "out");
+    await writeFile(project, [
+      "<Project Sdk=\"Microsoft.NET.Sdk\">",
+      "  <PropertyGroup>",
+      `    <TargetFramework>${targetFramework}</TargetFramework>`,
+      "    <DebugType>embedded</DebugType>",
+      "  </PropertyGroup>",
+      "</Project>"
+    ].join("\n"));
+    await writeFile(join(directory, "Fixture.cs"), [
+      "public class BeforeType {}",
+      "public interface EmptyType {}",
+      "public class AfterType {}"
+    ].join("\n"));
+    const build = spawnSync(
+      "dotnet",
+      ["build", project, "--configuration", "Debug", "--output", output, "--nologo"],
+      { encoding: "utf8", timeout: 120_000 }
+    );
+    assert.equal(build.status, 0, build.stderr || build.stdout || build.error?.message);
+
+    const assembly = parseAssembly(
+      Uint8Array.from(await readFile(join(output, "PdbTypeDefCdi.dll")))
+    );
+    const embeddedPdb = assembly.pe.debugDirectoryEntries.find((entry) =>
+      entry.embeddedPortablePdb
+    )?.embeddedPortablePdb;
+    const emptyType = assembly.types.find((type) => type.name === "EmptyType");
+    assert.ok(embeddedPdb);
+    assert.ok(emptyType);
+    const typeDocumentRecord = embeddedPdb.customDebugInformation.find((record) =>
+      Array.isArray(record.typeDefinitionDocuments) &&
+      record.Parent.target?.table === 2 &&
+      record.Parent.target.rid === emptyType.rid
+    );
+    assert.ok(typeDocumentRecord);
+    const originalTypeDocumentCount = embeddedPdb.customDebugInformation.filter((record) =>
+      Array.isArray(record.typeDefinitionDocuments)
+    ).length;
+
+    const { token: insertedToken } = assembly.insertTypeDef({
+      beforeRid: emptyType.rid,
+      name: "InsertedType"
+    });
+    const insertedPdb = parseAssembly(assembly.serialize()).pe.debugDirectoryEntries.find(
+      (entry) => entry.embeddedPortablePdb
+    ).embeddedPortablePdb;
+    assert.equal(
+      insertedPdb.customDebugInformation.find((record) =>
+        Array.isArray(record.typeDefinitionDocuments) &&
+        record.Parent.target?.rid === emptyType.rid + 1
+      )?.Parent.target.rid,
+      emptyType.rid + 1
+    );
+
+    assembly.removeTypeDef(insertedToken & 0x00ffffff);
+    const restoredPdb = parseAssembly(assembly.serialize()).pe.debugDirectoryEntries.find(
+      (entry) => entry.embeddedPortablePdb
+    ).embeddedPortablePdb;
+    assert.ok(restoredPdb.customDebugInformation.some((record) =>
+      Array.isArray(record.typeDefinitionDocuments) &&
+      record.Parent.target?.rid === emptyType.rid
+    ));
+
+    assembly.removeTypeDef(emptyType.rid);
+    const removedPdb = parseAssembly(assembly.serialize()).pe.debugDirectoryEntries.find(
+      (entry) => entry.embeddedPortablePdb
+    ).embeddedPortablePdb;
+    assert.equal(
+      removedPdb.customDebugInformation.filter((record) =>
+        Array.isArray(record.typeDefinitionDocuments)
+      ).length,
+      originalTypeDocumentCount - 1
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("IL edits rebase state-machine hoisted-local scopes", {
   skip: dotnetAvailable ? false : ".NET SDK/runtime is unavailable"
 }, async () => {
@@ -688,14 +773,24 @@ test("trailing abstract MethodDef removal updates an embedded Portable PDB", {
     retainPortablePdbCustomDebugInformation(typeDefPdb, (record) =>
       Array.isArray(record.typeDefinitionDocuments)
     );
+    const typeDocumentParents = typeDefPdb.customDebugInformation
+      .filter((record) => Array.isArray(record.typeDefinitionDocuments))
+      .map((record) => record.Parent.target.rid);
     typeDefGuard.replaceEmbeddedPortablePdb(
       typeDefPdbIndex,
       serializeEmbeddedPortablePdb(typeDefPdb)
     );
-    assert.throws(
-      () => typeDefGuard.insertTypeDef({ beforeRid: 2, name: "Inserted.Type" }),
-      /TypeDef token remapping is unsupported while a PE debug directory is present/
+    typeDefGuard.insertTypeDef({ beforeRid: 2, name: "Inserted.Type" });
+    const typeDefRemappedPdb = parseAssembly(typeDefGuard.serialize())
+      .pe.debugDirectoryEntries.find((entry) => entry.embeddedPortablePdb)
+      .embeddedPortablePdb;
+    assert.deepEqual(
+      typeDefRemappedPdb.customDebugInformation
+        .filter((record) => Array.isArray(record.typeDefinitionDocuments))
+        .map((record) => record.Parent.target.rid),
+      typeDocumentParents.map((rid) => rid >= 2 ? rid + 1 : rid)
     );
+    assert.equal(typeDefRemappedPdb.rowCounts.get(2), typeDefGuard.tables.counts[2]);
 
     const appendedReference = parseAssembly(original);
     const appendedReferencePdb = appendedReference.pe.debugDirectoryEntries.find((entry) =>
