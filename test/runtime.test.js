@@ -653,6 +653,8 @@ test("rewritten and signed IL assemblies with 15 directories load in .NET", {
       "</Project>"
     ].join("\n"));
     await writeFile(join(directory, "Program.cs"), [
+      "using System;",
+      "using System.IO;",
       "using System.Reflection;",
       "var assembly = Assembly.LoadFile(Path.GetFullPath(args[0]));",
       "var flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static;",
@@ -874,6 +876,80 @@ test("rewritten custom-attribute named arguments load in .NET", {
     );
     assert.equal(execution.status, 0, execution.stderr || execution.stdout || execution.error?.message);
     assert.equal(execution.stdout.trim().split(/\r?\n/).at(-1), "7:updated");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("added embedded resources load and retain their payload in .NET", {
+  skip: dotnetAvailable ? false : ".NET SDK/runtime is unavailable"
+}, async () => {
+  const directory = await mkdtemp(join(tmpdir(), "jsilnet-resource-runtime-"));
+  try {
+    const libraryProject = join(directory, "ResourceLibrary.csproj");
+    const libraryOutput = join(directory, "library");
+    await writeFile(libraryProject, [
+      "<Project Sdk=\"Microsoft.NET.Sdk\">",
+      "  <PropertyGroup>",
+      `    <TargetFramework>${targetFramework}</TargetFramework>`,
+      "    <DebugType>none</DebugType>",
+      "  </PropertyGroup>",
+      "</Project>"
+    ].join("\n"));
+    await writeFile(join(directory, "ResourceLibrary.cs"),
+      "public static class ResourceLibrary { public static int Answer() => 42; }");
+    const libraryBuild = spawnSync(
+      "dotnet",
+      ["build", libraryProject, "--configuration", "Release", "--output", libraryOutput, "--nologo"],
+      { encoding: "utf8", timeout: 120_000 }
+    );
+    assert.equal(
+      libraryBuild.status,
+      0,
+      libraryBuild.stderr || libraryBuild.stdout || libraryBuild.error?.message
+    );
+    const resourceBytes = Uint8Array.of(4, 8, 15, 16, 23, 42);
+    const libraryPath = join(libraryOutput, "ResourceLibrary.dll");
+    const assembly = parseAssembly(Uint8Array.from(await readFile(libraryPath)));
+    assembly.addManifestResource({
+      name: "AddedPayload",
+      flags: 1,
+      data: resourceBytes
+    });
+    const rewrittenLibraryPath = join(libraryOutput, "ResourceLibrary.Rewritten.dll");
+    await writeFile(rewrittenLibraryPath, assembly.serialize());
+
+    const appProject = join(directory, "ResourceReader.csproj");
+    await writeFile(appProject, [
+      "<Project Sdk=\"Microsoft.NET.Sdk\">",
+      "  <PropertyGroup>",
+      `    <TargetFramework>${targetFramework}</TargetFramework>`,
+      "    <OutputType>Exe</OutputType>",
+      "  </PropertyGroup>",
+      "</Project>"
+    ].join("\n"));
+    await writeFile(join(directory, "Program.cs"), [
+      "using System;",
+      "using System.IO;",
+      "using System.Reflection;",
+      "var target = Assembly.LoadFrom(args[0]);",
+      "using var stream = target.GetManifestResourceStream(\"AddedPayload\")",
+      "    ?? throw new InvalidOperationException(\"Added resource was not found\");",
+      "using var output = new MemoryStream();",
+      "stream.CopyTo(output);",
+      "Console.WriteLine(Convert.ToHexString(output.ToArray()));"
+    ].join("\n"));
+    const execution = spawnSync(
+      "dotnet",
+      ["run", "--project", appProject, "--configuration", "Release", "--", rewrittenLibraryPath],
+      { encoding: "utf8", timeout: 120_000 }
+    );
+    assert.equal(
+      execution.status,
+      0,
+      execution.stdout || execution.stderr || execution.error?.message
+    );
+    assert.equal(execution.stdout.trim().split(/\r?\n/).at(-1), "04080F10172A");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
