@@ -1941,56 +1941,54 @@ export function removeClassicPdbSymbol(input, { moduleIndex, recordIndex } = {})
   return rewriteClassicPdbSymbolStream(bytes, pdb, module, streamBytes, newSymbolBytes);
 }
 
-export function insertClassicPdbPublicSymbol(
-  input,
-  { moduleIndex, flags = 0, offset, segment, name } = {}
-) {
+function encodeClassicPdbNamedSymbolRecord(kind, fields, nameBytes, symbolOffset) {
+  const recordDataEnd = symbolOffset + 4 + fields.length + nameBytes.length + 1;
+  const paddingSize = (4 - (recordDataEnd % 4)) % 4;
+  const recordLength = 2 + fields.length + nameBytes.length + 1 + paddingSize;
+  if (recordLength > 0xffff) {
+    throw new RangeError("Classic PDB symbol record exceeds its 16-bit size limit");
+  }
+  const recordBytes = new Uint8Array(recordLength + 2);
+  const recordView = new DataView(recordBytes.buffer);
+  recordView.setUint16(0, recordLength, true);
+  recordView.setUint16(2, kind, true);
+  recordBytes.set(fields, 4);
+  recordBytes.set(nameBytes, 4 + fields.length);
+  recordBytes[4 + fields.length + nameBytes.length] = 0;
+  for (let index = 0; index < paddingSize; index++) {
+    recordBytes[5 + fields.length + nameBytes.length + index] =
+      0xf0 + paddingSize - index;
+  }
+  return recordBytes;
+}
+
+function insertClassicPdbModuleSymbol(input, {
+  moduleIndex,
+  kind,
+  fields,
+  name,
+  nameLabel
+} = {}) {
   const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
   if (!Number.isInteger(moduleIndex) || moduleIndex < 0) {
     throw new RangeError("Classic PDB module index must be a non-negative integer");
   }
-  if (!Number.isInteger(flags) || flags < 0 || flags > 0xffffffff) {
-    throw new RangeError("Classic PDB public-symbol flags must be an unsigned 32-bit integer");
-  }
-  if (!Number.isInteger(offset) || offset < 0 || offset > 0xffffffff) {
-    throw new RangeError("Classic PDB public-symbol offset must be an unsigned 32-bit integer");
-  }
-  if (!Number.isInteger(segment) || segment < 0 || segment > 0xffff) {
-    throw new RangeError("Classic PDB public-symbol segment must be an unsigned 16-bit integer");
-  }
-  const nameBytes = encodeClassicPdbReplacementText(name, "Classic PDB public-symbol names");
+  const nameBytes = encodeClassicPdbReplacementText(name, nameLabel);
   const pdb = parseClassicPdb(bytes);
   const module = pdb.dbi?.modules[moduleIndex];
   if (!module) throw new RangeError(`Classic PDB module ${moduleIndex} does not exist`);
   const stream = pdb.streams[module.streamIndex];
   if (!stream?.bytes) {
-    throw new UnsupportedFormatError("Classic PDB public-symbol insertion requires a module stream");
+    throw new UnsupportedFormatError("Classic PDB symbol insertion requires a module stream");
   }
   const symbolBytes = module.symbolBytes === 0 ? 4 : module.symbolBytes;
-  const recordDataEnd = symbolBytes + 4 + 10 + nameBytes.length + 1;
-  const paddingSize = (4 - (recordDataEnd % 4)) % 4;
-  const recordLength = 2 + 10 + nameBytes.length + 1 + paddingSize;
-  const recordSize = recordLength + 2;
-  if (recordLength > 0xffff) {
-    throw new RangeError("Classic PDB public-symbol record exceeds its 16-bit size limit");
-  }
+  const recordBytes = encodeClassicPdbNamedSymbolRecord(kind, fields, nameBytes, symbolBytes);
+  const recordSize = recordBytes.length;
   const newSymbolBytes = symbolBytes + recordSize;
   const insertedSymbolBytes = newSymbolBytes - module.symbolBytes;
   const newStreamSize = stream.size + insertedSymbolBytes;
   if (newSymbolBytes > 0xffffffff || newStreamSize > 0xffffffff) {
-    throw new RangeError("Classic PDB public-symbol insertion exceeds its 32-bit size limit");
-  }
-  const recordBytes = new Uint8Array(recordSize);
-  const recordView = new DataView(recordBytes.buffer);
-  recordView.setUint16(0, recordLength, true);
-  recordView.setUint16(2, 0x110e, true);
-  recordView.setUint32(4, flags, true);
-  recordView.setUint32(8, offset, true);
-  recordView.setUint16(12, segment, true);
-  recordBytes.set(nameBytes, 14);
-  recordBytes[14 + nameBytes.length] = 0;
-  for (let index = 0; index < paddingSize; index++) {
-    recordBytes[15 + nameBytes.length + index] = 0xf0 + paddingSize - index;
+    throw new RangeError("Classic PDB symbol insertion exceeds its 32-bit size limit");
   }
 
   const streamBytes = new Uint8Array(newStreamSize);
@@ -2005,6 +2003,60 @@ export function insertClassicPdbPublicSymbol(
     newSymbolBytes
   );
   return rewriteClassicPdbSymbolStream(bytes, pdb, module, streamBytes, newSymbolBytes);
+}
+
+export function insertClassicPdbPublicSymbol(
+  input,
+  { moduleIndex, flags = 0, offset, segment, name } = {}
+) {
+  if (!Number.isInteger(flags) || flags < 0 || flags > 0xffffffff) {
+    throw new RangeError("Classic PDB public-symbol flags must be an unsigned 32-bit integer");
+  }
+  if (!Number.isInteger(offset) || offset < 0 || offset > 0xffffffff) {
+    throw new RangeError("Classic PDB public-symbol offset must be an unsigned 32-bit integer");
+  }
+  if (!Number.isInteger(segment) || segment < 0 || segment > 0xffff) {
+    throw new RangeError("Classic PDB public-symbol segment must be an unsigned 16-bit integer");
+  }
+  const fields = new Uint8Array(10);
+  const view = new DataView(fields.buffer);
+  view.setUint32(0, flags, true);
+  view.setUint32(4, offset, true);
+  view.setUint16(8, segment, true);
+  return insertClassicPdbModuleSymbol(input, {
+    moduleIndex,
+    kind: 0x110e,
+    fields,
+    name,
+    nameLabel: "Classic PDB public-symbol names"
+  });
+}
+
+export function insertClassicPdbDataSymbol(
+  input,
+  { moduleIndex, typeIndex, offset, segment, name } = {}
+) {
+  if (!Number.isInteger(typeIndex) || typeIndex < 0 || typeIndex > 0xffffffff) {
+    throw new RangeError("Classic PDB data-symbol type index must be an unsigned 32-bit integer");
+  }
+  if (!Number.isInteger(offset) || offset < 0 || offset > 0xffffffff) {
+    throw new RangeError("Classic PDB data-symbol offset must be an unsigned 32-bit integer");
+  }
+  if (!Number.isInteger(segment) || segment < 0 || segment > 0xffff) {
+    throw new RangeError("Classic PDB data-symbol segment must be an unsigned 16-bit integer");
+  }
+  const fields = new Uint8Array(10);
+  const view = new DataView(fields.buffer);
+  view.setUint32(0, typeIndex, true);
+  view.setUint32(4, offset, true);
+  view.setUint16(8, segment, true);
+  return insertClassicPdbModuleSymbol(input, {
+    moduleIndex,
+    kind: 0x110c,
+    fields,
+    name,
+    nameLabel: "Classic PDB data-symbol names"
+  });
 }
 
 export function replaceClassicPdbSymbolName(input, { moduleIndex, recordIndex, name } = {}) {

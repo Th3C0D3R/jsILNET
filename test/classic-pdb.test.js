@@ -13,7 +13,8 @@ import {
   replaceClassicPdbStringTableName,
   replaceClassicPdbSymbolName,
   removeClassicPdbSymbol,
-  insertClassicPdbPublicSymbol
+  insertClassicPdbPublicSymbol,
+  insertClassicPdbDataSymbol
 } from "../src/index.js";
 import {
   parseCodeViewC13Subsections,
@@ -478,6 +479,42 @@ test("classic PDB public symbols can be appended before module data", () => {
     segment: 0x10000,
     name: "Invalid"
   }), /unsigned 16-bit integer/);
+  assert.deepEqual(original, unchanged);
+});
+
+test("classic PDB local data symbols can be appended before module data", () => {
+  const original = makeClassicPdbWithSymbols({ lineInfo: true });
+  const originalPdb = parseClassicPdb(original);
+  const originalModule = originalPdb.dbi.modules[0];
+  const originalStream = originalPdb.streams[originalModule.streamIndex];
+  const rewritten = insertClassicPdbDataSymbol(original, {
+    moduleIndex: 0,
+    typeIndex: 0x1001,
+    offset: 0x5678,
+    segment: 4,
+    name: "StaticValue"
+  });
+  const rewrittenPdb = parseClassicPdb(rewritten);
+  const rewrittenModule = rewrittenPdb.dbi.modules[0];
+  const addedSymbol = rewrittenModule.symbols.records[1].decoded;
+  assert.equal(addedSymbol.kind, "data");
+  assert.equal(addedSymbol.typeIndex, 0x1001);
+  assert.equal(addedSymbol.offset, 0x5678);
+  assert.equal(addedSymbol.segment, 4);
+  assert.equal(addedSymbol.name, "StaticValue");
+  assert.deepEqual(
+    rewrittenPdb.streams[rewrittenModule.streamIndex].bytes.subarray(rewrittenModule.symbolBytes),
+    originalStream.bytes.subarray(originalModule.symbolBytes)
+  );
+
+  const unchanged = Uint8Array.from(original);
+  assert.throws(() => insertClassicPdbDataSymbol(original, {
+    moduleIndex: 0,
+    typeIndex: -1,
+    offset: 1,
+    segment: 1,
+    name: "Invalid"
+  }), /type index must be an unsigned 32-bit integer/);
   assert.deepEqual(original, unchanged);
 });
 
