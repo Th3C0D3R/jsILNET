@@ -1788,6 +1788,53 @@ function appendClassicPdbOverlay(bytes, pdb, output) {
   return outputWithOverlay;
 }
 
+function rewriteClassicPdbSymbolStream(bytes, pdb, module, streamBytes, symbolBytes) {
+  const stream = pdb.streams[module.streamIndex];
+  if (!stream || module.streamIndex <= 3 || pdb.dbi.modules.some((other) =>
+    other !== module && other.streamIndex === module.streamIndex
+  )) {
+    throw new UnsupportedFormatError(
+      "Classic PDB symbol edits require a dedicated module stream"
+    );
+  }
+  if (!Number.isInteger(symbolBytes) || symbolBytes < 4 || symbolBytes > 0xffffffff ||
+      streamBytes.length < symbolBytes || streamBytes.length > 0xffffffff) {
+    throw new UnsupportedFormatError("Classic PDB symbol edit exceeds supported stream-size limits");
+  }
+  const dbiBytes = Uint8Array.from(pdb.streams[3].bytes);
+  const updatedSymbolBytes = new Uint8Array(4);
+  new DataView(updatedSymbolBytes.buffer).setUint32(0, symbolBytes, true);
+  dbiBytes.set(updatedSymbolBytes, module.moduleInfoOffset + 36);
+
+  let output;
+  if (Math.ceil(streamBytes.length / pdb.blockSize) !== stream.blockIndices.length) {
+    output = rebuildClassicPdbStreams(pdb, new Map([
+      [module.streamIndex, streamBytes],
+      [3, dbiBytes]
+    ]));
+    output = appendClassicPdbOverlay(bytes, pdb, output);
+  } else {
+    output = writeClassicPdbStream(bytes, pdb, module.streamIndex, streamBytes);
+    output = replaceClassicPdbStreamBytes(
+      output,
+      pdb,
+      3,
+      module.moduleInfoOffset + 36,
+      updatedSymbolBytes
+    );
+    const updatedStreamSize = new Uint8Array(4);
+    new DataView(updatedStreamSize.buffer).setUint32(0, streamBytes.length, true);
+    output = replaceClassicPdbDirectoryBytes(
+      output,
+      pdb,
+      4 + 4 * module.streamIndex,
+      updatedStreamSize
+    );
+  }
+  parseClassicPdb(output);
+  return output;
+}
+
 function rebuildClassicPdbC13Module(bytes, pdb, moduleIndex, subsections) {
   const module = pdb.dbi?.modules[moduleIndex];
   const originalStream = module && pdb.streams[module.streamIndex]?.bytes;
@@ -1877,13 +1924,6 @@ export function removeClassicPdbSymbol(input, { moduleIndex, recordIndex } = {})
       "Classic PDB symbol removal cannot rewrite modules with scoped or unknown symbols"
     );
   }
-  if (module.streamIndex <= 3 || pdb.dbi.modules.some((other, index) =>
-    index !== moduleIndex && other.streamIndex === module.streamIndex
-  )) {
-    throw new UnsupportedFormatError(
-      "Classic PDB symbol removal requires a dedicated module stream"
-    );
-  }
   const stream = pdb.streams[module.streamIndex];
   const recordSize = 4 + record.data.length;
   const newSymbolBytes = module.symbolBytes - recordSize;
@@ -1898,37 +1938,73 @@ export function removeClassicPdbSymbol(input, { moduleIndex, recordIndex } = {})
     stream.bytes.subarray(record.offset + recordSize),
     record.offset
   );
-  const dbiBytes = Uint8Array.from(pdb.streams[3].bytes);
-  const updatedSymbolBytes = new Uint8Array(4);
-  new DataView(updatedSymbolBytes.buffer).setUint32(0, newSymbolBytes, true);
-  dbiBytes.set(updatedSymbolBytes, module.moduleInfoOffset + 36);
-  let output;
-  if (Math.ceil(newStreamSize / pdb.blockSize) !== stream.blockIndices.length) {
-    output = rebuildClassicPdbStreams(pdb, new Map([
-      [module.streamIndex, streamBytes],
-      [3, dbiBytes]
-    ]));
-    output = appendClassicPdbOverlay(bytes, pdb, output);
-  } else {
-    output = writeClassicPdbStream(bytes, pdb, module.streamIndex, streamBytes);
-    output = replaceClassicPdbStreamBytes(
-      output,
-      pdb,
-      3,
-      module.moduleInfoOffset + 36,
-      updatedSymbolBytes
-    );
-    const updatedStreamSize = new Uint8Array(4);
-    new DataView(updatedStreamSize.buffer).setUint32(0, newStreamSize, true);
-    output = replaceClassicPdbDirectoryBytes(
-      output,
-      pdb,
-      4 + 4 * module.streamIndex,
-      updatedStreamSize
-    );
+  return rewriteClassicPdbSymbolStream(bytes, pdb, module, streamBytes, newSymbolBytes);
+}
+
+export function insertClassicPdbPublicSymbol(
+  input,
+  { moduleIndex, flags = 0, offset, segment, name } = {}
+) {
+  const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
+  if (!Number.isInteger(moduleIndex) || moduleIndex < 0) {
+    throw new RangeError("Classic PDB module index must be a non-negative integer");
   }
-  parseClassicPdb(output);
-  return output;
+  if (!Number.isInteger(flags) || flags < 0 || flags > 0xffffffff) {
+    throw new RangeError("Classic PDB public-symbol flags must be an unsigned 32-bit integer");
+  }
+  if (!Number.isInteger(offset) || offset < 0 || offset > 0xffffffff) {
+    throw new RangeError("Classic PDB public-symbol offset must be an unsigned 32-bit integer");
+  }
+  if (!Number.isInteger(segment) || segment < 0 || segment > 0xffff) {
+    throw new RangeError("Classic PDB public-symbol segment must be an unsigned 16-bit integer");
+  }
+  const nameBytes = encodeClassicPdbReplacementText(name, "Classic PDB public-symbol names");
+  const pdb = parseClassicPdb(bytes);
+  const module = pdb.dbi?.modules[moduleIndex];
+  if (!module) throw new RangeError(`Classic PDB module ${moduleIndex} does not exist`);
+  const stream = pdb.streams[module.streamIndex];
+  if (!stream?.bytes) {
+    throw new UnsupportedFormatError("Classic PDB public-symbol insertion requires a module stream");
+  }
+  const symbolBytes = module.symbolBytes === 0 ? 4 : module.symbolBytes;
+  const recordDataEnd = symbolBytes + 4 + 10 + nameBytes.length + 1;
+  const paddingSize = (4 - (recordDataEnd % 4)) % 4;
+  const recordLength = 2 + 10 + nameBytes.length + 1 + paddingSize;
+  const recordSize = recordLength + 2;
+  if (recordLength > 0xffff) {
+    throw new RangeError("Classic PDB public-symbol record exceeds its 16-bit size limit");
+  }
+  const newSymbolBytes = symbolBytes + recordSize;
+  const insertedSymbolBytes = newSymbolBytes - module.symbolBytes;
+  const newStreamSize = stream.size + insertedSymbolBytes;
+  if (newSymbolBytes > 0xffffffff || newStreamSize > 0xffffffff) {
+    throw new RangeError("Classic PDB public-symbol insertion exceeds its 32-bit size limit");
+  }
+  const recordBytes = new Uint8Array(recordSize);
+  const recordView = new DataView(recordBytes.buffer);
+  recordView.setUint16(0, recordLength, true);
+  recordView.setUint16(2, 0x110e, true);
+  recordView.setUint32(4, flags, true);
+  recordView.setUint32(8, offset, true);
+  recordView.setUint16(12, segment, true);
+  recordBytes.set(nameBytes, 14);
+  recordBytes[14 + nameBytes.length] = 0;
+  for (let index = 0; index < paddingSize; index++) {
+    recordBytes[15 + nameBytes.length + index] = 0xf0 + paddingSize - index;
+  }
+
+  const streamBytes = new Uint8Array(newStreamSize);
+  if (module.symbolBytes === 0) {
+    new DataView(streamBytes.buffer).setUint32(0, 4, true);
+  } else {
+    streamBytes.set(stream.bytes.subarray(0, module.symbolBytes));
+  }
+  streamBytes.set(recordBytes, symbolBytes);
+  streamBytes.set(
+    stream.bytes.subarray(module.symbolBytes),
+    newSymbolBytes
+  );
+  return rewriteClassicPdbSymbolStream(bytes, pdb, module, streamBytes, newSymbolBytes);
 }
 
 export function replaceClassicPdbSymbolName(input, { moduleIndex, recordIndex, name } = {}) {
@@ -2003,39 +2079,10 @@ export function replaceClassicPdbSymbolName(input, { moduleIndex, recordIndex, n
     stream.bytes.subarray(record.offset + oldRecordSize),
     record.offset + recordSize
   );
-  if (Math.ceil(newStreamSize / pdb.blockSize) !== stream.blockIndices.length) {
-    const dbiBytes = Uint8Array.from(pdb.streams[3].bytes);
-    new DataView(dbiBytes.buffer).setUint32(
-      module.moduleInfoOffset + 36,
-      newSymbolBytes,
-      true
-    );
-    let output = rebuildClassicPdbStreams(pdb, new Map([
-      [module.streamIndex, streamBytes],
-      [3, dbiBytes]
-    ]));
-    output = appendClassicPdbOverlay(bytes, pdb, output);
-    parseClassicPdb(output);
-    return output;
+  if (sizeDelta !== 0) {
+    return rewriteClassicPdbSymbolStream(bytes, pdb, module, streamBytes, newSymbolBytes);
   }
-  let output = writeClassicPdbStream(bytes, pdb, module.streamIndex, streamBytes);
-  const updatedDbi = new Uint8Array(4);
-  new DataView(updatedDbi.buffer).setUint32(0, newSymbolBytes, true);
-  output = replaceClassicPdbStreamBytes(
-    output,
-    pdb,
-    3,
-    module.moduleInfoOffset + 36,
-    updatedDbi
-  );
-  const updatedStreamSize = new Uint8Array(4);
-  new DataView(updatedStreamSize.buffer).setUint32(0, newStreamSize, true);
-  output = replaceClassicPdbDirectoryBytes(
-    output,
-    pdb,
-    4 + 4 * module.streamIndex,
-    updatedStreamSize
-  );
+  const output = writeClassicPdbStream(bytes, pdb, module.streamIndex, streamBytes);
   parseClassicPdb(output);
   return output;
 }

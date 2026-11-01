@@ -12,7 +12,8 @@ import {
   replaceClassicPdbModuleNames,
   replaceClassicPdbStringTableName,
   replaceClassicPdbSymbolName,
-  removeClassicPdbSymbol
+  removeClassicPdbSymbol,
+  insertClassicPdbPublicSymbol
 } from "../src/index.js";
 import {
   parseCodeViewC13Subsections,
@@ -93,6 +94,7 @@ function makeC13LineBytes({ twoChecksums = false, hasColumns = true } = {}) {
 function makeClassicPdbWithSymbols({
   crossBlockName = false,
   knownPrefix = false,
+  withSymbols = true,
   withC13 = false,
   lineInfo = false,
   twoChecksums = false,
@@ -100,7 +102,7 @@ function makeClassicPdbWithSymbols({
   trailingModuleBytes = new Uint8Array()
 } = {}) {
   const blockSize = 512;
-  const symbolBytes = crossBlockName ? 516 : 24;
+  const symbolBytes = crossBlockName ? 516 : withSymbols ? 24 : 0;
   const c13Bytes = lineInfo
     ? makeC13LineBytes({ twoChecksums, hasColumns: lineColumns })
     : withC13
@@ -159,27 +161,29 @@ function makeClassicPdbWithSymbols({
   bytes.set([0x74, 0x65, 0x73, 0x74, 0x2e, 0x6f, 0x62, 0x6a, 0],
     dbiOffset + 64 + 69);
 
-  symbolView.setUint32(0, 4, true);
   symbolStream.set(c13Bytes, symbolBytes);
   symbolStream.set(trailingModuleBytes, symbolBytes + c13Bytes.length);
-  if (crossBlockName) {
-    symbolView.setUint16(4, 490, true);
-    symbolView.setUint16(6, knownPrefix ? 0x110e : 0x7777, true);
-    if (knownPrefix) {
-      symbolView.setUint32(8, 1, true);
-      symbolView.setUint32(12, 0x20, true);
-      symbolView.setUint16(16, 1, true);
-      symbolStream.fill(0x61, 18, 495);
-    } else {
-      symbolStream.fill(0xaa, 8, symbolRecordOffset);
+  if (withSymbols) {
+    symbolView.setUint32(0, 4, true);
+    if (crossBlockName) {
+      symbolView.setUint16(4, 490, true);
+      symbolView.setUint16(6, knownPrefix ? 0x110e : 0x7777, true);
+      if (knownPrefix) {
+        symbolView.setUint32(8, 1, true);
+        symbolView.setUint32(12, 0x20, true);
+        symbolView.setUint16(16, 1, true);
+        symbolStream.fill(0x61, 18, 495);
+      } else {
+        symbolStream.fill(0xaa, 8, symbolRecordOffset);
+      }
     }
+    symbolView.setUint16(symbolRecordOffset, 18, true);
+    symbolView.setUint16(symbolRecordOffset + 2, 0x110e, true);
+    symbolView.setUint32(symbolRecordOffset + 4, 1, true);
+    symbolView.setUint32(symbolRecordOffset + 8, 0x20, true);
+    symbolView.setUint16(symbolRecordOffset + 12, 1, true);
+    symbolStream.set([0x70, 0x75, 0x62, 0, 0xf2, 0xf1], symbolRecordOffset + 14);
   }
-  symbolView.setUint16(symbolRecordOffset, 18, true);
-  symbolView.setUint16(symbolRecordOffset + 2, 0x110e, true);
-  symbolView.setUint32(symbolRecordOffset + 4, 1, true);
-  symbolView.setUint32(symbolRecordOffset + 8, 0x20, true);
-  symbolView.setUint16(symbolRecordOffset + 12, 1, true);
-  symbolStream.set([0x70, 0x75, 0x62, 0, 0xf2, 0xf1], symbolRecordOffset + 14);
   bytes.set(symbolStream.subarray(0, blockSize), blockSize * 7);
   if (crossBlockName) bytes.set(symbolStream.subarray(blockSize), blockSize * 8);
   return bytes;
@@ -413,6 +417,68 @@ test("classic PDB standalone symbols can be removed while preserving module data
   assert.equal(removedMultiBlockPdb.dbi.modules[0].symbolBytes, 496);
   assert.equal(removedMultiBlockPdb.dbi.modules[0].symbols.records.length, 1);
   assert.deepEqual(removedMultiBlockSymbol.subarray(-multiBlockOverlay.length), multiBlockOverlay);
+});
+
+test("classic PDB public symbols can be appended before module data", () => {
+  const original = makeClassicPdbWithSymbols({
+    lineInfo: true,
+    trailingModuleBytes: Uint8Array.of(0x31, 0x32, 0x33)
+  });
+  const originalPdb = parseClassicPdb(original);
+  const originalModule = originalPdb.dbi.modules[0];
+  const originalStream = originalPdb.streams[originalModule.streamIndex];
+  const rewritten = insertClassicPdbPublicSymbol(original, {
+    moduleIndex: 0,
+    flags: 3,
+    offset: 0x1234,
+    segment: 2,
+    name: "AddedPublic"
+  });
+  const rewrittenPdb = parseClassicPdb(rewritten);
+  const rewrittenModule = rewrittenPdb.dbi.modules[0];
+  const addedSymbol = rewrittenModule.symbols.records[1].decoded;
+  assert.equal(addedSymbol.kind, "public");
+  assert.equal(addedSymbol.name, "AddedPublic");
+  assert.equal(addedSymbol.flags, 3);
+  assert.equal(addedSymbol.offset, 0x1234);
+  assert.equal(addedSymbol.segment, 2);
+  assert.deepEqual(
+    rewrittenPdb.streams[rewrittenModule.streamIndex].bytes.subarray(rewrittenModule.symbolBytes),
+    originalStream.bytes.subarray(originalModule.symbolBytes)
+  );
+
+  const moduleWithoutSymbols = makeClassicPdbWithSymbols({
+    withSymbols: false,
+    lineInfo: true
+  });
+  const moduleWithoutSymbolsPdb = parseClassicPdb(moduleWithoutSymbols);
+  const emptySymbolsModule = moduleWithoutSymbolsPdb.dbi.modules[0];
+  assert.equal(emptySymbolsModule.symbols, null);
+  const firstSymbolPdb = parseClassicPdb(insertClassicPdbPublicSymbol(moduleWithoutSymbols, {
+    moduleIndex: 0,
+    offset: 7,
+    segment: 1,
+    name: "FirstPublic"
+  }));
+  const firstSymbolModule = firstSymbolPdb.dbi.modules[0];
+  assert.ok(firstSymbolModule.symbolBytes > 4);
+  assert.equal(firstSymbolModule.symbols.signature, 4);
+  assert.equal(firstSymbolModule.symbols.records[0].decoded.name, "FirstPublic");
+  assert.deepEqual(
+    firstSymbolPdb.streams[firstSymbolModule.streamIndex].bytes.subarray(
+      firstSymbolModule.symbolBytes
+    ),
+    moduleWithoutSymbolsPdb.streams[emptySymbolsModule.streamIndex].bytes
+  );
+
+  const unchanged = Uint8Array.from(original);
+  assert.throws(() => insertClassicPdbPublicSymbol(original, {
+    moduleIndex: 0,
+    offset: 1,
+    segment: 0x10000,
+    name: "Invalid"
+  }), /unsigned 16-bit integer/);
+  assert.deepEqual(original, unchanged);
 });
 
 test("classic PDB symbol resizing preserves trailing C13 module data", () => {
