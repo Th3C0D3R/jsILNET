@@ -668,7 +668,8 @@ test("strong-name signed PE32+ assemblies load and execute in .NET", {
       "[EnumData(Outer.Mode.Value)]",
       "public class NestedEnumTarget { }",
       "[System.AttributeUsage(System.AttributeTargets.Class)]",
-      "public sealed class GenericDataAttribute<T> : System.Attribute",
+      "public abstract class GenericBaseAttribute<T> : System.Attribute { }",
+      "public sealed class GenericDataAttribute<T> : GenericBaseAttribute<T>",
       "{",
       "    public GenericDataAttribute() { }",
       "}",
@@ -724,6 +725,9 @@ test("strong-name signed PE32+ assemblies load and execute in .NET", {
     const invalidGenericAttributeType = invalidGenericAttributeAssembly.types.find((type) =>
       type.name === "GenericDataAttribute`1"
     );
+    const invalidGenericAttributeBase = invalidGenericAttributeAssembly.types.find((type) =>
+      type.name === "GenericBaseAttribute`1"
+    );
     const invalidGenericAttribute = invalidGenericAttributeAssembly.customAttributes.find((attribute) => {
       if (attribute.constructor.table !== 10) return false;
       const constructor = invalidGenericAttributeAssembly.memberRefs.find((reference) =>
@@ -740,9 +744,10 @@ test("strong-name signed PE32+ assemblies load and execute in .NET", {
       type.namespace === "System" && type.name === "Object"
     );
     assert.ok(invalidGenericAttributeType);
+    assert.ok(invalidGenericAttributeBase);
     assert.ok(invalidGenericAttribute);
     assert.ok(genericObjectTypeRef);
-    invalidGenericAttributeType.extends = {
+    invalidGenericAttributeBase.extends = {
       table: 1,
       rid: genericObjectTypeRef.rid
     };

@@ -1059,7 +1059,7 @@ function getLocalCustomAttributeBaseStatus(assembly, type, visited = new Set()) 
     throw new FormatError("Custom-attribute constructor type inheritance contains a cycle");
   }
   visited.add(type.rid);
-  const base = type.extends;
+  const base = getManagedTypeDefinitionReference(assembly, type.extends);
   if (base?.table === 2) {
     return getLocalCustomAttributeBaseStatus(
       assembly,
