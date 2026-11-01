@@ -31,6 +31,7 @@ import {
 import { parseEmbeddedPortablePdbData } from "../src/pe/headers.js";
 import {
   decodePortablePdbCustomDebugInformation,
+  removeEmbeddedPortablePdbMethod,
   refreshEmbeddedPortablePdbId,
   replaceEmbeddedPortablePdbMethodOffsets
 } from "../src/metadata/portable-pdb.js";
@@ -1297,6 +1298,113 @@ test("MethodDef removal removes embedded Portable PDB local scopes", {
       { encoding: "utf8", timeout: 120_000 }
     );
     assert.equal(load.status, 0, load.stderr || load.stdout || load.error?.message);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Portable PDB method removal prunes state-machine and async stepping records", {
+  skip: dotnetAvailable ? false : ".NET SDK/runtime is unavailable"
+}, async () => {
+  const directory = await mkdtemp(join(tmpdir(), "jsilnet-pdb-async-removal-"));
+  try {
+    const project = join(directory, "AsyncFixture.csproj");
+    const output = join(directory, "out");
+    await writeFile(project, [
+      "<Project Sdk=\"Microsoft.NET.Sdk\">",
+      "  <PropertyGroup>",
+      `    <TargetFramework>${targetFramework}</TargetFramework>`,
+      "    <DebugType>embedded</DebugType>",
+      "  </PropertyGroup>",
+      "</Project>"
+    ].join("\n"));
+    await writeFile(join(directory, "Fixture.cs"), [
+      "public static class AsyncFixture {",
+      "  public static async System.Threading.Tasks.Task<int> AsyncGone() {",
+      "    await System.Threading.Tasks.Task.Yield();",
+      "    return 17;",
+      "  }",
+      "  public static async System.Threading.Tasks.Task<int> AsyncKept() {",
+      "    await System.Threading.Tasks.Task.Yield();",
+      "    return 23;",
+      "  }",
+      "}"
+    ].join("\n"));
+    const build = spawnSync(
+      "dotnet",
+      ["build", project, "--configuration", "Debug", "--output", output, "--nologo"],
+      { encoding: "utf8", timeout: 120_000 }
+    );
+    assert.equal(build.status, 0, build.stderr || build.stdout || build.error?.message);
+
+    const assembly = parseAssembly(Uint8Array.from(
+      await readFile(join(output, "AsyncFixture.dll"))
+    ));
+    const method = assembly.methods.find((item) => item.name === "AsyncGone");
+    const pdb = assembly.pe.debugDirectoryEntries.find((entry) =>
+      entry.embeddedPortablePdb
+    )?.embeddedPortablePdb;
+    assert.ok(method);
+    assert.ok(pdb);
+    const stateMachineRows = pdb.tables.rows.get(54) ?? [];
+    assert.ok(stateMachineRows.some((row) =>
+      row.KickoffMethod.rid === method.rid
+    ));
+    assert.ok(stateMachineRows.length > 1);
+    const expectedStateMachineRows = stateMachineRows
+      .filter((row) =>
+        row.MoveNextMethod.rid !== method.rid &&
+        row.KickoffMethod.rid !== method.rid
+      )
+      .map((row) => ({
+        moveNext: row.MoveNextMethod.rid > method.rid
+          ? row.MoveNextMethod.rid - 1
+          : row.MoveNextMethod.rid,
+        kickoff: row.KickoffMethod.rid > method.rid
+          ? row.KickoffMethod.rid - 1
+          : row.KickoffMethod.rid
+      }));
+    const asyncStepping = pdb.customDebugInformation.find((record) =>
+      record.asyncMethodSteppingInformation
+    );
+    assert.ok(asyncStepping?.asyncMethodSteppingInformation.steps.length > 0);
+    asyncStepping.asyncMethodSteppingInformation.steps[0].methodRid = method.rid;
+    const expectedAsyncRecordCount = pdb.customDebugInformation.filter((record) =>
+      record.asyncMethodSteppingInformation &&
+      !record.asyncMethodSteppingInformation.steps.some((step) =>
+        step.methodRid === method.rid
+      )
+    ).length;
+
+    const oldCounts = [...assembly.tables.counts];
+    const newCounts = [...oldCounts];
+    newCounts[6]--;
+    const rewrittenPdb = removeEmbeddedPortablePdbMethod(
+      pdb,
+      method.rid,
+      oldCounts,
+      newCounts
+    );
+    const reparsedPdb = parseEmbeddedPortablePdbData(
+      rewrittenPdb,
+      0,
+      rewrittenPdb.length
+    );
+    assert.equal(reparsedPdb.tables.counts[49], newCounts[6]);
+    assert.equal(reparsedPdb.tables.counts[54], expectedStateMachineRows.length);
+    assert.deepEqual(
+      (reparsedPdb.tables.rows.get(54) ?? []).map((row) => ({
+        moveNext: row.MoveNextMethod.rid,
+        kickoff: row.KickoffMethod.rid
+      })),
+      expectedStateMachineRows
+    );
+    assert.equal(reparsedPdb.customDebugInformation.filter((record) =>
+      record.asyncMethodSteppingInformation
+    ).length, expectedAsyncRecordCount);
+    for (const [table, count] of reparsedPdb.rowCounts) {
+      assert.equal(count, newCounts[table]);
+    }
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

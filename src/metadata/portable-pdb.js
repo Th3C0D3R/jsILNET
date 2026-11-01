@@ -2453,29 +2453,40 @@ export function removeEmbeddedPortablePdbMethod(pdb, methodRid, oldCounts, newCo
   if (remainingScopes.length > 0) rows.set(50, remainingScopes);
   else rows.delete(50);
   const stateMachineRows = rows.get(54) ?? [];
-  if (stateMachineRows.some((stateMachine) =>
-    stateMachine.MoveNextMethod.rid === methodRid ||
-    stateMachine.KickoffMethod.rid === methodRid
-  )) {
-    throw new UnsupportedFormatError(
-      "Portable PDB method removal cannot discard method-scoped debug records"
-    );
+  if (stateMachineRows.length !== (pdb.tables.counts[54] ?? 0)) {
+    throw new FormatError("Portable PDB StateMachineMethod row count is inconsistent");
   }
-  if (rows.has(54)) {
-    rows.set(54, stateMachineRows.map((stateMachine) => ({
+  const remainingStateMachineRows = stateMachineRows
+    .filter((stateMachine) =>
+      stateMachine.MoveNextMethod.rid !== methodRid &&
+      stateMachine.KickoffMethod.rid !== methodRid
+    )
+    .map((stateMachine, index) => ({
       ...stateMachine,
+      rid: index + 1,
       MoveNextMethod: remapMethodReference(stateMachine.MoveNextMethod),
       KickoffMethod: remapMethodReference(stateMachine.KickoffMethod)
-    })));
-  }
+    }));
+  if (remainingStateMachineRows.length > 0) rows.set(54, remainingStateMachineRows);
+  else rows.delete(54);
   const customDebugRows = rows.get(55) ?? [];
   if (!canRemapMethodScopedCustomDebugInformation(pdb)) {
     throw new UnsupportedFormatError(
       "Portable PDB method remapping cannot update method-scoped CustomDebugInformation"
     );
   }
+  const asyncRecordsReferencingRemovedMethod = new Set(
+    pdb.customDebugInformation
+      .filter((record) =>
+        record.asyncMethodSteppingInformation?.steps.some((step) =>
+          step.methodRid === methodRid
+        )
+      )
+      .map((record) => record.rid)
+  );
   const survivingCustomDebugRows = customDebugRows.filter((record) => {
     const target = record.Parent.target;
+    if (asyncRecordsReferencingRemovedMethod.has(record.rid)) return false;
     if (target?.table === 6 && target.rid === methodRid) return false;
     if (target?.table === 50 && removedScopeRids.has(target.rid)) return false;
     if (target?.table === 51 && removedVariableRids.has(target.rid)) return false;
@@ -2536,6 +2547,7 @@ export function removeEmbeddedPortablePdbMethod(pdb, methodRid, oldCounts, newCo
   tableCounts[50] = remainingScopes.length;
   tableCounts[51] = remainingVariables.length;
   tableCounts[52] = remainingConstants.length;
+  tableCounts[54] = remainingStateMachineRows.length;
   tableCounts[55] = remappedCustomDebugRows.length;
   let updatedValid = pdb.tables.valid;
   for (const [table, count] of [
@@ -2543,6 +2555,7 @@ export function removeEmbeddedPortablePdbMethod(pdb, methodRid, oldCounts, newCo
     [50, tableCounts[50]],
     [51, tableCounts[51]],
     [52, tableCounts[52]],
+    [54, tableCounts[54]],
     [55, tableCounts[55]]
   ]) {
     updatedValid = count === 0
