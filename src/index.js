@@ -1026,16 +1026,45 @@ function getCustomAttributeArgumentType(assembly, signatureType, resolveEnum) {
   throw new UnsupportedFormatError(`Unsupported custom-attribute constructor parameter type ${signatureType.kind}`);
 }
 
+function getLocalCustomAttributeBaseStatus(assembly, type, visited = new Set()) {
+  if (!type) return false;
+  const name = getManagedTypeDefinitionName(assembly, type);
+  if (name === "System.Attribute") return true;
+  if (visited.has(type.rid)) {
+    throw new FormatError("Custom-attribute constructor type inheritance contains a cycle");
+  }
+  visited.add(type.rid);
+  const base = type.extends;
+  if (base?.table === 2) {
+    return getLocalCustomAttributeBaseStatus(
+      assembly,
+      assembly.types[base.rid - 1],
+      visited
+    );
+  }
+  if (base?.table === 1) {
+    const baseName = getManagedTypeName(assembly, base);
+    if (baseName === "System.Attribute") return true;
+    if (baseName === "System.Object") return false;
+  }
+  return null;
+}
+
 function getCustomAttributeConstructor(assembly, attribute, resolveEnum) {
   const constructor = attribute.constructor;
   let method;
   let ownerType;
+  let localOwnerType = null;
   if (constructor?.table === 6) {
     method = assembly.methods[constructor.rid - 1];
-    ownerType = assembly.types.find((type) => type.methodRids.includes(constructor.rid));
+    localOwnerType = assembly.types.find((type) => type.methodRids.includes(constructor.rid));
+    ownerType = localOwnerType;
   } else if (constructor?.table === 10) {
     method = assembly.memberRefs.find((reference) => reference.rid === constructor.rid);
     ownerType = method ? getManagedTypeName(assembly, method.parent) : null;
+    if (method?.parent.table === 2) {
+      localOwnerType = assembly.types[method.parent.rid - 1] ?? null;
+    }
   }
   if (!method || method.name !== ".ctor") {
     throw new FormatError(`CustomAttribute row ${attribute.rid} does not reference a supported constructor`);
@@ -1051,6 +1080,11 @@ function getCustomAttributeConstructor(assembly, attribute, resolveEnum) {
   }
   if (constructor.table === 6 && !ownerType) {
     throw new FormatError(`CustomAttribute row ${attribute.rid} constructor has no declaring type`);
+  }
+  if (localOwnerType && getLocalCustomAttributeBaseStatus(assembly, localOwnerType) === false) {
+    throw new FormatError(
+      `CustomAttribute row ${attribute.rid} constructor type does not derive from System.Attribute`
+    );
   }
   return {
     signature,

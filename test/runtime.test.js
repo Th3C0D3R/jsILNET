@@ -623,7 +623,8 @@ test("strong-name signed PE32+ assemblies load and execute in .NET", {
     );
 
     const assemblyPath = join(libraryDirectory, "RuntimeLibrary.dll");
-    const assembly = parseAssembly(await readFile(assemblyPath));
+    const assemblyBytes = Uint8Array.from(await readFile(assemblyPath));
+    const assembly = parseAssembly(assemblyBytes);
     assert.equal(assembly.pe.optionalHeaderMagic, 0x20b);
     const enumDataAttribute = assembly.customAttributes.find((attribute) =>
       assembly.types.some((type) =>
@@ -636,6 +637,28 @@ test("strong-name signed PE32+ assemblies load and execute in .NET", {
     assert.equal(
       assembly.parseCustomAttribute(enumDataAttribute.rid).fixedArguments[0],
       2
+    );
+    const invalidAttributeAssembly = parseAssembly(assemblyBytes);
+    const invalidAttribute = invalidAttributeAssembly.customAttributes.find((attribute) =>
+      invalidAttributeAssembly.types.some((type) =>
+        type.name === "EnumDataAttribute" &&
+        type.methodRids.includes(attribute.constructor.rid) &&
+        attribute.constructor.table === 6
+      )
+    );
+    const invalidAttributeType = invalidAttributeAssembly.types.find((type) =>
+      type.name === "EnumDataAttribute"
+    );
+    const objectTypeRef = invalidAttributeAssembly.typeRefs.find((type) =>
+      type.namespace === "System" && type.name === "Object"
+    );
+    assert.ok(invalidAttribute);
+    assert.ok(invalidAttributeType);
+    assert.ok(objectTypeRef);
+    invalidAttributeType.extends = { table: 1, rid: objectTypeRef.rid };
+    assert.throws(
+      () => invalidAttributeAssembly.parseCustomAttribute(invalidAttribute.rid),
+      /does not derive from System.Attribute/
     );
     const embeddedPdb = assembly.pe.debugDirectoryEntries.find((entry) =>
       entry.type === 17
