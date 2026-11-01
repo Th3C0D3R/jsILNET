@@ -2314,6 +2314,26 @@ export function removeEmbeddedPortablePdbSource(pdb, documentRid) {
   return removePortablePdbCustomDebugInformation(pdb, debugInfo);
 }
 
+export function removeEmbeddedPortablePdbCustomDebugInformation(pdb, recordRid) {
+  if (!pdb?.metadataRoot?.streams || !(pdb.tables?.rows instanceof Map) ||
+      !Array.isArray(pdb.tables.counts) || !Array.isArray(pdb.customDebugInformation)) {
+    throw new TypeError("Portable PDB custom-debug editing requires parsed PDB data");
+  }
+  if (!Number.isInteger(recordRid) || recordRid < 1 ||
+      recordRid > pdb.tables.counts[55]) {
+    throw new RangeError(
+      `Invalid Portable PDB CustomDebugInformation row ID ${recordRid}`
+    );
+  }
+  const debugInfo = pdb.customDebugInformation.find((record) => record.rid === recordRid);
+  if (!debugInfo) {
+    throw new FormatError(
+      `Portable PDB CustomDebugInformation row ${recordRid} is missing its decoded record`
+    );
+  }
+  return removePortablePdbCustomDebugInformation(pdb, debugInfo);
+}
+
 function removePortablePdbCustomDebugInformation(pdb, debugInfo) {
   const rowsForDebugInformation = pdb.tables.rows.get(55) ?? [];
   if (rowsForDebugInformation.length !== pdb.tables.counts[55]) {

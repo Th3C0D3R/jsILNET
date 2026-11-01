@@ -22,6 +22,7 @@ import {
   addEmbeddedPortablePdbSourceLink,
   removeEmbeddedPortablePdbSourceLink,
   removeEmbeddedPortablePdbSource,
+  removeEmbeddedPortablePdbCustomDebugInformation,
   addEmbeddedPortablePdbSource,
   replaceEmbeddedPortablePdbSource,
   serializeEmbeddedPortablePdb
@@ -577,6 +578,81 @@ test("adding an embedded Portable PDB Document updates the PDB and PE identity",
     const originalPdb = assembly.pe.debugDirectoryEntries[debugIndex].embeddedPortablePdb;
     const originalDocumentCount = originalPdb.documents.length;
     const originalId = Uint8Array.from(originalPdb.id);
+    const removableDebugInfo = originalPdb.customDebugInformation[0];
+    assert.ok(removableDebugInfo);
+    const removedDebugInfoBytes = removeEmbeddedPortablePdbCustomDebugInformation(
+      originalPdb,
+      removableDebugInfo.rid
+    );
+    const removedDebugInfoPdb = parseEmbeddedPortablePdbData(
+      removedDebugInfoBytes,
+      0,
+      removedDebugInfoBytes.length
+    );
+    assert.equal(
+      removedDebugInfoPdb.customDebugInformation.length,
+      originalPdb.customDebugInformation.length - 1
+    );
+    const opaqueStreams = new Map(
+      [...originalPdb.metadataRoot.streams].map(([name, stream]) =>
+        [name, { ...stream, bytes: Uint8Array.from(stream.bytes) }]
+      )
+    );
+    const guidStream = opaqueStreams.get("#GUID");
+    const opaqueKindGuid = Uint8Array.from({ length: 16 }, (_, index) => 0xa0 + index);
+    const opaqueKindIndex = guidStream.bytes.length / 16 + 1;
+    const expandedGuidHeap = new Uint8Array(guidStream.bytes.length + 16);
+    expandedGuidHeap.set(guidStream.bytes);
+    expandedGuidHeap.set(opaqueKindGuid, guidStream.bytes.length);
+    guidStream.bytes = expandedGuidHeap;
+    const opaqueRows = new Map(originalPdb.tables.rows);
+    opaqueRows.set(55, originalPdb.tables.rows.get(55).map((row) =>
+      row.rid === removableDebugInfo.rid ? { ...row, Kind: opaqueKindIndex } : { ...row }
+    ));
+    const opaquePdbBytes = serializeEmbeddedPortablePdb({
+      ...originalPdb,
+      metadataRoot: { ...originalPdb.metadataRoot, streams: opaqueStreams },
+      tables: { ...originalPdb.tables, rows: opaqueRows }
+    });
+    const opaquePdb = parseEmbeddedPortablePdbData(
+      opaquePdbBytes,
+      0,
+      opaquePdbBytes.length
+    );
+    assert.equal(
+      opaquePdb.customDebugInformation.find((record) =>
+        record.rid === removableDebugInfo.rid
+      ).kind,
+      "a3a2a1a0-a5a4-a7a6-a8a9-aaabacadaeaf"
+    );
+    const opaquePdbWithoutRecordBytes = removeEmbeddedPortablePdbCustomDebugInformation(
+      opaquePdb,
+      removableDebugInfo.rid
+    );
+    const opaquePdbWithoutRecord = parseEmbeddedPortablePdbData(
+      opaquePdbWithoutRecordBytes,
+      0,
+      opaquePdbWithoutRecordBytes.length
+    );
+    assert.equal(
+      opaquePdbWithoutRecord.customDebugInformation.length,
+      originalPdb.customDebugInformation.length - 1
+    );
+    const debugInfoAssembly = parseAssembly(assembly.serialize());
+    const debugInfoDebugIndex = debugInfoAssembly.pe.debugDirectoryEntries.findIndex(
+      (entry) => entry.embeddedPortablePdb
+    );
+    debugInfoAssembly.removeEmbeddedPortablePdbCustomDebugInformation(
+      debugInfoDebugIndex,
+      removableDebugInfo.rid
+    );
+    const rewrittenDebugInfoPdb = parseAssembly(debugInfoAssembly.serialize())
+      .pe.debugDirectoryEntries.find((entry) => entry.embeddedPortablePdb)
+      .embeddedPortablePdb;
+    assert.equal(
+      rewrittenDebugInfoPdb.customDebugInformation.length,
+      originalPdb.customDebugInformation.length - 1
+    );
     const referencedDocumentRid = originalPdb.methodDebugInformation.find((method) =>
       method.sequencePoints.length > 0
     )?.sequencePoints[0].documentRid;
