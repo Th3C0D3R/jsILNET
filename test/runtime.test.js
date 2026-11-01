@@ -269,6 +269,121 @@ test("Portable PDB compilation CDI decoders validate strings and record bounds",
   assert.throws(() => decodeLambdaMap(Uint8Array.of(1, 0, 0), 0), /must belong to a MethodDef/);
 });
 
+test("MethodDef insertion and removal remap recognized method-scoped CDI", {
+  skip: dotnetAvailable ? false : ".NET SDK/runtime is unavailable"
+}, async () => {
+  const directory = await mkdtemp(join(tmpdir(), "jsilnet-pdb-method-cdi-"));
+  try {
+    const project = join(directory, "PdbMethodCdi.csproj");
+    const output = join(directory, "out");
+    await writeFile(project, [
+      "<Project Sdk=\"Microsoft.NET.Sdk\">",
+      "  <PropertyGroup>",
+      `    <TargetFramework>${targetFramework}</TargetFramework>`,
+      "    <DebugType>embedded</DebugType>",
+      "  </PropertyGroup>",
+      "</Project>"
+    ].join("\n"));
+    await writeFile(
+      join(directory, "Fixture.cs"),
+      "public abstract class PdbInsertedMethodOwner {} " +
+      "public class PdbMethodCdiFixture { " +
+      "public static int Compute(int argument) { int copy = argument; return copy; } }"
+    );
+    const build = spawnSync(
+      "dotnet",
+      ["build", project, "--configuration", "Debug", "--output", output, "--nologo"],
+      { encoding: "utf8", timeout: 120_000 }
+    );
+    assert.equal(build.status, 0, build.stderr || build.stdout || build.error?.message);
+
+    const original = Uint8Array.from(await readFile(join(output, "PdbMethodCdi.dll")));
+    const assembly = parseAssembly(original);
+    const method = assembly.methods.find((item) => item.name === "Compute");
+    const methodRid = method?.rid;
+    const owner = assembly.types.find((type) => type.name === "PdbInsertedMethodOwner");
+    const initialPdb = assembly.pe.debugDirectoryEntries.find((entry) =>
+      entry.embeddedPortablePdb
+    )?.embeddedPortablePdb;
+    const localSlotRecord = initialPdb?.customDebugInformation.find((record) =>
+      record.editAndContinueLocalSlotMap && record.Parent.target?.rid === methodRid
+    );
+    assert.ok(method);
+    assert.ok(owner);
+    assert.ok(localSlotRecord);
+    const originalSlotMap = localSlotRecord.editAndContinueLocalSlotMap;
+
+    const inserted = assembly.insertMethod({
+      owner: { table: "TypeDef", rid: owner.rid },
+      name: "Inserted",
+      flags: 0x04c6,
+      signature: Uint8Array.of(0x20, 0x00, 0x01)
+    });
+    const insertedAssembly = parseAssembly(assembly.serialize());
+    const insertedPdb = insertedAssembly.pe.debugDirectoryEntries.find((entry) =>
+      entry.embeddedPortablePdb
+    )?.embeddedPortablePdb;
+    const shiftedSlotRecord = insertedPdb?.customDebugInformation.find((record) =>
+      record.editAndContinueLocalSlotMap &&
+      record.Parent.target?.rid === methodRid + 1
+    );
+    assert.ok(shiftedSlotRecord);
+    assert.equal(shiftedSlotRecord.Parent.target?.rid, methodRid + 1);
+    assert.deepEqual(shiftedSlotRecord?.editAndContinueLocalSlotMap, originalSlotMap);
+
+    const cdiRemovalAssembly = parseAssembly(assembly.serialize());
+    const cdiRemovalDebugIndex = cdiRemovalAssembly.pe.debugDirectoryEntries.findIndex((entry) =>
+      entry.embeddedPortablePdb
+    );
+    const cdiRemovalPdb = cdiRemovalAssembly.pe.debugDirectoryEntries[cdiRemovalDebugIndex]
+      .embeddedPortablePdb;
+    const methodScopedRecord = cdiRemovalPdb.customDebugInformation.find((record) =>
+      record.editAndContinueLocalSlotMap
+    );
+    const insertedRid = inserted.token & 0x00ffffff;
+    const insertedParent = {
+      raw: encodeCodedIndex(6, insertedRid, "HasCustomDebugInformation"),
+      target: { table: 6, tableName: "MethodDef", rid: insertedRid }
+    };
+    methodScopedRecord.Parent = insertedParent;
+    const customDebugRows = cdiRemovalPdb.tables.rows.get(55).map((row) =>
+      row.rid === methodScopedRecord.rid ? { ...row, Parent: insertedParent } : row
+    ).sort((left, right) =>
+      left.Parent.raw - right.Parent.raw || left.rid - right.rid
+    ).map((row, index) => ({ ...row, rid: index + 1 }));
+    cdiRemovalPdb.customDebugInformation = cdiRemovalPdb.customDebugInformation
+      .sort((left, right) =>
+        left.Parent.raw - right.Parent.raw || left.rid - right.rid
+      )
+      .map((record, index) => ({ ...record, rid: index + 1 }));
+    cdiRemovalPdb.tables.rows.set(55, customDebugRows);
+    cdiRemovalAssembly.replaceEmbeddedPortablePdb(
+      cdiRemovalDebugIndex,
+      serializeEmbeddedPortablePdb(cdiRemovalPdb)
+    );
+    cdiRemovalAssembly.removeMethod(insertedRid);
+    const cdiRemovedPdb = parseAssembly(cdiRemovalAssembly.serialize())
+      .pe.debugDirectoryEntries.find((entry) => entry.embeddedPortablePdb)
+      .embeddedPortablePdb;
+    assert.equal(cdiRemovedPdb.customDebugInformation.some((record) =>
+      record.editAndContinueLocalSlotMap
+    ), false);
+
+    assembly.removeMethod(inserted.token & 0x00ffffff);
+    const removedAssembly = parseAssembly(assembly.serialize());
+    const removedPdb = removedAssembly.pe.debugDirectoryEntries.find((entry) =>
+      entry.embeddedPortablePdb
+    )?.embeddedPortablePdb;
+    const restoredSlotRecord = removedPdb?.customDebugInformation.find((record) =>
+      record.editAndContinueLocalSlotMap && record.Parent.target?.rid === methodRid
+    );
+    assert.equal(restoredSlotRecord?.Parent.target?.rid, methodRid);
+    assert.deepEqual(restoredSlotRecord?.editAndContinueLocalSlotMap, originalSlotMap);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("trailing abstract MethodDef removal updates an embedded Portable PDB", {
   skip: dotnetAvailable ? false : ".NET SDK/runtime is unavailable"
 }, async () => {

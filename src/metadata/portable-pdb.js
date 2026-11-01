@@ -406,6 +406,31 @@ export function decodePortablePdbCustomDebugInformation(row, heaps, documentCoun
   return { kind };
 }
 
+function canRemapMethodScopedCustomDebugInformation(pdb) {
+  const recognizedRecords = new Set(
+    pdb.customDebugInformation
+      .filter((record) =>
+        record.Parent.target?.table === 6 &&
+        (Array.isArray(record.stateMachineHoistedLocalScopes) ||
+         record.editAndContinueLocalSlotMap ||
+         record.editAndContinueLambdaAndClosureMap)
+      )
+      .map((record) => record.rid)
+  );
+  return (pdb.tables.rows.get(55) ?? []).every((record) =>
+    record.Parent.target?.table !== 6 || recognizedRecords.has(record.rid)
+  );
+}
+
+function sortPortablePdbCustomDebugInformation(records) {
+  return records
+    .slice()
+    .sort((left, right) =>
+      left.Parent.raw - right.Parent.raw || left.rid - right.rid
+    )
+    .map((record, index) => ({ ...record, rid: index + 1 }));
+}
+
 export function decodePortablePdbDocumentName(blob, heaps) {
   if (blob.length < 2) {
     throw new FormatError("Portable PDB document name is truncated", {
@@ -1120,11 +1145,26 @@ export function insertEmbeddedPortablePdbMethod(pdb, methodRid, oldCounts, newCo
     })));
   }
   const customDebugRows = rows.get(55) ?? [];
-  if (customDebugRows.some((record) => record.Parent.target?.table === 6)) {
+  if (!canRemapMethodScopedCustomDebugInformation(pdb)) {
     throw new UnsupportedFormatError(
       "Portable PDB method remapping cannot update method-scoped CustomDebugInformation"
     );
   }
+  const remappedCustomDebugRows = sortPortablePdbCustomDebugInformation(
+    customDebugRows.map((record) => {
+      const target = record.Parent.target;
+      if (target?.table !== 6 || target.rid < methodRid) return { ...record };
+      const rid = target.rid + 1;
+      return {
+        ...record,
+        Parent: {
+          raw: encodeCodedIndex(6, rid, "HasCustomDebugInformation"),
+          target: { ...target, rid }
+        }
+      };
+    })
+  );
+  if (rows.has(55)) rows.set(55, remappedCustomDebugRows);
 
   const rowCounts = new Map([...pdb.rowCounts].map(([table]) =>
     [table, newCounts[table]]
@@ -1371,35 +1411,36 @@ export function removeEmbeddedPortablePdbMethod(pdb, methodRid, oldCounts, newCo
     })));
   }
   const customDebugRows = rows.get(55) ?? [];
-  if (customDebugRows.some((record) =>
-    record.Parent.target?.table === 6
-  )) {
+  if (!canRemapMethodScopedCustomDebugInformation(pdb)) {
     throw new UnsupportedFormatError(
       "Portable PDB method remapping cannot update method-scoped CustomDebugInformation"
     );
   }
-  const remappedCustomDebugRows = customDebugRows.map((record) => {
-    const target = record.Parent.target;
-    if (target?.table !== 6 || target.rid < methodRid) return { ...record };
-    const rid = target.rid - 1;
-    return {
-      ...record,
-      Parent: {
-        raw: encodeCodedIndex(6, rid, "HasCustomDebugInformation"),
-        target: { ...target, rid }
-      }
-    };
-  });
-  let previousCustomDebugParent = 0;
-  for (const record of remappedCustomDebugRows) {
-    if (record.Parent.raw < previousCustomDebugParent) {
-      throw new UnsupportedFormatError(
-        "Portable PDB method remapping would violate CustomDebugInformation order"
-      );
-    }
-    previousCustomDebugParent = record.Parent.raw;
-  }
-  if (rows.has(55)) rows.set(55, remappedCustomDebugRows);
+  const remappedCustomDebugRows = sortPortablePdbCustomDebugInformation(
+    customDebugRows
+      .filter((record) =>
+        record.Parent.target?.table !== 6 || record.Parent.target.rid !== methodRid
+      )
+      .map((record) => {
+        const target = record.Parent.target;
+        const rid = target?.table === 6 && target.rid > methodRid
+          ? target.rid - 1
+          : target?.rid;
+        return {
+          ...record,
+          ...(target?.table === 6 && rid !== target.rid
+            ? {
+                Parent: {
+                  raw: encodeCodedIndex(6, rid, "HasCustomDebugInformation"),
+                  target: { ...target, rid }
+                }
+              }
+            : {})
+      };
+      })
+  );
+  if (remappedCustomDebugRows.length > 0) rows.set(55, remappedCustomDebugRows);
+  else rows.delete(55);
 
   const rowCounts = new Map([...pdb.rowCounts].map(([table]) =>
     [table, newCounts[table]]
@@ -1409,9 +1450,13 @@ export function removeEmbeddedPortablePdbMethod(pdb, methodRid, oldCounts, newCo
     tableCounts[table] = newCounts[table];
   }
   tableCounts[49] = methodRows.length > 0 ? methodRows.length - 1 : 0;
+  tableCounts[55] = remappedCustomDebugRows.length;
   const valid = tableCounts[49] === 0
     ? pdb.tables.valid & ~(1n << 49n)
     : pdb.tables.valid;
+  const updatedValid = tableCounts[55] === 0
+    ? valid & ~(1n << 55n)
+    : valid | (1n << 55n);
 
   const pdbStream = new Uint8Array(32 + rowCounts.size * 4);
   pdbStream.set(pdb.id);
@@ -1437,7 +1482,7 @@ export function removeEmbeddedPortablePdbMethod(pdb, methodRid, oldCounts, newCo
     ...pdb,
     metadataRoot: { ...pdb.metadataRoot, streams },
     rowCounts,
-    tables: { ...pdb.tables, rows, counts: tableCounts, valid }
+    tables: { ...pdb.tables, rows, counts: tableCounts, valid: updatedValid }
   });
 }
 
