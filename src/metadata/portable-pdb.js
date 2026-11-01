@@ -2145,6 +2145,42 @@ export function replaceEmbeddedPortablePdbLocalConstant(pdb, localConstantRid, o
   });
 }
 
+export function replaceEmbeddedPortablePdbImportScope(pdb, importScopeRid, options) {
+  if (!pdb?.metadataRoot?.streams || !(pdb.tables?.rows instanceof Map) ||
+      !Array.isArray(pdb.tables.counts)) {
+    throw new TypeError("Portable PDB ImportScope editing requires parsed PDB data");
+  }
+  if (!Number.isInteger(importScopeRid) || importScopeRid < 1 ||
+      importScopeRid > (pdb.tables.counts[53] ?? 0)) {
+    throw new RangeError(`Invalid Portable PDB ImportScope row ID ${importScopeRid}`);
+  }
+  if (!options || typeof options !== "object" || Array.isArray(options) ||
+      Object.keys(options).length !== 1 || !Object.hasOwn(options, "parentRid")) {
+    throw new TypeError("Portable PDB ImportScope replacement requires parentRid");
+  }
+  const scopes = pdb.tables.rows.get(53) ?? [];
+  const original = scopes[importScopeRid - 1];
+  if (!original || original.rid !== importScopeRid) {
+    throw new FormatError(`Portable PDB ImportScope row ${importScopeRid} is missing`);
+  }
+  if (!Number.isInteger(options.parentRid) || options.parentRid < 0 ||
+      options.parentRid > scopes.length) {
+    throw new RangeError("Portable PDB ImportScope parentRid is out of range");
+  }
+  const updatedScopes = scopes.map((scope) =>
+    scope.rid === importScopeRid
+      ? { ...scope, Parent: { ...scope.Parent, raw: options.parentRid, rid: options.parentRid } }
+      : { ...scope }
+  );
+  validateImportScopes(updatedScopes);
+  const rows = new Map(pdb.tables.rows);
+  rows.set(53, updatedScopes);
+  return serializeEmbeddedPortablePdb({
+    ...pdb,
+    tables: { ...pdb.tables, rows }
+  });
+}
+
 export function replaceEmbeddedPortablePdbMethodOffsets(
   pdb,
   methodRid,

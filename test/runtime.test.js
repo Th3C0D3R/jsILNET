@@ -28,6 +28,7 @@ import {
   replaceEmbeddedPortablePdbLocalConstant,
   replaceEmbeddedPortablePdbCustomDebugInformation,
   replaceEmbeddedPortablePdbMethodDocument,
+  replaceEmbeddedPortablePdbImportScope,
   replaceEmbeddedPortablePdbSequencePoints,
   replaceEmbeddedPortablePdbSourceLink,
   addEmbeddedPortablePdbSourceLink,
@@ -1241,6 +1242,10 @@ test("embedded Portable PDB LocalScope replacement validates method boundaries",
     assert.ok(scopeEdit, "compiler PDB should contain a leaf scope with an interior instruction boundary");
     const importScopeEdit = scopeRows.find((scope) => scope.ImportScope.rid > 0);
     assert.ok(importScopeEdit, "compiler PDB should associate a LocalScope with an ImportScope");
+    const importScopeRow = (pdb.tables.rows.get(53) ?? []).find((scope) =>
+      scope.Parent.rid !== scope.rid
+    );
+    assert.ok(importScopeRow, "compiler PDB should contain an editable ImportScope");
     const localVariable = (pdb.tables.rows.get(51) ?? []).find((row) =>
       pdb.heaps.getString(row.Name).length > 0
     );
@@ -1302,6 +1307,20 @@ test("embedded Portable PDB LocalScope replacement validates method boundaries",
     );
     assert.equal(
       standaloneImportPdb.tables.rows.get(50)[importScopeEdit.rid - 1].ImportScope.rid,
+      0
+    );
+    const standaloneImportScopeBytes = replaceEmbeddedPortablePdbImportScope(
+      pdb,
+      importScopeRow.rid,
+      { parentRid: 0 }
+    );
+    const standaloneImportScopePdb = parseEmbeddedPortablePdbData(
+      standaloneImportScopeBytes,
+      0,
+      standaloneImportScopeBytes.length
+    );
+    assert.equal(
+      standaloneImportScopePdb.tables.rows.get(53)[importScopeRow.rid - 1].Parent.rid,
       0
     );
     const standaloneVariableBytes = replaceEmbeddedPortablePdbLocalVariable(
@@ -1405,6 +1424,14 @@ test("embedded Portable PDB LocalScope replacement validates method boundaries",
       ),
       /Invalid Portable PDB Document row ID/
     );
+    assert.throws(
+      () => assembly.replaceEmbeddedPortablePdbImportScope(
+        debugIndex,
+        importScopeRow.rid,
+        { parentRid: importScopeRow.rid }
+      ),
+      /cycle/
+    );
     assert.deepEqual(assembly.serialize(), beforeInvalidEdit);
     assembly.replaceEmbeddedPortablePdbLocalScope(
       debugIndex,
@@ -1435,6 +1462,11 @@ test("embedded Portable PDB LocalScope replacement validates method boundaries",
       debugIndex,
       methodDocument.rid,
       targetDocumentRid
+    );
+    assembly.replaceEmbeddedPortablePdbImportScope(
+      debugIndex,
+      importScopeRow.rid,
+      { parentRid: 0 }
     );
     const rewritten = parseAssembly(assembly.serialize());
     const rewrittenPdb = rewritten.pe.debugDirectoryEntries.find((entry) =>
@@ -1476,6 +1508,10 @@ test("embedded Portable PDB LocalScope replacement validates method boundaries",
     assert.ok(rewrittenPdb.methodDebugInformation[methodDocument.rid - 1].sequencePoints.every(
       (point) => point.documentRid === targetDocumentRid
     ));
+    assert.equal(
+      rewrittenPdb.tables.rows.get(53)[importScopeRow.rid - 1].Parent.rid,
+      0
+    );
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
