@@ -974,7 +974,9 @@ function canPreservePortablePdbCustomDebugInformation(pdb) {
   return pdb.customDebugInformation.every((record) =>
     (record.embeddedSource instanceof Uint8Array && record.Parent.target?.table === 48) ||
     (record.sourceLink && record.Parent.target?.table === 0) ||
-    (typeof record.defaultNamespace === "string" && record.Parent.target?.table === 0)
+    (typeof record.defaultNamespace === "string" && record.Parent.target?.table === 0) ||
+    (record.dynamicLocalVariables instanceof Uint8Array &&
+      [51, 52].includes(record.Parent.target?.table))
   );
 }
 

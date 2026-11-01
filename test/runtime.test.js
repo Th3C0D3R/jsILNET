@@ -367,6 +367,72 @@ test("VB DefaultNamespace custom debug data survives safe metadata RID remapping
   }
 });
 
+test("C# dynamic-local custom debug data survives safe metadata RID remapping", {
+  skip: dotnetAvailable ? false : ".NET SDK/runtime is unavailable"
+}, async () => {
+  const directory = await mkdtemp(join(tmpdir(), "jsilnet-csharp-pdb-dynamic-"));
+  try {
+    const project = join(directory, "DynamicFixture.csproj");
+    const output = join(directory, "out");
+    await writeFile(project, [
+      "<Project Sdk=\"Microsoft.NET.Sdk\">",
+      "  <PropertyGroup>",
+      `    <TargetFramework>${targetFramework}</TargetFramework>`,
+      "    <DebugType>embedded</DebugType>",
+      "    <Optimize>false</Optimize>",
+      "  </PropertyGroup>",
+      "</Project>"
+    ].join("\n"));
+    await writeFile(join(directory, "Fixture.cs"), [
+      "public static class DynamicFixture",
+      "{",
+      "    public static object Answer()",
+      "    {",
+      "        dynamic value = 42;",
+      "        return value;",
+      "    }",
+      "}"
+    ].join("\n"));
+    const build = spawnSync(
+      "dotnet",
+      ["build", project, "--configuration", "Debug", "--output", output, "--nologo"],
+      { encoding: "utf8", timeout: 120_000 }
+    );
+    assert.equal(build.status, 0, build.stderr || build.stdout || build.error?.message);
+
+    const assemblyPath = join(output, "DynamicFixture.dll");
+    const assembly = parseAssembly(Uint8Array.from(await readFile(assemblyPath)));
+    const debugIndex = assembly.pe.debugDirectoryEntries.findIndex((entry) =>
+      entry.embeddedPortablePdb
+    );
+    assert.notEqual(debugIndex, -1);
+    const pdb = assembly.pe.debugDirectoryEntries[debugIndex].embeddedPortablePdb;
+    const dynamicLocals = pdb.customDebugInformation.find((record) =>
+      record.dynamicLocalVariables instanceof Uint8Array
+    );
+    assert.ok(dynamicLocals);
+    assert.ok([51, 52].includes(dynamicLocals.Parent.target?.table));
+    const expectedValue = dynamicLocals.dynamicLocalVariables.slice();
+    retainPortablePdbCustomDebugInformation(
+      pdb,
+      (record) => record.dynamicLocalVariables instanceof Uint8Array
+    );
+    assembly.replaceEmbeddedPortablePdb(debugIndex, serializeEmbeddedPortablePdb(pdb));
+    const { tokenMap } = assembly.insertTypeRefSorted({
+      name: "Added.Before.DynamicFixture"
+    });
+    assert.ok(tokenMap.size > 0);
+    const reparsed = parseAssembly(assembly.serialize());
+    const reparsedPdb = reparsed.pe.debugDirectoryEntries.find((entry) =>
+      entry.embeddedPortablePdb
+    )?.embeddedPortablePdb;
+    assert.deepEqual(reparsedPdb?.customDebugInformation[0].dynamicLocalVariables, expectedValue);
+    assert.equal(reparsedPdb?.rowCounts.get(1), reparsed.tables.counts[1]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("MethodDef removal updates or protects the CLI entry-point token", {
   skip: dotnetAvailable ? false : ".NET SDK/runtime is unavailable"
 }, async () => {

@@ -22,6 +22,7 @@ const documentHashAlgorithms = new Map([
 const embeddedSourceKind = "0e8a571b-6926-466e-b4ad-8ab04611f5fe";
 const sourceLinkKind = "cc110556-a091-4d38-9fec-25ab9a351a6a";
 const defaultNamespaceKind = "58b2eab6-209f-4e4e-a22c-b2d0f910c782";
+const dynamicLocalVariablesKind = "83c563c4-b4f3-47d5-b824-ba5441477ea8";
 const embeddedSourceGuidBytes = Uint8Array.from([
   0x1b, 0x57, 0x8a, 0x0e, 0x26, 0x69, 0x6e, 0x46,
   0xb4, 0xad, 0x8a, 0xb0, 0x46, 0x11, 0xf5, 0xfe
@@ -201,6 +202,14 @@ export function decodePortablePdbCustomDebugInformation(row, heaps) {
       kind,
       defaultNamespace: decodeUtf8(value, "Portable PDB DefaultNamespace")
     };
+  }
+  if (kind === dynamicLocalVariablesKind) {
+    if (![51, 52].includes(row.Parent.target?.table)) {
+      throw new FormatError(
+        "DynamicLocalVariables custom debug information must belong to a LocalVariable or LocalConstant"
+      );
+    }
+    return { kind, dynamicLocalVariables: value.slice() };
   }
   return { kind };
 }
