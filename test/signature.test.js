@@ -18,6 +18,32 @@ test("method signatures decode and re-encode calling conventions and sentinels",
   assert.deepEqual(encodeSignature(signature), bytes);
 });
 
+test("method signature encoding rejects inconsistent flags and calling conventions", () => {
+  const signature = {
+    kind: "method",
+    callingConvention: 0,
+    generic: false,
+    genericParameterCount: 0,
+    hasThis: false,
+    explicitThis: false,
+    returnType: { kind: "primitive", elementType: 0x01 },
+    parameters: []
+  };
+  assert.throws(() => encodeSignature({
+    ...signature,
+    genericParameterCount: 1
+  }), /Generic method flag and generic parameter count are inconsistent/);
+  assert.throws(() => encodeSignature({
+    ...signature,
+    callingConvention: 8
+  }), /Unsupported method calling convention/);
+  assert.throws(() => encodeSignature({
+    ...signature,
+    hasThis: false,
+    explicitThis: true
+  }), /EXPLICITTHIS requires HASTHIS/);
+});
+
 test("array and generic-instance type signatures round-trip", () => {
   const arrayBytes = Uint8Array.from([0x14, 0x08, 0x01, 0x01, 0x04, 0x01, 0x7d]);
   const array = parseTypeSignature(arrayBytes);

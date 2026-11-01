@@ -208,9 +208,21 @@ function writeType(output, type, depth = 0) {
 function writeMethodSignature(output, signature, depth = 0) {
   if (depth > maxNestingDepth) throw new RangeError("Signature nesting limit exceeded");
   const generic = signature.generic ?? signature.genericParameterCount > 0;
-  if (generic && (!Number.isInteger(signature.genericParameterCount) ||
-      signature.genericParameterCount <= 0)) {
+  const genericParameterCount = signature.genericParameterCount ?? 0;
+  if (!methodCallingConventions.has(signature.callingConvention)) {
+    throw new RangeError(`Unsupported method calling convention ${signature.callingConvention}`);
+  }
+  if (signature.explicitThis && !signature.hasThis) {
+    throw new RangeError("EXPLICITTHIS requires HASTHIS");
+  }
+  if (!Number.isInteger(genericParameterCount) || genericParameterCount < 0) {
+    throw new RangeError("Generic method parameter count must be a nonnegative integer");
+  }
+  if (generic && genericParameterCount === 0) {
     throw new RangeError("Generic method signatures require at least one type parameter");
+  }
+  if (!generic && genericParameterCount !== 0) {
+    throw new RangeError("Generic method flag and generic parameter count are inconsistent");
   }
   if (signature.sentinelIndex !== undefined && signature.sentinelIndex !== null &&
       ((signature.callingConvention !== 5 && signature.callingConvention !== 11) ||
@@ -225,7 +237,7 @@ function writeMethodSignature(output, signature, depth = 0) {
     (signature.hasThis ? 0x20 : 0) |
     (signature.explicitThis ? 0x40 : 0)
   );
-  if (generic) output.push(...appendCompressedUInt(signature.genericParameterCount));
+  if (generic) output.push(...appendCompressedUInt(genericParameterCount));
   output.push(...appendCompressedUInt(signature.parameters.length));
   writeType(output, signature.returnType, depth + 1);
   signature.parameters.forEach((parameter, index) => {
