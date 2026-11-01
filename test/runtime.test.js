@@ -973,7 +973,7 @@ test("IL edits rebase state-machine hoisted-local scopes", {
   }
 });
 
-test("trailing abstract MethodDef removal updates an embedded Portable PDB", {
+test("MethodDef removal removes embedded Portable PDB local scopes", {
   skip: dotnetAvailable ? false : ".NET SDK/runtime is unavailable"
 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), "jsilnet-pdb-method-removal-"));
@@ -988,8 +988,24 @@ test("trailing abstract MethodDef removal updates an embedded Portable PDB", {
       "  </PropertyGroup>",
       "</Project>"
     ].join("\n"));
-    await writeFile(join(directory, "Fixture.cs"),
-      "public interface PdbMethodRemovalFixture { void Before(); void Gone<T>(T argument); }");
+    await writeFile(join(directory, "Fixture.cs"), [
+      "public static class PdbMethodRemovalFixture {",
+      "  public static void Before() {}",
+      "  public static int Gone<T>(T argument) {",
+      "    int local = 41;",
+      "    const int constant = 1;",
+      "    string label = \"value\";",
+      "    return local + constant + label.Length;",
+      "  }",
+      "  public static int After() {",
+      "    int after = 7;",
+      "    const int afterConstant = 2;",
+      "    return after + afterConstant;",
+      "  }",
+      "}",
+      "public class BeforeType {}",
+      "public class AfterType {}"
+    ].join("\n"));
     const build = spawnSync(
       "dotnet",
       ["build", project, "--configuration", "Debug", "--output", output, "--nologo"],
@@ -1004,7 +1020,7 @@ test("trailing abstract MethodDef removal updates an embedded Portable PDB", {
       entry.embeddedPortablePdb
     );
     assert.ok(method);
-    assert.equal(method.rid, assembly.methods.length);
+    assert.ok(method.rid > 0 && method.rid <= assembly.methods.length);
     assert.ok(assembly.tables.counts[8] > 0);
     assert.ok(assembly.tables.counts[42] > 0);
     assert.ok(debugEntry);
@@ -1157,12 +1173,9 @@ test("trailing abstract MethodDef removal updates an embedded Portable PDB", {
         appendedReferenceReparsed.tables.counts[table]
       );
     }
-    assert.equal(debugEntry.embeddedPortablePdb.customDebugInformation.some((record) =>
-      record.Parent.target?.table === 6 && record.Parent.target.rid === method.rid
-    ), false);
-    assert.equal(debugEntry.embeddedPortablePdb.tables.get(50).some((scope) =>
+    assert.ok(debugEntry.embeddedPortablePdb.tables.get(50).some((scope) =>
       scope.Method.rid === method.rid
-    ), false);
+    ));
 
     const nonTrailing = parseAssembly(original);
     const nonTrailingTokenMap = nonTrailing.removeMethod(1);
@@ -1182,14 +1195,29 @@ test("trailing abstract MethodDef removal updates an embedded Portable PDB", {
     const scopedPdb = scoped.pe.debugDirectoryEntries.find((entry) =>
       entry.embeddedPortablePdb
     ).embeddedPortablePdb;
-    const scopeRows = scopedPdb.tables.rows.get(50) ?? [];
-    scopedPdb.tables.rows.set(50, [...scopeRows, {
-      rid: scopeRows.length + 1,
-      Method: { rid: scopedMethod.rid }
-    }]);
-    const beforeScopedRemoval = scoped.serialize();
-    assert.throws(() => scoped.removeMethod(scopedMethod.rid), /method-scoped debug records/);
-    assert.deepEqual(scoped.serialize(), beforeScopedRemoval);
+    const scopedMethodRows = (scopedPdb.tables.rows.get(50) ?? [])
+      .filter((scope) => scope.Method.rid === scopedMethod.rid);
+    const variableCountBeforeScopedRemoval = scopedPdb.tables.counts[51];
+    const constantCountBeforeScopedRemoval = scopedPdb.tables.counts[52];
+    assert.ok(scopedMethodRows.length > 0);
+    assert.ok(variableCountBeforeScopedRemoval > 0);
+    assert.ok(constantCountBeforeScopedRemoval > 0);
+    scoped.removeMethod(scopedMethod.rid);
+    const scopedReparsed = parseAssembly(scoped.serialize());
+    const scopedPdbAfterRemoval = scopedReparsed.pe.debugDirectoryEntries.find((entry) =>
+      entry.embeddedPortablePdb
+    ).embeddedPortablePdb;
+    assert.equal(scopedReparsed.methods.some((item) => item.name === "Gone"), false);
+    const afterMethod = scopedReparsed.methods.find((item) => item.name === "After");
+    assert.ok(afterMethod);
+    assert.ok((scopedPdbAfterRemoval.tables.rows.get(50) ?? []).some((scope) =>
+      scope.Method.rid === afterMethod.rid
+    ));
+    assert.ok((scopedPdbAfterRemoval.tables.rows.get(51) ?? []).some((variable) =>
+      scopedPdbAfterRemoval.heaps.getString(variable.Name) === "after"
+    ));
+    assert.ok(scopedPdbAfterRemoval.tables.counts[51] < variableCountBeforeScopedRemoval);
+    assert.ok(scopedPdbAfterRemoval.tables.counts[52] < constantCountBeforeScopedRemoval);
 
     const methodDebug = parseAssembly(original);
     const methodDebugPdb = methodDebug.pe.debugDirectoryEntries.find((entry) =>
@@ -1227,7 +1255,7 @@ test("trailing abstract MethodDef removal updates an embedded Portable PDB", {
     assert.deepEqual(methodDebug.serialize(), beforeCustomDebugRemoval);
 
     const tokenMap = assembly.removeMethod(method.rid);
-    assert.equal(tokenMap.size, 0);
+    assert.ok(tokenMap.size > 0);
     const rewritten = assembly.serialize();
     const reparsed = parseAssembly(rewritten);
     assert.equal(reparsed.methods.some((item) => item.name === "Gone"), false);
