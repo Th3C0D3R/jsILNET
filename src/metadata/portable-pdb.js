@@ -23,6 +23,8 @@ const embeddedSourceKind = "0e8a571b-6926-466e-b4ad-8ab04611f5fe";
 const sourceLinkKind = "cc110556-a091-4d38-9fec-25ab9a351a6a";
 const defaultNamespaceKind = "58b2eab6-209f-4e4e-a22c-b2d0f910c782";
 const dynamicLocalVariablesKind = "83c563c4-b4f3-47d5-b824-ba5441477ea8";
+const compilationMetadataReferencesKind = "7e4d4708-096e-4c5c-aeda-cb10ba6a740d";
+const compilationOptionsKind = "b5feec05-8cd0-4a83-96da-466284bb4bd8";
 const embeddedSourceGuidBytes = Uint8Array.from([
   0x1b, 0x57, 0x8a, 0x0e, 0x26, 0x69, 0x6e, 0x46,
   0xb4, 0xad, 0x8a, 0xb0, 0x46, 0x11, 0xf5, 0xfe
@@ -105,6 +107,17 @@ function decodeUtf8(bytes, context) {
   } catch (error) {
     throw new FormatError(`Invalid UTF-8 data: ${error.message}`, { context });
   }
+}
+
+function readNullTerminatedUtf8(bytes, offset, context) {
+  const terminator = bytes.indexOf(0, offset);
+  if (terminator < 0) {
+    throw new FormatError(`${context} string is not null-terminated`);
+  }
+  return {
+    value: decodeUtf8(bytes.subarray(offset, terminator), context),
+    nextOffset: terminator + 1
+  };
 }
 
 function formatGuid(bytes) {
@@ -210,6 +223,69 @@ export function decodePortablePdbCustomDebugInformation(row, heaps) {
       );
     }
     return { kind, dynamicLocalVariables: value.slice() };
+  }
+  if (kind === compilationOptionsKind) {
+    if (row.Parent.target?.table !== 0) {
+      throw new FormatError("CompilationOptions custom debug information must belong to the Module");
+    }
+    const options = [];
+    const names = new Set();
+    let offset = 0;
+    while (offset < value.length) {
+      const name = readNullTerminatedUtf8(value, offset, "Portable PDB compilation option name");
+      const optionValue = readNullTerminatedUtf8(
+        value,
+        name.nextOffset,
+        "Portable PDB compilation option value"
+      );
+      if (names.has(name.value)) {
+        throw new FormatError(`Duplicate Portable PDB compilation option ${name.value}`);
+      }
+      names.add(name.value);
+      options.push({ name: name.value, value: optionValue.value });
+      offset = optionValue.nextOffset;
+    }
+    return { kind, compilationOptions: options };
+  }
+  if (kind === compilationMetadataReferencesKind) {
+    if (row.Parent.target?.table !== 0) {
+      throw new FormatError(
+        "CompilationMetadataReferences custom debug information must belong to the Module"
+      );
+    }
+    const references = [];
+    let offset = 0;
+    while (offset < value.length) {
+      const fileName = readNullTerminatedUtf8(
+        value,
+        offset,
+        "Portable PDB metadata-reference filename"
+      );
+      const aliases = readNullTerminatedUtf8(
+        value,
+        fileName.nextOffset,
+        "Portable PDB metadata-reference aliases"
+      );
+      offset = aliases.nextOffset;
+      if (value.length - offset < 25) {
+        throw new FormatError("Portable PDB metadata-reference record is truncated");
+      }
+      const flags = value[offset];
+      if ((flags & ~0x03) !== 0) {
+        throw new FormatError("Portable PDB metadata-reference flags contain reserved bits");
+      }
+      const view = new DataView(value.buffer, value.byteOffset + offset, 9);
+      references.push({
+        fileName: fileName.value,
+        aliases: aliases.value,
+        flags,
+        timeStamp: view.getUint32(1, true),
+        fileSize: view.getUint32(5, true),
+        mvid: value.slice(offset + 9, offset + 25)
+      });
+      offset += 25;
+    }
+    return { kind, compilationMetadataReferences: references };
   }
   return { kind };
 }

@@ -26,6 +26,7 @@ import {
 } from "../src/index.js";
 import { parseEmbeddedPortablePdbData } from "../src/pe/headers.js";
 import {
+  decodePortablePdbCustomDebugInformation,
   refreshEmbeddedPortablePdbId,
   replaceEmbeddedPortablePdbMethodOffsets
 } from "../src/metadata/portable-pdb.js";
@@ -50,12 +51,6 @@ function stripPortablePdbMethodCustomDebugInformation(pdb) {
   pdb.tables.counts[55] = remaining.length;
 }
 
-function stripPortablePdbCustomDebugInformation(pdb) {
-  pdb.tables.rows.delete(55);
-  pdb.tables.counts[55] = 0;
-  pdb.tables.valid &= ~(1n << 55n);
-}
-
 function retainPortablePdbCustomDebugInformation(pdb, predicate) {
   const retained = pdb.customDebugInformation.filter(predicate);
   const retainedRids = new Set(retained.map((record) => record.rid));
@@ -74,6 +69,74 @@ function retainPortablePdbCustomDebugInformation(pdb, predicate) {
   }
   pdb.tables.counts[55] = rows.length;
 }
+
+test("Portable PDB compilation CDI decoders validate strings and record bounds", () => {
+  const optionsGuid = Uint8Array.from([
+    0x05, 0xec, 0xfe, 0xb5, 0xd0, 0x8c, 0x83, 0x4a,
+    0x96, 0xda, 0x46, 0x62, 0x84, 0xbb, 0x4b, 0xd8
+  ]);
+  const referencesGuid = Uint8Array.from([
+    0x08, 0x47, 0x4d, 0x7e, 0x6e, 0x09, 0x5c, 0x4c,
+    0xae, 0xda, 0xcb, 0x10, 0xba, 0x6a, 0x74, 0x0d
+  ]);
+  const decode = (guid, value, parentTable = 0) =>
+    decodePortablePdbCustomDebugInformation(
+      { Kind: 1, Value: 1, Parent: { target: { table: parentTable } } },
+      {
+        getGuid: () => guid,
+        getBlob: () => value
+      }
+    );
+  const optionsValue = new TextEncoder().encode("language\0C#\0optimization\0debug\0");
+  assert.deepEqual(decode(optionsGuid, optionsValue).compilationOptions, [
+    { name: "language", value: "C#" },
+    { name: "optimization", value: "debug" }
+  ]);
+  assert.throws(
+    () => decode(optionsGuid, new TextEncoder().encode("language\0C#\0language\0VB\0")),
+    /Duplicate Portable PDB compilation option language/
+  );
+  assert.throws(
+    () => decode(optionsGuid, new TextEncoder().encode("language\0unterminated")),
+    /not null-terminated/
+  );
+  assert.throws(
+    () => decode(optionsGuid, new TextEncoder().encode("language\0C#\0"), 48),
+    /must belong to the Module/
+  );
+
+  const referenceHeader = Uint8Array.of(
+    0x03,
+    0x78, 0x56, 0x34, 0x12,
+    0x21, 0x43, 0x65, 0x87,
+    ...Array.from({ length: 16 }, (_, index) => index)
+  );
+  const referenceValue = Uint8Array.from([
+    ...new TextEncoder().encode("reference.dll\0Alias\0"),
+    ...referenceHeader
+  ]);
+  const reference = decode(referencesGuid, referenceValue)
+    .compilationMetadataReferences[0];
+  assert.deepEqual(reference, {
+    fileName: "reference.dll",
+    aliases: "Alias",
+    flags: 3,
+    timeStamp: 0x12345678,
+    fileSize: 0x87654321,
+    mvid: Uint8Array.from({ length: 16 }, (_, index) => index)
+  });
+  assert.throws(
+    () => decode(referencesGuid, referenceValue.subarray(0, referenceValue.length - 1)),
+    /record is truncated/
+  );
+  assert.throws(
+    () => decode(referencesGuid, Uint8Array.from([
+      ...new TextEncoder().encode("reference.dll\0\0"),
+      0x04, ...referenceHeader.subarray(1)
+    ])),
+    /reserved bits/
+  );
+});
 
 test("trailing abstract MethodDef removal updates an embedded Portable PDB", {
   skip: dotnetAvailable ? false : ".NET SDK/runtime is unavailable"
@@ -110,6 +173,27 @@ test("trailing abstract MethodDef removal updates an embedded Portable PDB", {
     assert.ok(assembly.tables.counts[8] > 0);
     assert.ok(assembly.tables.counts[42] > 0);
     assert.ok(debugEntry);
+    const compilerPdb = debugEntry.embeddedPortablePdb;
+    const compilationOptions = compilerPdb.customDebugInformation.find((record) =>
+      Array.isArray(record.compilationOptions)
+    );
+    const metadataReferences = compilerPdb.customDebugInformation.find((record) =>
+      Array.isArray(record.compilationMetadataReferences)
+    );
+    assert.ok(
+      compilationOptions?.compilationOptions.some((option) =>
+        option.name === "language" && option.value === "C#"
+      ),
+      JSON.stringify(compilerPdb.customDebugInformation.map((record) => ({
+        kind: record.kind,
+        parent: record.Parent.target,
+        options: record.compilationOptions
+      })))
+    );
+    assert.ok(metadataReferences?.compilationMetadataReferences.length > 0);
+    assert.ok(metadataReferences.compilationMetadataReferences.every((reference) =>
+      reference.fileName.length > 0 && reference.mvid.length === 16
+    ));
     const unsafeTypeRefRemap = parseAssembly(original);
     assert.throws(
       () => unsafeTypeRefRemap.insertTypeRefSorted({ name: "Inserted.Before.Scoped" }),
@@ -121,7 +205,10 @@ test("trailing abstract MethodDef removal updates an embedded Portable PDB", {
     );
     const typeRefPdb = typeRefRemap.pe.debugDirectoryEntries[typeRefPdbIndex]
       .embeddedPortablePdb;
-    stripPortablePdbCustomDebugInformation(typeRefPdb);
+    retainPortablePdbCustomDebugInformation(typeRefPdb, (record) =>
+      Array.isArray(record.compilationOptions) ||
+      Array.isArray(record.compilationMetadataReferences)
+    );
     const typeRefSourceLinkPdbBytes = addEmbeddedPortablePdbSourceLink(typeRefPdb, {
       documents: { "**/*.cs": "https://example.invalid/sources/*" }
     });
@@ -155,6 +242,12 @@ test("trailing abstract MethodDef removal updates an embedded Portable PDB", {
     assert.ok(typeRefRemappedPdb?.customDebugInformation.some((record) =>
       record.embeddedSource?.length === 22
     ));
+    assert.ok(typeRefRemappedPdb?.customDebugInformation.some((record) =>
+      Array.isArray(record.compilationOptions)
+    ));
+    assert.ok(typeRefRemappedPdb?.customDebugInformation.some((record) =>
+      Array.isArray(record.compilationMetadataReferences)
+    ));
     typeRefRemap.removeTypeRef(insertedTypeRefToken & 0x00ffffff);
     const typeRefRemovalReparsed = parseAssembly(typeRefRemap.serialize());
     const typeRefRemovalPdb = typeRefRemovalReparsed.pe.debugDirectoryEntries.find((entry) =>
@@ -166,6 +259,12 @@ test("trailing abstract MethodDef removal updates an embedded Portable PDB", {
     ));
     assert.ok(typeRefRemovalPdb?.customDebugInformation.some((record) =>
       record.embeddedSource?.length === 22
+    ));
+    assert.ok(typeRefRemovalPdb?.customDebugInformation.some((record) =>
+      Array.isArray(record.compilationOptions)
+    ));
+    assert.ok(typeRefRemovalPdb?.customDebugInformation.some((record) =>
+      Array.isArray(record.compilationMetadataReferences)
     ));
 
     const appendedReference = parseAssembly(original);

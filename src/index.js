@@ -976,7 +976,9 @@ function canPreservePortablePdbCustomDebugInformation(pdb) {
     (record.sourceLink && record.Parent.target?.table === 0) ||
     (typeof record.defaultNamespace === "string" && record.Parent.target?.table === 0) ||
     (record.dynamicLocalVariables instanceof Uint8Array &&
-      [51, 52].includes(record.Parent.target?.table))
+      [51, 52].includes(record.Parent.target?.table)) ||
+    (Array.isArray(record.compilationOptions) && record.Parent.target?.table === 0) ||
+    (Array.isArray(record.compilationMetadataReferences) && record.Parent.target?.table === 0)
   );
 }
 
