@@ -280,6 +280,62 @@ function decodeCodeViewNumeric(data, offset) {
   return { value: format[1](view, valueOffset), size: 2 + format[0] };
 }
 
+function encodeCodeViewNumeric(value) {
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) {
+      throw new TypeError("Classic PDB constant-symbol values must be finite numbers or BigInts");
+    }
+    if (Number.isInteger(value) && !Number.isSafeInteger(value)) {
+      throw new RangeError("Classic PDB constant-symbol integer numbers must be safe integers");
+    }
+    if (!Number.isInteger(value) || Object.is(value, -0)) {
+      const bytes = new Uint8Array(10);
+      const view = new DataView(bytes.buffer);
+      view.setUint16(0, 0x8006, true);
+      view.setFloat64(2, value, true);
+      return bytes;
+    }
+    value = BigInt(value);
+  } else if (typeof value !== "bigint") {
+    throw new TypeError("Classic PDB constant-symbol values must be finite numbers or BigInts");
+  }
+
+  const encodeLeaf = (leaf, size, write) => {
+    const bytes = new Uint8Array(size + 2);
+    const view = new DataView(bytes.buffer);
+    view.setUint16(0, leaf, true);
+    write(view, 2);
+    return bytes;
+  };
+  if (value >= 0n && value <= 0x7fffn) {
+    const bytes = new Uint8Array(2);
+    new DataView(bytes.buffer).setUint16(0, Number(value), true);
+    return bytes;
+  }
+  if (value < 0n && value >= -0x80n) {
+    return encodeLeaf(0x8000, 1, (view, offset) => view.setInt8(offset, Number(value)));
+  }
+  if (value < 0n && value >= -0x8000n) {
+    return encodeLeaf(0x8001, 2, (view, offset) => view.setInt16(offset, Number(value), true));
+  }
+  if (value >= 0n && value <= 0xffffn) {
+    return encodeLeaf(0x8002, 2, (view, offset) => view.setUint16(offset, Number(value), true));
+  }
+  if (value < 0n && value >= -0x80000000n) {
+    return encodeLeaf(0x8003, 4, (view, offset) => view.setInt32(offset, Number(value), true));
+  }
+  if (value >= 0n && value <= 0xffffffffn) {
+    return encodeLeaf(0x8004, 4, (view, offset) => view.setUint32(offset, Number(value), true));
+  }
+  if (value < 0n && value >= -(1n << 63n)) {
+    return encodeLeaf(0x8009, 8, (view, offset) => view.setBigInt64(offset, value, true));
+  }
+  if (value >= 0n && value <= (1n << 64n) - 1n) {
+    return encodeLeaf(0x800a, 8, (view, offset) => view.setBigUint64(offset, value, true));
+  }
+  throw new RangeError("Classic PDB constant-symbol integer values must fit in 64 bits");
+}
+
 function getCodeViewSymbolNameOffset(record) {
   if (record.kind === 0x1107) {
     const numeric = decodeCodeViewNumeric(record.data, 4);
@@ -2056,6 +2112,26 @@ export function insertClassicPdbDataSymbol(
     fields,
     name,
     nameLabel: "Classic PDB data-symbol names"
+  });
+}
+
+export function insertClassicPdbConstantSymbol(
+  input,
+  { moduleIndex, typeIndex, value, name } = {}
+) {
+  if (!Number.isInteger(typeIndex) || typeIndex < 0 || typeIndex > 0xffffffff) {
+    throw new RangeError("Classic PDB constant-symbol type index must be an unsigned 32-bit integer");
+  }
+  const numeric = encodeCodeViewNumeric(value);
+  const fields = new Uint8Array(4 + numeric.length);
+  new DataView(fields.buffer).setUint32(0, typeIndex, true);
+  fields.set(numeric, 4);
+  return insertClassicPdbModuleSymbol(input, {
+    moduleIndex,
+    kind: 0x1107,
+    fields,
+    name,
+    nameLabel: "Classic PDB constant-symbol names"
   });
 }
 

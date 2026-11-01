@@ -10,6 +10,7 @@ import { parseTablesStream } from "./metadata/tables.js";
 import {
   parseClassicPdb as parseClassicPdbFile,
   insertClassicPdbFileChecksum as insertClassicPdbFileChecksumFile,
+  insertClassicPdbConstantSymbol as insertClassicPdbConstantSymbolFile,
   insertClassicPdbDataSymbol as insertClassicPdbDataSymbolFile,
   insertClassicPdbLineBlock as insertClassicPdbLineBlockFile,
   insertClassicPdbPublicSymbol as insertClassicPdbPublicSymbolFile,
@@ -1565,6 +1566,7 @@ export { MetadataHeaps, parseMetadataRoot } from "./metadata/streams.js";
 export {
   parseClassicPdbFile as parseClassicPdb,
   insertClassicPdbFileChecksumFile as insertClassicPdbFileChecksum,
+  insertClassicPdbConstantSymbolFile as insertClassicPdbConstantSymbol,
   insertClassicPdbDataSymbolFile as insertClassicPdbDataSymbol,
   insertClassicPdbLineBlockFile as insertClassicPdbLineBlock,
   insertClassicPdbPublicSymbolFile as insertClassicPdbPublicSymbol,

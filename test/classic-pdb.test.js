@@ -13,6 +13,7 @@ import {
   replaceClassicPdbStringTableName,
   replaceClassicPdbSymbolName,
   removeClassicPdbSymbol,
+  insertClassicPdbConstantSymbol,
   insertClassicPdbPublicSymbol,
   insertClassicPdbDataSymbol
 } from "../src/index.js";
@@ -513,6 +514,99 @@ test("classic PDB local data symbols can be appended before module data", () => 
     typeIndex: -1,
     offset: 1,
     segment: 1,
+    name: "Invalid"
+  }), /type index must be an unsigned 32-bit integer/);
+  assert.deepEqual(original, unchanged);
+});
+
+test("classic PDB constant symbols encode supported numeric values and preserve module data", () => {
+  const original = makeClassicPdbWithSymbols({
+    lineInfo: true,
+    trailingModuleBytes: Uint8Array.of(0x31, 0x32, 0x33)
+  });
+  const originalPdb = parseClassicPdb(original);
+  const originalModule = originalPdb.dbi.modules[0];
+  const originalStream = originalPdb.streams[originalModule.streamIndex];
+  const overlay = Uint8Array.of(0x91, 0x82, 0x73);
+  const overlaid = new Uint8Array(original.length + overlay.length);
+  overlaid.set(original);
+  overlaid.set(overlay, original.length);
+
+  const values = [
+    0x7fff,
+    -9,
+    -0x8000,
+    0xffff,
+    0x8000,
+    -0x80000000,
+    0xffffffff,
+    -0x80000001n,
+    -(1n << 63n),
+    (1n << 64n) - 1n,
+    1.25,
+    -0
+  ];
+  let rewritten = overlaid;
+  for (const [index, value] of values.entries()) {
+    const name = `Constant${index}`;
+    rewritten = insertClassicPdbConstantSymbol(rewritten, {
+      moduleIndex: 0,
+      typeIndex: 0x1005,
+      value,
+      name
+    });
+    const pdb = parseClassicPdb(rewritten);
+    const module = pdb.dbi.modules[0];
+    const decoded = module.symbols.records.at(-1).decoded;
+    assert.equal(decoded.kind, "constant");
+    assert.equal(decoded.typeIndex, 0x1005);
+    assert.equal(decoded.value, value);
+    assert.equal(decoded.name, name);
+    assert.deepEqual(
+      pdb.streams[module.streamIndex].bytes.subarray(module.symbolBytes),
+      originalStream.bytes.subarray(originalModule.symbolBytes)
+    );
+    assert.deepEqual(rewritten.subarray(-overlay.length), overlay);
+  }
+
+  const moduleWithoutSymbols = makeClassicPdbWithSymbols({
+    withSymbols: false,
+    lineInfo: true
+  });
+  const firstConstantModule = parseClassicPdb(insertClassicPdbConstantSymbol(
+    moduleWithoutSymbols,
+    { moduleIndex: 0, typeIndex: 0x1005, value: 2.5, name: "FirstConstant" }
+  )).dbi.modules[0];
+  assert.equal(firstConstantModule.symbols.signature, 4);
+  assert.equal(firstConstantModule.symbols.records[0].decoded.kind, "constant");
+  assert.equal(firstConstantModule.symbols.records[0].decoded.value, 2.5);
+
+  const unchanged = Uint8Array.from(original);
+  assert.throws(() => insertClassicPdbConstantSymbol(original, {
+    moduleIndex: 0,
+    typeIndex: 0x1005,
+    value: Number.MAX_SAFE_INTEGER + 1,
+    name: "Invalid"
+  }), /must be safe integers/);
+  assert.deepEqual(original, unchanged);
+  assert.throws(() => insertClassicPdbConstantSymbol(original, {
+    moduleIndex: 0,
+    typeIndex: 0x1005,
+    value: NaN,
+    name: "Invalid"
+  }), /must be finite numbers or BigInts/);
+  assert.deepEqual(original, unchanged);
+  assert.throws(() => insertClassicPdbConstantSymbol(original, {
+    moduleIndex: 0,
+    typeIndex: 0x1005,
+    value: 1n << 64n,
+    name: "Invalid"
+  }), /must fit in 64 bits/);
+  assert.deepEqual(original, unchanged);
+  assert.throws(() => insertClassicPdbConstantSymbol(original, {
+    moduleIndex: 0,
+    typeIndex: 0x100000000,
+    value: 1,
     name: "Invalid"
   }), /type index must be an unsigned 32-bit integer/);
   assert.deepEqual(original, unchanged);
