@@ -48,6 +48,12 @@ function stripPortablePdbMethodCustomDebugInformation(pdb) {
   pdb.tables.counts[55] = remaining.length;
 }
 
+function stripPortablePdbCustomDebugInformation(pdb) {
+  pdb.tables.rows.delete(55);
+  pdb.tables.counts[55] = 0;
+  pdb.tables.valid &= ~(1n << 55n);
+}
+
 test("trailing abstract MethodDef removal updates an embedded Portable PDB", {
   skip: dotnetAvailable ? false : ".NET SDK/runtime is unavailable"
 }, async () => {
@@ -83,20 +89,57 @@ test("trailing abstract MethodDef removal updates an embedded Portable PDB", {
     assert.ok(assembly.tables.counts[8] > 0);
     assert.ok(assembly.tables.counts[42] > 0);
     assert.ok(debugEntry);
+    const unsafeTypeRefRemap = parseAssembly(original);
+    assert.throws(
+      () => unsafeTypeRefRemap.insertTypeRefSorted({ name: "Inserted.Before.Scoped" }),
+      /token remapping is unsupported while a PE debug directory is present/
+    );
+    const typeRefRemap = parseAssembly(original);
+    const typeRefPdbIndex = typeRefRemap.pe.debugDirectoryEntries.findIndex((entry) =>
+      entry.embeddedPortablePdb
+    );
+    const typeRefPdb = typeRefRemap.pe.debugDirectoryEntries[typeRefPdbIndex]
+      .embeddedPortablePdb;
+    stripPortablePdbCustomDebugInformation(typeRefPdb);
+    typeRefRemap.replaceEmbeddedPortablePdb(
+      typeRefPdbIndex,
+      serializeEmbeddedPortablePdb(typeRefPdb)
+    );
+    const { token: insertedTypeRefToken, tokenMap: typeRefTokenMap } =
+      typeRefRemap.insertTypeRefSorted({
+        name: "Inserted.Before.Scoped"
+      });
+    assert.ok(typeRefTokenMap.size > 0);
+    const typeRefRemapReparsed = parseAssembly(typeRefRemap.serialize());
+    const typeRefRemappedPdb = typeRefRemapReparsed.pe.debugDirectoryEntries.find((entry) =>
+      entry.embeddedPortablePdb
+    )?.embeddedPortablePdb;
+    assert.equal(typeRefRemappedPdb?.rowCounts.get(1), typeRefRemapReparsed.tables.counts[1]);
+    typeRefRemap.removeTypeRef(insertedTypeRefToken & 0x00ffffff);
+    const typeRefRemovalReparsed = parseAssembly(typeRefRemap.serialize());
+    const typeRefRemovalPdb = typeRefRemovalReparsed.pe.debugDirectoryEntries.find((entry) =>
+      entry.embeddedPortablePdb
+    )?.embeddedPortablePdb;
+    assert.equal(typeRefRemovalPdb?.rowCounts.get(1), typeRefRemovalReparsed.tables.counts[1]);
+
     const appendedReference = parseAssembly(original);
     const appendedReferencePdb = appendedReference.pe.debugDirectoryEntries.find((entry) =>
       entry.embeddedPortablePdb
     )?.embeddedPortablePdb;
     assert.ok(appendedReferencePdb?.rowCounts.has(35));
+    assert.ok(appendedReferencePdb.rowCounts.has(2));
     appendedReference.addAssemblyRef({ name: "PdbRowCount.Dependency" });
+    appendedReference.addTypeDef({ name: "PdbRowCount.Type" });
     const appendedReferenceReparsed = parseAssembly(appendedReference.serialize());
     const appendedReferencePdbReparsed = appendedReferenceReparsed.pe.debugDirectoryEntries.find((entry) =>
       entry.embeddedPortablePdb
     )?.embeddedPortablePdb;
-    assert.equal(
-      appendedReferencePdbReparsed?.rowCounts.get(35),
-      appendedReferenceReparsed.tables.counts[35]
-    );
+    for (const table of [2, 35]) {
+      assert.equal(
+        appendedReferencePdbReparsed?.rowCounts.get(table),
+        appendedReferenceReparsed.tables.counts[table]
+      );
+    }
     assert.equal(debugEntry.embeddedPortablePdb.customDebugInformation.some((record) =>
       record.Parent.target?.table === 6 && record.Parent.target.rid === method.rid
     ), false);

@@ -12925,9 +12925,22 @@ export class Assembly {
 
   #ensureTokenRemappingSafe(tableName, { allowEmbeddedPortablePdb = false } = {}) {
     if (this.#hasDebugDirectory) {
-      const embeddedPdbCount = this.pe.debugDirectoryEntries
-        .filter((entry) => entry.embeddedPortablePdb).length;
-      if (!allowEmbeddedPortablePdb || embeddedPdbCount !== 1) {
+      const embeddedPdbEntries = this.pe.debugDirectoryEntries
+        .map((entry, index) => ({ entry, index }))
+        .filter(({ entry }) => entry.embeddedPortablePdb);
+      const stagedPdb = embeddedPdbEntries.length === 1
+        ? this._embeddedPortablePdbEdits.get(embeddedPdbEntries[0].index)
+        : null;
+      const portablePdb = stagedPdb
+        ? parseEmbeddedPortablePdbData(stagedPdb, 0, stagedPdb.length)
+        : embeddedPdbEntries[0]?.entry.embeddedPortablePdb;
+      const portablePdbCanPreserveTokenRemapping =
+        embeddedPdbEntries.length === 1 &&
+        !["MethodDef", "StandAloneSig"].includes(tableName) &&
+        portablePdb.customDebugInformation.length === 0 &&
+        this.pe.debugDirectoryEntries.every((entry) => [2, 16, 17, 19].includes(entry.type));
+      if ((!allowEmbeddedPortablePdb && !portablePdbCanPreserveTokenRemapping) ||
+          embeddedPdbEntries.length !== 1) {
         throw new UnsupportedFormatError(
           `${tableName} token remapping is unsupported while a PE debug directory is present`
         );
