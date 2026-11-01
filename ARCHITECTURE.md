@@ -153,6 +153,8 @@ Replacing an EmbeddedSource payload also recomputes its Document hash for recogn
 
 `insertClassicPdbDataSymbol` appends a validated module-local `S_LDATA32` record using the shared named-symbol encoder and stream rebuild path.
 
+`replaceClassicPdbDataSymbol` updates selected `S_LDATA32` type/address/segment fields in place and preserves its symbol name and record size.
+
 `insertClassicPdbConstantSymbol` appends an `S_CONSTANT` record with bounded CodeView integer or floating-point numeric leaves; integer values are preserved exactly through signed/unsigned 64-bit encodings.
 
 `replaceClassicPdbConstantSymbol` updates a constant's type index or numeric leaf and rebuilds the module/MSF streams when the record changes size. Resizing remains refused in modules containing scoped or unknown symbols.

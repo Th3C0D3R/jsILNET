@@ -19,6 +19,7 @@ This document records detailed feature coverage, exported APIs, behavioral limit
 - `insertClassicPdbPublicSymbol` appends an `S_PUB32` symbol before C11/C13 data, creating a symbol signature when needed and updating DBI/MSF sizes.
 - `replaceClassicPdbPublicSymbol` updates the flags, address, and/or segment of an `S_PUB32` record in place while preserving its name and record size.
 - `insertClassicPdbDataSymbol` appends a validated module-local `S_LDATA32` record before C11/C13 data with its type index, address, segment, and name.
+- `replaceClassicPdbDataSymbol` updates the type index, address, and/or segment of a module-local `S_LDATA32` record in place while preserving its name and record size.
 - `insertClassicPdbThreadDataSymbol` appends a validated module-local `S_LTHREAD32` record; standalone thread-data symbols can also be removed with `removeClassicPdbSymbol`.
 - `replaceClassicPdbThreadDataSymbol` updates the type index, address, and/or segment of a module-local `S_LTHREAD32` record without resizing it; the name and module stream layout are preserved.
 - `insertClassicPdbConstantSymbol` appends an `S_CONSTANT` record with a 32-bit type index and finite numeric or exact BigInt value; integer encodings are limited to 64 bits.

@@ -2142,14 +2142,18 @@ export function insertClassicPdbThreadDataSymbol(
   });
 }
 
-export function replaceClassicPdbThreadDataSymbol(input, options = {}) {
+function replaceClassicPdbAddressSymbol(input, options, {
+  recordKind,
+  decodedKind,
+  symbolLabel
+}) {
   const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
   const { moduleIndex, recordIndex } = options;
   const updatesTypeIndex = Object.hasOwn(options, "typeIndex");
   const updatesOffset = Object.hasOwn(options, "offset");
   const updatesSegment = Object.hasOwn(options, "segment");
   if (!updatesTypeIndex && !updatesOffset && !updatesSegment) {
-    throw new TypeError("Classic PDB thread-data replacement must include at least one field");
+    throw new TypeError(`Classic PDB ${symbolLabel} replacement must include at least one field`);
   }
   if (!Number.isInteger(moduleIndex) || moduleIndex < 0) {
     throw new RangeError("Classic PDB module index must be a non-negative integer");
@@ -2164,20 +2168,22 @@ export function replaceClassicPdbThreadDataSymbol(input, options = {}) {
   }
   const record = module.symbols.records[recordIndex];
   if (!record) throw new RangeError(`Classic PDB symbol record ${recordIndex} does not exist`);
-  if (record.kind !== 0x1112 || record.decoded?.kind !== "threadData") {
-    throw new UnsupportedFormatError("Classic PDB symbol record is not a module-local thread-data symbol");
+  if (record.kind !== recordKind || record.decoded?.kind !== decodedKind) {
+    throw new UnsupportedFormatError(
+      `Classic PDB symbol record is not a module-local ${symbolLabel} symbol`
+    );
   }
   const typeIndex = updatesTypeIndex ? options.typeIndex : record.decoded.typeIndex;
   const offset = updatesOffset ? options.offset : record.decoded.offset;
   const segment = updatesSegment ? options.segment : record.decoded.segment;
   if (!Number.isInteger(typeIndex) || typeIndex < 0 || typeIndex > 0xffffffff) {
-    throw new RangeError("Classic PDB thread-data symbol type index must be an unsigned 32-bit integer");
+    throw new RangeError(`Classic PDB ${symbolLabel} symbol type index must be an unsigned 32-bit integer`);
   }
   if (!Number.isInteger(offset) || offset < 0 || offset > 0xffffffff) {
-    throw new RangeError("Classic PDB thread-data symbol offset must be an unsigned 32-bit integer");
+    throw new RangeError(`Classic PDB ${symbolLabel} symbol offset must be an unsigned 32-bit integer`);
   }
   if (!Number.isInteger(segment) || segment < 0 || segment > 0xffff) {
-    throw new RangeError("Classic PDB thread-data symbol segment must be an unsigned 16-bit integer");
+    throw new RangeError(`Classic PDB ${symbolLabel} symbol segment must be an unsigned 16-bit integer`);
   }
   const fields = new Uint8Array(10);
   const view = new DataView(fields.buffer);
@@ -2186,7 +2192,7 @@ export function replaceClassicPdbThreadDataSymbol(input, options = {}) {
   view.setUint16(8, segment, true);
   const nameBytes = encodeClassicPdbReplacementText(
     record.decoded.name,
-    "Classic PDB thread-data symbol names"
+    `Classic PDB ${symbolLabel} symbol names`
   );
   const recordBytes = encodeClassicPdbNamedSymbolRecord(
     record.kind,
@@ -2195,6 +2201,22 @@ export function replaceClassicPdbThreadDataSymbol(input, options = {}) {
     record.offset
   );
   return replaceClassicPdbSymbolRecord(bytes, pdb, module, moduleIndex, record, recordBytes);
+}
+
+export function replaceClassicPdbDataSymbol(input, options = {}) {
+  return replaceClassicPdbAddressSymbol(input, options, {
+    recordKind: 0x110c,
+    decodedKind: "data",
+    symbolLabel: "data"
+  });
+}
+
+export function replaceClassicPdbThreadDataSymbol(input, options = {}) {
+  return replaceClassicPdbAddressSymbol(input, options, {
+    recordKind: 0x1112,
+    decodedKind: "threadData",
+    symbolLabel: "thread-data"
+  });
 }
 
 export function insertClassicPdbConstantSymbol(
