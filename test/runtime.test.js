@@ -705,7 +705,18 @@ test("rewritten custom-attribute named arguments load in .NET", {
       "    public NamedDataAttribute() { }",
       "}",
       "[NamedData(Count = 5, Label = \"original\")]",
-      "public class NamedDataTarget { }"
+      "public class NamedDataTarget { }",
+      "[System.AttributeUsage(System.AttributeTargets.Class)]",
+      "public abstract class GenericNamedBase<T> : System.Attribute",
+      "{",
+      "    public T Value { get; set; }",
+      "}",
+      "public sealed class ClosedNamedAttribute : GenericNamedBase<int>",
+      "{",
+      "    public ClosedNamedAttribute() { }",
+      "}",
+      "[ClosedNamed(Value = 12)]",
+      "public class ClosedNamedTarget { }"
     ].join("\n"));
     const build = spawnSync(
       "dotnet",
@@ -728,6 +739,31 @@ test("rewritten custom-attribute named arguments load in .NET", {
     assert.deepEqual(
       value.namedArguments.map(({ name, value: argumentValue }) => [name, argumentValue]),
       [["Count", 5], ["Label", "original"]]
+    );
+    const closedNamedTarget = assembly.types.find((type) =>
+      type.name === "ClosedNamedTarget"
+    );
+    const inheritedAttribute = assembly.customAttributes.find((record) =>
+      record.parent?.table === 2 &&
+      record.parent.rid === closedNamedTarget?.rid
+    );
+    assert.ok(closedNamedTarget);
+    assert.ok(inheritedAttribute);
+    const inheritedValue = assembly.parseCustomAttribute(inheritedAttribute.rid);
+    assert.deepEqual(inheritedValue.namedArguments.map(({ name, value: argumentValue }) =>
+      [name, argumentValue]
+    ), [["Value", 12]]);
+    const inheritedTypeMismatch = {
+      ...inheritedValue,
+      namedArguments: inheritedValue.namedArguments.map((argument) => ({
+        ...argument,
+        type: { kind: "string" },
+        value: "twelve"
+      }))
+    };
+    assert.throws(
+      () => assembly.replaceCustomAttribute(inheritedAttribute.rid, inheritedTypeMismatch),
+      /named property Value has a type that does not match/
     );
     const securityAssembly = parseAssembly(assemblyBytes);
     const permissionSet = {

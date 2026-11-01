@@ -1109,9 +1109,9 @@ function findLocalCustomAttributeNamedMember(
   kind,
   name,
   visited = new Set(),
-  genericContext = false
+  typeArguments = []
 ) {
-  if (!type) return { member: null, complete: false, genericContext };
+  if (!type) return { member: null, complete: false, typeArguments };
   if (visited.has(type.rid)) {
     throw new FormatError("Custom-attribute named-member inheritance contains a cycle");
   }
@@ -1123,27 +1123,88 @@ function findLocalCustomAttributeNamedMember(
     throw new FormatError(`Custom-attribute named ${kind} ${name} is ambiguous`);
   }
   if (members.length === 1) {
-    return { member: members[0], complete: true, genericContext };
+    return { member: members[0], complete: true, typeArguments };
   }
   const baseReference = getManagedTypeDefinitionReference(assembly, type.extends);
   if (baseReference?.table === 2) {
     const extendsSignature = type.extends.table === 27
       ? assembly.typeSpecs[type.extends.rid - 1]?.parsedSignature
       : null;
+    const baseType = assembly.types[baseReference.rid - 1];
+    const baseTypeArguments = extendsSignature?.kind === "genericInstance"
+      ? typeArguments === null
+        ? null
+        : extendsSignature.arguments.map((argument) =>
+          substituteCustomAttributeType(argument, typeArguments)
+        )
+      : baseType?.genericParams.length === 0
+        ? []
+        : null;
     return findLocalCustomAttributeNamedMember(
       assembly,
-      assembly.types[baseReference.rid - 1],
+      baseType,
       kind,
       name,
       visited,
-      genericContext || extendsSignature?.kind === "genericInstance"
+      baseTypeArguments
     );
   }
   if (baseReference?.table === 1 &&
       getManagedTypeName(assembly, baseReference) === "System.Attribute") {
-    return { member: null, complete: true, genericContext };
+    return { member: null, complete: true, typeArguments };
   }
-  return { member: null, complete: false, genericContext };
+  return { member: null, complete: false, typeArguments };
+}
+
+function substituteCustomAttributeType(type, typeArguments) {
+  if (!type || typeArguments === null) return type;
+  if (type.kind === "typeParameter") {
+    return typeArguments[type.index] ?? type;
+  }
+  if (type.kind === "modified") {
+    return { ...type, type: substituteCustomAttributeType(type.type, typeArguments) };
+  }
+  if (["array", "szArray", "pointer", "byRef", "pinned"].includes(type.kind)) {
+    return { ...type, type: substituteCustomAttributeType(type.type, typeArguments) };
+  }
+  if (type.kind === "genericInstance") {
+    return {
+      ...type,
+      arguments: type.arguments.map((argument) =>
+        substituteCustomAttributeType(argument, typeArguments)
+      )
+    };
+  }
+  if (type.kind === "functionPointer") {
+    return {
+      ...type,
+      signature: {
+        ...type.signature,
+        returnType: substituteCustomAttributeType(type.signature.returnType, typeArguments),
+        parameters: type.signature.parameters.map((parameter) =>
+          substituteCustomAttributeType(parameter, typeArguments)
+        )
+      }
+    };
+  }
+  return type;
+}
+
+function hasOpenCustomAttributeType(type) {
+  if (!type) return true;
+  if (type.kind === "typeParameter" || type.kind === "methodParameter") return true;
+  if (type.kind === "modified") return hasOpenCustomAttributeType(type.type);
+  if (["array", "szArray", "pointer", "byRef", "pinned"].includes(type.kind)) {
+    return hasOpenCustomAttributeType(type.type);
+  }
+  if (type.kind === "genericInstance") {
+    return type.arguments.some(hasOpenCustomAttributeType);
+  }
+  if (type.kind === "functionPointer") {
+    return hasOpenCustomAttributeType(type.signature.returnType) ||
+      type.signature.parameters.some(hasOpenCustomAttributeType);
+  }
+  return false;
 }
 
 function sameCustomAttributeArgumentType(left, right) {
@@ -1162,7 +1223,7 @@ function sameCustomAttributeArgumentType(left, right) {
 function validateLocalCustomAttributeNamedArguments(
   assembly,
   ownerType,
-  genericContext,
+  typeArguments,
   namedArguments,
   resolveEnum
 ) {
@@ -1174,7 +1235,7 @@ function validateLocalCustomAttributeNamedArguments(
       argument.kind,
       argument.name,
       new Set(),
-      genericContext
+      typeArguments
     );
     if (!located.member) {
       if (located.complete) {
@@ -1195,9 +1256,10 @@ function validateLocalCustomAttributeNamedArguments(
       if (signature.kind !== "field") {
         throw new FormatError(`Custom-attribute named field ${argument.name} has an invalid signature`);
       }
-      if (!located.genericContext &&
+      const fieldType = substituteCustomAttributeType(signature.type, located.typeArguments);
+      if (!hasOpenCustomAttributeType(fieldType) &&
           !sameCustomAttributeArgumentType(
-            getCustomAttributeArgumentType(assembly, signature.type, resolveEnum),
+            getCustomAttributeArgumentType(assembly, fieldType, resolveEnum),
             argument.type
           )) {
         throw new FormatError(
@@ -1216,9 +1278,13 @@ function validateLocalCustomAttributeNamedArguments(
         `Custom-attribute named property ${argument.name} must not have index parameters`
       );
     }
-    if (!located.genericContext &&
+    const propertyType = substituteCustomAttributeType(
+      propertySignature.returnType,
+      located.typeArguments
+    );
+    if (!hasOpenCustomAttributeType(propertyType) &&
         !sameCustomAttributeArgumentType(
-          getCustomAttributeArgumentType(assembly, propertySignature.returnType, resolveEnum),
+          getCustomAttributeArgumentType(assembly, propertyType, resolveEnum),
           argument.type
         )) {
       throw new FormatError(
@@ -1239,21 +1305,24 @@ function validateLocalCustomAttributeNamedArguments(
     const setterSignature = setter
       ? parseSignature(setter.signature, { counts: assembly.tables.counts })
       : null;
+    const setterParameterType = setterSignature?.parameters.length === 1
+      ? substituteCustomAttributeType(
+        setterSignature.parameters[0],
+        located.typeArguments
+      )
+      : null;
+    const setterParameterMatches = hasOpenCustomAttributeType(setterParameterType) ||
+      sameCustomAttributeArgumentType(
+        getCustomAttributeArgumentType(assembly, setterParameterType, resolveEnum),
+        argument.type
+      );
     if (!setter || (setter.flags & 0x7) !== 0x6 || (setter.flags & 0x10) !== 0 ||
         setterSignature.kind !== "method" || !setterSignature.hasThis ||
         setterSignature.explicitThis || setterSignature.generic ||
         setterSignature.parameters.length !== 1 ||
         setterSignature.returnType.kind !== "primitive" ||
         setterSignature.returnType.elementType !== 0x01 ||
-        (!located.genericContext &&
-          !sameCustomAttributeArgumentType(
-            getCustomAttributeArgumentType(
-              assembly,
-              setterSignature.parameters[0],
-              resolveEnum
-            ),
-            argument.type
-          ))) {
+        !setterParameterMatches) {
       throw new FormatError(
         `Custom-attribute named property ${argument.name} must have a public instance setter of the matching type`
       );
@@ -1286,7 +1355,7 @@ function validateLocalPermissionSetNamedArguments(assembly, permissionSet, resol
     validateLocalCustomAttributeNamedArguments(
       assembly,
       ownerType,
-      ownerType.genericParams.length > 0,
+      ownerType.genericParams.length > 0 ? null : [],
       attribute.namedArguments,
       resolveEnum
     );
@@ -1298,11 +1367,12 @@ function getCustomAttributeConstructor(assembly, attribute, resolveEnum) {
   let method;
   let ownerType;
   let localOwnerType = null;
-  let genericContext = false;
+  let typeArguments = null;
   if (constructor?.table === 6) {
     method = assembly.methods[constructor.rid - 1];
     localOwnerType = assembly.types.find((type) => type.methodRids.includes(constructor.rid));
     ownerType = localOwnerType;
+    typeArguments = localOwnerType?.genericParams.length === 0 ? [] : null;
   } else if (constructor?.table === 10) {
     method = assembly.memberRefs.find((reference) => reference.rid === constructor.rid);
     ownerType = method ? getManagedTypeName(assembly, method.parent) : null;
@@ -1315,8 +1385,11 @@ function getCustomAttributeConstructor(assembly, attribute, resolveEnum) {
     const parentSignature = method?.parent?.table === 27
       ? assembly.typeSpecs[method.parent.rid - 1]?.parsedSignature
       : null;
-    genericContext = parentSignature?.kind === "genericInstance" ||
-      (localOwnerType?.genericParams.length ?? 0) > 0;
+    typeArguments = parentSignature?.kind === "genericInstance"
+      ? parentSignature.arguments
+      : localOwnerType?.genericParams.length === 0
+        ? []
+        : null;
   }
   if (!method || method.name !== ".ctor") {
     throw new FormatError(`CustomAttribute row ${attribute.rid} does not reference a supported constructor`);
@@ -1341,7 +1414,7 @@ function getCustomAttributeConstructor(assembly, attribute, resolveEnum) {
   return {
     signature,
     localOwnerType,
-    genericContext,
+    typeArguments,
     fixedTypes: signature.parameters.map((parameter) =>
       getCustomAttributeArgumentType(assembly, parameter, resolveEnum)
     )
@@ -1971,7 +2044,7 @@ export class Assembly {
     }
     const attribute = this.customAttributes[rid - 1];
     const enumResolver = getCustomAttributeEnumResolver(this, resolveEnum);
-    const { fixedTypes, localOwnerType, genericContext } =
+    const { fixedTypes, localOwnerType, typeArguments } =
       getCustomAttributeConstructor(this, attribute, enumResolver);
     const parsed = parseCustomAttributeBlob(
       attribute.value,
@@ -1981,7 +2054,7 @@ export class Assembly {
     validateLocalCustomAttributeNamedArguments(
       this,
       localOwnerType,
-      genericContext,
+      typeArguments,
       parsed.namedArguments,
       enumResolver
     );
@@ -2014,14 +2087,14 @@ export class Assembly {
     }
     const attribute = this.customAttributes[rid - 1];
     const enumResolver = getCustomAttributeEnumResolver(this, resolveEnum);
-    const { fixedTypes, localOwnerType, genericContext } =
+    const { fixedTypes, localOwnerType, typeArguments } =
       getCustomAttributeConstructor(this, attribute, enumResolver);
     const encoded = encodeCustomAttributeBlob(value, fixedTypes);
     const parsed = parseCustomAttributeBlob(encoded, fixedTypes, enumResolver);
     validateLocalCustomAttributeNamedArguments(
       this,
       localOwnerType,
-      genericContext,
+      typeArguments,
       parsed.namedArguments,
       enumResolver
     );
@@ -2108,14 +2181,14 @@ export class Assembly {
       },
       value: new Uint8Array()
     };
-    const { fixedTypes, localOwnerType, genericContext } =
+    const { fixedTypes, localOwnerType, typeArguments } =
       getCustomAttributeConstructor(this, newAttribute, enumResolver);
     const encoded = encodeCustomAttributeBlob(value, fixedTypes);
     const parsed = parseCustomAttributeBlob(encoded, fixedTypes, enumResolver);
     validateLocalCustomAttributeNamedArguments(
       this,
       localOwnerType,
-      genericContext,
+      typeArguments,
       parsed.namedArguments,
       enumResolver
     );
