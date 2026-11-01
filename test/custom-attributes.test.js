@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  encodePermissionSet,
   encodeCustomAttribute,
   parseCustomAttribute,
   parsePermissionSet
@@ -59,6 +60,51 @@ test("custom-attribute codecs support arrays, boxed values, and enums", () => {
   };
   const bytes = encodeCustomAttribute(value, fixedTypes);
   assert.deepEqual(parseCustomAttribute(bytes, fixedTypes, () => 0x08), value);
+});
+
+test("custom-attribute 64-bit integers preserve exact bigint values", () => {
+  const fixedTypes = [
+    { kind: "primitive", elementType: 0x0a },
+    { kind: "primitive", elementType: 0x0b }
+  ];
+  const value = {
+    fixedArguments: [-0x8000000000000000n, 0xffffffffffffffffn],
+    namedArguments: []
+  };
+  const encoded = encodeCustomAttribute(value, fixedTypes);
+  assert.deepEqual(parseCustomAttribute(encoded, fixedTypes), value);
+  assert.throws(() => encodeCustomAttribute({
+    fixedArguments: [Number.MAX_SAFE_INTEGER + 1, 0n],
+    namedArguments: []
+  }, fixedTypes), /safe integers or bigints/);
+  assert.throws(() => encodeCustomAttribute({
+    fixedArguments: [0n, Number.MAX_SAFE_INTEGER + 1],
+    namedArguments: []
+  }, fixedTypes), /safe integers or bigints/);
+});
+
+test("binary PermissionSet encoding preserves 64-bit integer arguments", () => {
+  const permissionSet = {
+    format: "binary",
+    attributes: [{
+      typeName: "Example.Permission, Example",
+      namedArguments: [
+        {
+          kind: "field",
+          type: { kind: "primitive", elementType: 0x0a },
+          name: "Signed",
+          value: -9007199254740993n
+        },
+        {
+          kind: "field",
+          type: { kind: "primitive", elementType: 0x0b },
+          name: "Unsigned",
+          value: 9007199254740993n
+        }
+      ]
+    }]
+  };
+  assert.deepEqual(parsePermissionSet(encodePermissionSet(permissionSet)), permissionSet);
 });
 
 test("custom-attribute codecs support System.Type values and boxed System.Type values", () => {

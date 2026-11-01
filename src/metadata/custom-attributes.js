@@ -87,6 +87,14 @@ function readPrimitive(reader, elementType) {
   throw new UnsupportedFormatError(`Unsupported custom-attribute primitive 0x${elementType.toString(16)}`);
 }
 
+function toBigInt(value) {
+  if (typeof value === "bigint") return value;
+  if (!Number.isSafeInteger(value)) {
+    throw new TypeError("Custom-attribute integer values must be safe integers or bigints");
+  }
+  return BigInt(value);
+}
+
 function writePrimitive(output, elementType, value) {
   const buffer = new ArrayBuffer(8);
   const view = new DataView(buffer);
@@ -111,7 +119,7 @@ function writePrimitive(output, elementType, value) {
     if (typeof value !== "number" && typeof value !== "bigint") {
       throw new TypeError("Custom-attribute integer values must be numbers or bigints");
     }
-    const big = typeof value === "bigint" ? value : BigInt(value);
+    const big = toBigInt(value);
     if (elementType === 0x06) {
       if (big < -0x8000n || big > 0x7fffn) throw new RangeError("Custom-attribute value is outside i2 range");
       view.setInt16(0, Number(big), true); output.push(view.getUint8(0), view.getUint8(1)); return;
@@ -129,7 +137,7 @@ function writePrimitive(output, elementType, value) {
     if (typeof value !== "number" && typeof value !== "bigint") {
       throw new TypeError("Custom-attribute integer values must be numbers or bigints");
     }
-    const big = typeof value === "bigint" ? value : BigInt(value);
+    const big = toBigInt(value);
     const max = elementType === 0x09 ? 0xffffffffn : 0xffffffffffffffffn;
     if (big < 0n || big > max) throw new RangeError("Custom-attribute value is outside unsigned range");
     view.setBigUint64(0, big, true);

@@ -1852,9 +1852,11 @@ test("rewritten custom-attribute named arguments load in .NET", {
       "{",
       "    public int Count { get; set; }",
       "    public string Label;",
+      "    public long Wide { get; set; }",
+      "    public ulong UnsignedWide;",
       "    public NamedDataAttribute() { }",
       "}",
-      "[NamedData(Count = 5, Label = \"original\")]",
+      "[NamedData(Count = 5, Label = \"original\", Wide = 9223372036854775807L, UnsignedWide = 18446744073709551615UL)]",
       "public class NamedDataTarget { }",
       "[System.AttributeUsage(System.AttributeTargets.Class)]",
       "public abstract class GenericNamedBase<T> : System.Attribute",
@@ -1888,7 +1890,12 @@ test("rewritten custom-attribute named arguments load in .NET", {
     const value = assembly.parseCustomAttribute(attribute.rid);
     assert.deepEqual(
       value.namedArguments.map(({ name, value: argumentValue }) => [name, argumentValue]),
-      [["Count", 5], ["Label", "original"]]
+      [
+        ["Count", 5],
+        ["Label", "original"],
+        ["Wide", 9223372036854775807n],
+        ["UnsignedWide", 18446744073709551615n]
+      ]
     );
     const closedNamedTarget = assembly.types.find((type) =>
       type.name === "ClosedNamedTarget"
@@ -1986,6 +1993,8 @@ test("rewritten custom-attribute named arguments load in .NET", {
     assert.deepEqual(assembly.serialize(), beforeInvalidAttributes);
     value.namedArguments.find((argument) => argument.name === "Count").value = 7;
     value.namedArguments.find((argument) => argument.name === "Label").value = "updated";
+    value.namedArguments.find((argument) => argument.name === "Wide").value = -9007199254740993n;
+    value.namedArguments.find((argument) => argument.name === "UnsignedWide").value = 9007199254740993n;
     assembly.replaceCustomAttribute(attribute.rid, value);
     const rewrittenBytes = assembly.serialize();
     const reparsed = parseAssembly(rewrittenBytes);
@@ -1993,7 +2002,12 @@ test("rewritten custom-attribute named arguments load in .NET", {
       reparsed.parseCustomAttribute(attribute.rid).namedArguments.map(({ name, value: argumentValue }) =>
         [name, argumentValue]
       ),
-      [["Count", 7], ["Label", "updated"]]
+      [
+        ["Count", 7],
+        ["Label", "updated"],
+        ["Wide", -9007199254740993n],
+        ["UnsignedWide", 9007199254740993n]
+      ]
     );
     await writeFile(assemblyPath, rewrittenBytes);
 
@@ -2015,7 +2029,9 @@ test("rewritten custom-attribute named arguments load in .NET", {
       "var attribute = assembly.GetType(\"NamedDataTarget\")!",
       "    .GetCustomAttributes(false).Single(value => value.GetType().Name == \"NamedDataAttribute\");",
       "Console.WriteLine(attribute.GetType().GetProperty(\"Count\")!.GetValue(attribute) + \":\" +",
-      "    attribute.GetType().GetField(\"Label\")!.GetValue(attribute));"
+      "    attribute.GetType().GetField(\"Label\")!.GetValue(attribute) + \":\" +",
+      "    attribute.GetType().GetProperty(\"Wide\")!.GetValue(attribute) + \":\" +",
+      "    attribute.GetType().GetField(\"UnsignedWide\")!.GetValue(attribute));"
     ].join("\n"));
     const execution = spawnSync(
       "dotnet",
@@ -2023,7 +2039,7 @@ test("rewritten custom-attribute named arguments load in .NET", {
       { encoding: "utf8", timeout: 120_000 }
     );
     assert.equal(execution.status, 0, execution.stderr || execution.stdout || execution.error?.message);
-    assert.equal(execution.stdout.trim().split(/\r?\n/).at(-1), "7:updated");
+    assert.equal(execution.stdout.trim().split(/\r?\n/).at(-1), "7:updated:-9007199254740993:9007199254740993");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
