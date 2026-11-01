@@ -32,6 +32,7 @@ import { parseManifestResources } from "./metadata/resources.js";
 import {
   validatePortablePdbAssemblyReferences,
   validatePortablePdbCodeViewIdentity,
+  updateEmbeddedPortablePdbRowCounts,
   insertEmbeddedPortablePdbMethod as insertPortablePdbMethod,
   remapEmbeddedPortablePdbLocalSignatures as remapPortablePdbLocalSignatures,
   removeEmbeddedPortablePdbMethod as removePortablePdbMethod,
@@ -2973,6 +2974,35 @@ export class Assembly {
     this._embeddedPortablePdbEdits.set(debugEntryIndex, refreshed.bytes);
     this._debugRecordEdits = debugRecordEdits;
     return this;
+  }
+
+  #synchronizeEmbeddedPortablePdbRowCounts() {
+    const entries = this.pe.debugDirectoryEntries
+      .map((entry, index) => ({ entry, index }))
+      .filter(({ entry }) => entry.embeddedPortablePdb);
+    if (entries.length === 0) return;
+
+    const updates = entries.map(({ entry, index }) => {
+      const staged = this._embeddedPortablePdbEdits.get(index);
+      const pdb = staged
+        ? parseEmbeddedPortablePdbData(staged, 0, staged.length)
+        : entry.embeddedPortablePdb;
+      return {
+        index,
+        data: updateEmbeddedPortablePdbRowCounts(pdb, this.tables.counts)
+      };
+    }).filter(({ data }) => data !== null);
+    if (updates.length === 0) return;
+    if (entries.length !== 1) {
+      throw new UnsupportedFormatError(
+        "Type-system row additions cannot update multiple embedded Portable PDBs"
+      );
+    }
+    this.#replaceEmbeddedPortablePdb(
+      updates[0].index,
+      updates[0].data,
+      this.tables.counts
+    );
   }
 
   replaceEmbeddedPortablePdbDocumentName(debugEntryIndex, documentRid, name, separator) {
@@ -13259,6 +13289,7 @@ export class Assembly {
   }
 
   serialize() {
+    this.#synchronizeEmbeddedPortablePdbRowCounts();
     const structurallyDirty = this._structuralBodies.size > 0 ||
       this._addedMethodBodies.size > 0 || this._metadataDirty ||
       this._resourceEdits.size > 0 || this._clearResourcesDirectory ||

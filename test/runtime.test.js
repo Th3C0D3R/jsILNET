@@ -83,6 +83,20 @@ test("trailing abstract MethodDef removal updates an embedded Portable PDB", {
     assert.ok(assembly.tables.counts[8] > 0);
     assert.ok(assembly.tables.counts[42] > 0);
     assert.ok(debugEntry);
+    const appendedReference = parseAssembly(original);
+    const appendedReferencePdb = appendedReference.pe.debugDirectoryEntries.find((entry) =>
+      entry.embeddedPortablePdb
+    )?.embeddedPortablePdb;
+    assert.ok(appendedReferencePdb?.rowCounts.has(35));
+    appendedReference.addAssemblyRef({ name: "PdbRowCount.Dependency" });
+    const appendedReferenceReparsed = parseAssembly(appendedReference.serialize());
+    const appendedReferencePdbReparsed = appendedReferenceReparsed.pe.debugDirectoryEntries.find((entry) =>
+      entry.embeddedPortablePdb
+    )?.embeddedPortablePdb;
+    assert.equal(
+      appendedReferencePdbReparsed?.rowCounts.get(35),
+      appendedReferenceReparsed.tables.counts[35]
+    );
     assert.equal(debugEntry.embeddedPortablePdb.customDebugInformation.some((record) =>
       record.Parent.target?.table === 6 && record.Parent.target.rid === method.rid
     ), false);

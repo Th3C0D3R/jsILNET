@@ -33,6 +33,55 @@ export function validatePortablePdbAssemblyReferences(pdb, assemblyRowCounts) {
   }
 }
 
+export function updateEmbeddedPortablePdbRowCounts(pdb, assemblyRowCounts) {
+  if (!pdb?.metadataRoot?.streams || !(pdb.rowCounts instanceof Map) ||
+      !Array.isArray(pdb.tables?.counts) || !Array.isArray(assemblyRowCounts)) {
+    throw new TypeError("Portable PDB row-count update requires parsed data and assembly row counts");
+  }
+  const rowCounts = new Map();
+  let changed = false;
+  for (const [table, count] of pdb.rowCounts) {
+    const updatedCount = assemblyRowCounts[table];
+    if (!Number.isInteger(updatedCount) || updatedCount < count) {
+      throw new UnsupportedFormatError(
+        `Portable PDB row-count update cannot safely reduce type-system table ${table}`
+      );
+    }
+    rowCounts.set(table, updatedCount);
+    changed ||= updatedCount !== count;
+  }
+  if (!changed) return null;
+
+  const pdbStream = new Uint8Array(32 + rowCounts.size * 4);
+  pdbStream.set(pdb.id);
+  const pdbView = new DataView(pdbStream.buffer);
+  pdbView.setUint32(20, pdb.entryPointToken, true);
+  pdbView.setUint32(24, Number(pdb.referencedTypeSystemTables & 0xffffffffn), true);
+  pdbView.setUint32(28, Number(pdb.referencedTypeSystemTables >> 32n), true);
+  let countOffset = 32;
+  for (const [table, count] of [...rowCounts].sort(([left], [right]) => left - right)) {
+    pdbView.setUint32(countOffset, count, true);
+    countOffset += 4;
+  }
+
+  const tableCounts = [...pdb.tables.counts];
+  for (let table = 0; table < 45; table++) {
+    tableCounts[table] = assemblyRowCounts[table];
+  }
+  const streams = new Map([...pdb.metadataRoot.streams].map(([name, stream]) =>
+    [name, { ...stream, bytes: Uint8Array.from(stream.bytes) }]
+  ));
+  const metadataPdbStream = streams.get("#Pdb");
+  if (!metadataPdbStream) throw new FormatError("Portable PDB is missing its #Pdb stream");
+  metadataPdbStream.bytes = pdbStream;
+  return serializeEmbeddedPortablePdb({
+    ...pdb,
+    metadataRoot: { ...pdb.metadataRoot, streams },
+    rowCounts,
+    tables: { ...pdb.tables, counts: tableCounts }
+  });
+}
+
 function decodeUtf8(bytes, context) {
   try {
     return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
