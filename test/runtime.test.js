@@ -14,6 +14,7 @@ import {
   parsePE,
   replaceEmbeddedPortablePdbDocumentName,
   replaceClassicPdbStringTableName,
+  replaceClassicPdbFileChecksum,
   replaceClassicPdbLineInfo,
   replaceClassicPdbSymbolName,
   replaceEmbeddedPortablePdbSequencePoints,
@@ -427,6 +428,28 @@ test("classic PDB parser reads a compiler-produced MSF identity", {
         record.decoded?.kind === "compileInfo" && record.decoded.version.length > 0
       )
     ));
+    const checksumModuleIndex = pdb.dbi.modules.findIndex((module) =>
+      (module.c13?.fileChecksums.size ?? 0) > 0
+    );
+    assert.ok(checksumModuleIndex >= 0);
+    const checksumModule = pdb.dbi.modules[checksumModuleIndex];
+    const [checksumOffset, checksumRecord] = checksumModule.c13.fileChecksums.entries().next().value;
+    const replacementSize = checksumRecord.checksum.length === 32 ? 20 : 32;
+    const replacementChecksum = new Uint8Array(replacementSize).fill(0x5a);
+    const resizedPdbBytes = replaceClassicPdbFileChecksum(pdbBytes, {
+      moduleIndex: checksumModuleIndex,
+      fileChecksumOffset: checksumOffset,
+      checksum: replacementChecksum
+    });
+    const resizedPdb = parseClassicPdb(resizedPdbBytes);
+    const resizedModule = resizedPdb.dbi.modules[checksumModuleIndex];
+    const resizedChecksum = resizedModule.c13.fileChecksums.get(checksumOffset);
+    assert.deepEqual(resizedChecksum.checksum, replacementChecksum);
+    for (const subsection of resizedModule.c13.lines) {
+      for (const block of subsection.blocks) {
+        assert.ok(resizedModule.c13.fileChecksums.has(block.fileChecksumOffset));
+      }
+    }
     assert.ok(pdb.dbi.modules.some((module) =>
       module.c13?.lines.some((line) =>
         line.blocks.some((block) =>
