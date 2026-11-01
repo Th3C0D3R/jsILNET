@@ -156,7 +156,7 @@ Custom-attribute constructor validation resolves local generic TypeSpec parents 
 
 Assembly parsing rejects cycles in locally defined TypeDef inheritance chains, including generic TypeSpec base types.
 
-`addEmbeddedPortablePdbSourceLink` appends a module-scoped SourceLink custom-debug record when one does not already exist; the existing replace API continues to require a record.
+`addEmbeddedPortablePdbSource` adds an EmbeddedSource record for a Document that does not already have one and updates its recognized SHA-1/SHA-2 hash. `addEmbeddedPortablePdbSourceLink` appends a module-scoped SourceLink custom-debug record when one does not already exist; the existing replace APIs continue to require an existing record.
 
 PE32 and PE32+ CLI assemblies are covered, including PE32+ structural metadata rewriting and output reparsing. The parser requires one Module row, at most one Assembly row, and the special `<Module>` TypeDef first; it also rejects invalid metadata-root stream directories, table-header reserved values, malformed heap entries (including unreferenced entries), and malformed sentinels. Unknown metadata streams are retained byte-for-byte on no-op round trips; operations that remap metadata tokens refuse unknown streams. Supported Field, MethodDef, Param, Property, and Event ownership edits handle `#-` pointer tables only when each table is a bijection to its target table. The implementation otherwise assumes well-formed assemblies from standard compilers; broader malformed/obfuscated-input hardening remains incomplete. Unsupported table/stream layouts and invalid bounds or references encountered during parsing produce explicit errors.
 

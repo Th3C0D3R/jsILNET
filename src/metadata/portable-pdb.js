@@ -13,8 +13,18 @@ import { encodeCodedIndex } from "./tables.js";
 
 const maxEmbeddedSourceSize = 0x10000000;
 const maxEmbeddedPortablePdbSize = 0x10000000;
+const documentHashAlgorithms = new Map([
+  ["ff1816ec-aa5e-4d10-87f7-6f4963833460", "sha1"],
+  ["8829d00f-11b8-4213-878b-770e8597ac16", "sha256"],
+  ["d99cfeb1-8c43-444a-8a6c-b61269d2a0bf", "sha384"],
+  ["ef2d1afc-6550-46d6-b14b-d70afe9a5566", "sha512"]
+]);
 const embeddedSourceKind = "0e8a571b-6926-466e-b4ad-8ab04611f5fe";
 const sourceLinkKind = "cc110556-a091-4d38-9fec-25ab9a351a6a";
+const embeddedSourceGuidBytes = Uint8Array.from([
+  0x1b, 0x57, 0x8a, 0x0e, 0x26, 0x69, 0x6e, 0x46,
+  0xb4, 0xad, 0x8a, 0xb0, 0x46, 0x11, 0xf5, 0xfe
+]);
 const sourceLinkGuidBytes = Uint8Array.from([
   0x56, 0x05, 0x11, 0xcc, 0x91, 0xa0, 0x38, 0x4d,
   0x9f, 0xec, 0x25, 0xab, 0x9a, 0x35, 0x1a, 0x6a
@@ -1255,30 +1265,10 @@ export function replaceEmbeddedPortablePdbSource(pdb, documentRid, source, { com
   if (!documentRow) {
     throw new FormatError(`Portable PDB Document row ${documentRid} is missing`);
   }
-  const hashAlgorithmBytes = pdb.heaps.getGuid(documentRow.HashAlgorithm);
-  const hashAlgorithm = hashAlgorithmBytes ? formatGuid(hashAlgorithmBytes) : null;
-  const hashAlgorithms = new Map([
-    ["ff1816ec-aa5e-4d10-87f7-6f4963833460", "sha1"],
-    ["8829d00f-11b8-4213-878b-770e8597ac16", "sha256"],
-    ["d99cfeb1-8c43-444a-8a6c-b61269d2a0bf", "sha384"],
-    ["ef2d1afc-6550-46d6-b14b-d70afe9a5566", "sha512"]
-  ]);
-  const hashName = hashAlgorithms.get(hashAlgorithm);
-  if (!hashName) {
-    throw new UnsupportedFormatError(
-      `Portable PDB Document hash algorithm ${hashAlgorithm ?? "(nil)"} is unsupported`
-    );
-  }
+  const hashName = getPortablePdbDocumentHashName(pdb, documentRow);
   const rawSource = Uint8Array.from(source);
   const sourceHash = Uint8Array.from(createHash(hashName).update(rawSource).digest());
-  const compressed = compress && rawSource.length > 0
-    ? Uint8Array.from(deflateRawSync(rawSource))
-    : null;
-  const useCompressed = compressed !== null && compressed.length < rawSource.length;
-  const payload = useCompressed ? compressed : rawSource;
-  const value = new Uint8Array(4 + payload.length);
-  new DataView(value.buffer).setUint32(0, useCompressed ? rawSource.length : 0, true);
-  value.set(payload, 4);
+  const value = encodeEmbeddedSourceValue(rawSource, compress);
 
   return replacePortablePdbCustomDebugInformationValue(
     pdb,
@@ -1286,6 +1276,121 @@ export function replaceEmbeddedPortablePdbSource(pdb, documentRid, source, { com
     value,
     { documentRid, hash: sourceHash }
   );
+}
+
+export function addEmbeddedPortablePdbSource(pdb, documentRid, source, { compress = true } = {}) {
+  if (!pdb?.metadataRoot?.streams || !(pdb.tables?.rows instanceof Map) ||
+      !Array.isArray(pdb.tables.counts) || !Array.isArray(pdb.customDebugInformation)) {
+    throw new TypeError("Portable PDB EmbeddedSource editing requires parsed PDB data");
+  }
+  if (!Number.isInteger(documentRid) || documentRid < 1 ||
+      documentRid > pdb.tables.counts[48]) {
+    throw new RangeError(`Invalid Portable PDB Document row ID ${documentRid}`);
+  }
+  if (!(source instanceof Uint8Array)) {
+    throw new TypeError("Portable PDB embedded source must be a Uint8Array");
+  }
+  if (source.length > maxEmbeddedSourceSize) {
+    throw new UnsupportedFormatError(
+      `EmbeddedSource exceeds the ${maxEmbeddedSourceSize}-byte size limit`
+    );
+  }
+  if (typeof compress !== "boolean") {
+    throw new TypeError("Portable PDB EmbeddedSource compression option must be a boolean");
+  }
+  if (pdb.customDebugInformation.some((row) =>
+    row.kind === embeddedSourceKind &&
+    row.Parent.target?.table === 48 &&
+    row.Parent.target.rid === documentRid
+  )) {
+    throw new UnsupportedFormatError(
+      `Portable PDB Document row ${documentRid} already has an EmbeddedSource record`
+    );
+  }
+  const documentRow = pdb.tables.rows.get(48)?.[documentRid - 1];
+  if (!documentRow) {
+    throw new FormatError(`Portable PDB Document row ${documentRid} is missing`);
+  }
+  const hashName = getPortablePdbDocumentHashName(pdb, documentRow);
+  const rawSource = Uint8Array.from(source);
+  const sourceHash = Uint8Array.from(createHash(hashName).update(rawSource).digest());
+  const value = encodeEmbeddedSourceValue(rawSource, compress);
+  const streams = new Map([...pdb.metadataRoot.streams].map(([streamName, stream]) =>
+    [streamName, { ...stream, bytes: Uint8Array.from(stream.bytes) }]
+  ));
+  const guidStream = streams.get("#GUID");
+  const blobStream = streams.get("#Blob");
+  if (!guidStream || !blobStream) {
+    throw new FormatError("Portable PDB metadata is missing its GUID or Blob heap");
+  }
+  if (guidStream.bytes.length % 16 !== 0) {
+    throw new FormatError("Portable PDB GUID heap size is not a multiple of 16 bytes");
+  }
+  const kindIndex = guidStream.bytes.length / 16 + 1;
+  const expandedGuidStream = new Uint8Array(guidStream.bytes.length + 16);
+  expandedGuidStream.set(guidStream.bytes);
+  expandedGuidStream.set(embeddedSourceGuidBytes, guidStream.bytes.length);
+  guidStream.bytes = expandedGuidStream;
+  const appendedValue = appendBlobHeap(blobStream.bytes, value);
+  const appendedHash = appendBlobHeap(appendedValue.heap, sourceHash);
+  blobStream.bytes = appendedHash.heap;
+
+  const parent = {
+    raw: encodeCodedIndex(48, documentRid, "HasCustomDebugInformation"),
+    target: { table: 48, tableName: "Document", rid: documentRid }
+  };
+  const rows = new Map(pdb.tables.rows);
+  rows.set(48, (pdb.tables.rows.get(48) ?? []).map((row) =>
+    row.rid === documentRid ? { ...row, Hash: appendedHash.index } : { ...row }
+  ));
+  const debugRows = [...(pdb.tables.rows.get(55) ?? []), {
+    table: 55,
+    tableName: "CustomDebugInformation",
+    rid: 0,
+    Parent: parent,
+    Kind: kindIndex,
+    Value: appendedValue.index
+  }].sort((left, right) => left.Parent.raw - right.Parent.raw)
+    .map((row, index) => ({ ...row, rid: index + 1 }));
+  rows.set(55, debugRows);
+  const counts = [...pdb.tables.counts];
+  counts[55] = debugRows.length;
+  return serializeEmbeddedPortablePdb({
+    ...pdb,
+    metadataRoot: { ...pdb.metadataRoot, streams },
+    tables: {
+      ...pdb.tables,
+      valid: debugRows.length > 0
+        ? pdb.tables.valid | (1n << 55n)
+        : pdb.tables.valid & ~(1n << 55n),
+      counts,
+      rows
+    }
+  });
+}
+
+function getPortablePdbDocumentHashName(pdb, documentRow) {
+  const hashAlgorithmBytes = pdb.heaps.getGuid(documentRow.HashAlgorithm);
+  const hashAlgorithm = hashAlgorithmBytes ? formatGuid(hashAlgorithmBytes) : null;
+  const hashName = documentHashAlgorithms.get(hashAlgorithm);
+  if (!hashName) {
+    throw new UnsupportedFormatError(
+      `Portable PDB Document hash algorithm ${hashAlgorithm ?? "(nil)"} is unsupported`
+    );
+  }
+  return hashName;
+}
+
+function encodeEmbeddedSourceValue(source, compress) {
+  const compressed = compress && source.length > 0
+    ? Uint8Array.from(deflateRawSync(source))
+    : null;
+  const useCompressed = compressed !== null && compressed.length < source.length;
+  const payload = useCompressed ? compressed : source;
+  const value = new Uint8Array(4 + payload.length);
+  new DataView(value.buffer).setUint32(0, useCompressed ? source.length : 0, true);
+  value.set(payload, 4);
+  return value;
 }
 
 function replacePortablePdbCustomDebugInformationValue(

@@ -19,6 +19,7 @@ import {
   replaceEmbeddedPortablePdbSequencePoints,
   replaceEmbeddedPortablePdbSourceLink,
   addEmbeddedPortablePdbSourceLink,
+  addEmbeddedPortablePdbSource,
   replaceEmbeddedPortablePdbSource,
   serializeEmbeddedPortablePdb
 } from "../src/index.js";
@@ -671,9 +672,9 @@ test("strong-name signed PE32+ assemblies load and execute in .NET", {
       "public abstract class GenericBaseAttribute<T> : System.Attribute { }",
       "public sealed class GenericDataAttribute<T> : GenericBaseAttribute<T>",
       "{",
-      "    public GenericDataAttribute() { }",
+      "    public GenericDataAttribute(int value) { }",
       "}",
-      "[GenericData<int>]",
+      "[GenericData<int>(42)]",
       "public class GenericDataTarget { }"
     ].join("\n"));
     const libraryBuild = spawnSync(
@@ -720,7 +721,7 @@ test("strong-name signed PE32+ assemblies load and execute in .NET", {
     });
     assert.ok(genericAttributeType);
     assert.ok(genericAttribute);
-    assert.deepEqual(assembly.parseCustomAttribute(genericAttribute.rid).fixedArguments, []);
+    assert.deepEqual(assembly.parseCustomAttribute(genericAttribute.rid).fixedArguments, [42]);
     const invalidGenericAttributeAssembly = parseAssembly(assemblyBytes);
     const invalidGenericAttributeType = invalidGenericAttributeAssembly.types.find((type) =>
       type.name === "GenericDataAttribute`1"
@@ -1125,6 +1126,81 @@ test("strong-name signed PE32+ assemblies load and execute in .NET", {
       Uint8Array.from(changedSourcePdb.heaps.getBlob(changedDocument.Hash)),
       Uint8Array.from(createHash("sha256").update(changedSource).digest())
     );
+    const sourceFreeRows = new Map(embeddedPdb.tables.rows);
+    const sourceFreeDebugRows = embeddedPdb.tables.rows.get(55)
+      .filter((row) => row.rid !== embeddedSourceRecord.rid)
+      .map((row, index) => ({ ...row, rid: index + 1 }));
+    sourceFreeRows.set(55, sourceFreeDebugRows);
+    const sourceFreeCounts = [...embeddedPdb.tables.counts];
+    sourceFreeCounts[55] = sourceFreeDebugRows.length;
+    const sourceFreePdbBytes = serializeEmbeddedPortablePdb({
+      ...embeddedPdb,
+      customDebugInformation: embeddedPdb.customDebugInformation.filter((record) =>
+        record.rid !== embeddedSourceRecord.rid
+      ),
+      tables: {
+        ...embeddedPdb.tables,
+        valid: sourceFreeDebugRows.length > 0
+          ? embeddedPdb.tables.valid
+          : embeddedPdb.tables.valid & ~(1n << 55n),
+        counts: sourceFreeCounts,
+        rows: sourceFreeRows
+      }
+    });
+    const sourceFreePdb = parseEmbeddedPortablePdbData(
+      sourceFreePdbBytes,
+      0,
+      sourceFreePdbBytes.length
+    );
+    const addedSourcePdbBytes = addEmbeddedPortablePdbSource(
+      sourceFreePdb,
+      embeddedSourceRecord.Parent.target.rid,
+      changedSource
+    );
+    const addedSourcePdb = parseEmbeddedPortablePdbData(
+      addedSourcePdbBytes,
+      0,
+      addedSourcePdbBytes.length
+    );
+    assert.deepEqual(
+      addedSourcePdb.customDebugInformation.find((record) =>
+        record.kind === embeddedSourceRecord.kind &&
+        record.Parent.target.rid === embeddedSourceRecord.Parent.target.rid
+      ).embeddedSource,
+      changedSource
+    );
+    const addedSourceDocument = addedSourcePdb.documents.find((document) =>
+      document.rid === embeddedSourceRecord.Parent.target.rid
+    );
+    assert.deepEqual(
+      Uint8Array.from(addedSourcePdb.heaps.getBlob(addedSourceDocument.Hash)),
+      Uint8Array.from(createHash("sha256").update(changedSource).digest())
+    );
+    assert.throws(() => addEmbeddedPortablePdbSource(
+      addedSourcePdb,
+      embeddedSourceRecord.Parent.target.rid,
+      changedSource
+    ), /already has an EmbeddedSource record/);
+    const sourceAddedAssembly = parseAssembly(assemblyBytes);
+    const sourceAddedDebugIndex = sourceAddedAssembly.pe.debugDirectoryEntries.findIndex((entry) =>
+      entry.embeddedPortablePdb
+    );
+    sourceAddedAssembly.replaceEmbeddedPortablePdb(sourceAddedDebugIndex, sourceFreePdbBytes);
+    const sourceAddedReparsed = parseAssembly(sourceAddedAssembly.serialize());
+    const sourceAddedPdbEntryIndex = sourceAddedReparsed.pe.debugDirectoryEntries.findIndex(
+      (entry) => entry.embeddedPortablePdb
+    );
+    sourceAddedReparsed.addEmbeddedPortablePdbSource(
+      sourceAddedPdbEntryIndex,
+      embeddedSourceRecord.Parent.target.rid,
+      changedSource
+    );
+    assert.ok(parseAssembly(sourceAddedReparsed.serialize()).pe.debugDirectoryEntries
+      .find((entry) => entry.embeddedPortablePdb)
+      .embeddedPortablePdb.customDebugInformation.some((record) =>
+        record.kind === embeddedSourceRecord.kind &&
+        record.Parent.target.rid === embeddedSourceRecord.Parent.target.rid
+      ));
     const nilHashRows = new Map(embeddedPdb.tables.rows);
     nilHashRows.set(48, embeddedPdb.tables.rows.get(48).map((row) =>
       row.rid === changedDocument.rid ? { ...row, HashAlgorithm: 0 } : { ...row }
