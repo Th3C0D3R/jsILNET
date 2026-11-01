@@ -554,7 +554,10 @@ test("adding an embedded Portable PDB Document updates the PDB and PE identity",
       "  </PropertyGroup>",
       "</Project>"
     ].join("\n"));
-    await writeFile(join(directory, "Fixture.cs"), "public class DocumentFixture { }");
+    await writeFile(
+      join(directory, "Fixture.cs"),
+      "public class DocumentFixture { public int Get() { return 1; } }"
+    );
     const build = spawnSync(
       "dotnet",
       ["build", project, "--configuration", "Debug", "--output", output, "--nologo"],
@@ -572,6 +575,10 @@ test("adding an embedded Portable PDB Document updates the PDB and PE identity",
     const originalPdb = assembly.pe.debugDirectoryEntries[debugIndex].embeddedPortablePdb;
     const originalDocumentCount = originalPdb.documents.length;
     const originalId = Uint8Array.from(originalPdb.id);
+    const referencedDocumentRid = originalPdb.methodDebugInformation.find((method) =>
+      method.sequencePoints.length > 0
+    )?.sequencePoints[0].documentRid;
+    assert.ok(referencedDocumentRid);
     const hashAlgorithmGuid = Uint8Array.from({ length: 16 }, (_, index) => index + 1);
     const languageGuid = Uint8Array.from({ length: 16 }, (_, index) => 16 - index);
     const hash = Uint8Array.of(1, 2, 3, 4);
@@ -610,6 +617,19 @@ test("adding an embedded Portable PDB Document updates the PDB and PE identity",
       hash
     );
     assert.notDeepEqual(rewrittenPdb.id, originalId);
+    assert.throws(
+      () => assembly.removeEmbeddedPortablePdbDocument(debugIndex, referencedDocumentRid),
+      /referenced by method debug information/
+    );
+    assembly.removeEmbeddedPortablePdbDocument(debugIndex, originalDocumentCount + 1);
+    const restoredPdb = parseAssembly(assembly.serialize()).pe.debugDirectoryEntries.find(
+      (entry) => entry.embeddedPortablePdb
+    ).embeddedPortablePdb;
+    assert.equal(restoredPdb.documents.length, originalDocumentCount);
+    assert.equal(
+      restoredPdb.documents.some((document) => document.name === "generated/new-file.cs"),
+      false
+    );
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
