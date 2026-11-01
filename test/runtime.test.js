@@ -681,6 +681,98 @@ test("rewritten and signed IL assemblies with 15 directories load in .NET", {
   }
 });
 
+test("rewritten custom-attribute named arguments load in .NET", {
+  skip: dotnetAvailable ? false : ".NET SDK/runtime is unavailable"
+}, async () => {
+  const directory = await mkdtemp(join(tmpdir(), "jsilnet-named-attribute-"));
+  try {
+    const libraryDirectory = join(directory, "library");
+    const project = join(directory, "NamedAttributes.csproj");
+    await writeFile(project, [
+      "<Project Sdk=\"Microsoft.NET.Sdk\">",
+      "  <PropertyGroup>",
+      `    <TargetFramework>${targetFramework}</TargetFramework>`,
+      "    <DebugType>none</DebugType>",
+      "  </PropertyGroup>",
+      "</Project>"
+    ].join("\n"));
+    await writeFile(join(directory, "NamedAttributes.cs"), [
+      "[System.AttributeUsage(System.AttributeTargets.Class)]",
+      "public sealed class NamedDataAttribute : System.Attribute",
+      "{",
+      "    public int Count { get; set; }",
+      "    public string Label;",
+      "    public NamedDataAttribute() { }",
+      "}",
+      "[NamedData(Count = 5, Label = \"original\")]",
+      "public class NamedDataTarget { }"
+    ].join("\n"));
+    const build = spawnSync(
+      "dotnet",
+      ["build", project, "--configuration", "Release", "--output", libraryDirectory, "--nologo"],
+      { encoding: "utf8", timeout: 120_000 }
+    );
+    assert.equal(build.status, 0, build.stderr || build.stdout || build.error?.message);
+
+    const assemblyPath = join(libraryDirectory, "NamedAttributes.dll");
+    const assembly = parseAssembly(Uint8Array.from(await readFile(assemblyPath)));
+    const namedTarget = assembly.types.find((type) => type.name === "NamedDataTarget");
+    const attribute = assembly.customAttributes.find((record) =>
+      record.parent?.table === 2 &&
+      record.parent.rid === namedTarget?.rid
+    );
+    assert.ok(namedTarget);
+    assert.ok(attribute);
+    const value = assembly.parseCustomAttribute(attribute.rid);
+    assert.deepEqual(
+      value.namedArguments.map(({ name, value: argumentValue }) => [name, argumentValue]),
+      [["Count", 5], ["Label", "original"]]
+    );
+    value.namedArguments.find((argument) => argument.name === "Count").value = 7;
+    value.namedArguments.find((argument) => argument.name === "Label").value = "updated";
+    assembly.replaceCustomAttribute(attribute.rid, value);
+    const rewrittenBytes = assembly.serialize();
+    const reparsed = parseAssembly(rewrittenBytes);
+    assert.deepEqual(
+      reparsed.parseCustomAttribute(attribute.rid).namedArguments.map(({ name, value: argumentValue }) =>
+        [name, argumentValue]
+      ),
+      [["Count", 7], ["Label", "updated"]]
+    );
+    await writeFile(assemblyPath, rewrittenBytes);
+
+    const harnessProject = join(directory, "NamedAttributeHarness.csproj");
+    await writeFile(harnessProject, [
+      "<Project Sdk=\"Microsoft.NET.Sdk\">",
+      "  <PropertyGroup>",
+      "    <OutputType>Exe</OutputType>",
+      `    <TargetFramework>${targetFramework}</TargetFramework>`,
+      "  </PropertyGroup>",
+      "</Project>"
+    ].join("\n"));
+    await writeFile(join(directory, "Program.cs"), [
+      "using System;",
+      "using System.IO;",
+      "using System.Linq;",
+      "using System.Reflection;",
+      "var assembly = Assembly.LoadFile(Path.GetFullPath(args[0]));",
+      "var attribute = assembly.GetType(\"NamedDataTarget\")!",
+      "    .GetCustomAttributes(false).Single(value => value.GetType().Name == \"NamedDataAttribute\");",
+      "Console.WriteLine(attribute.GetType().GetProperty(\"Count\")!.GetValue(attribute) + \":\" +",
+      "    attribute.GetType().GetField(\"Label\")!.GetValue(attribute));"
+    ].join("\n"));
+    const execution = spawnSync(
+      "dotnet",
+      ["run", "--project", harnessProject, "--configuration", "Release", "--", assemblyPath],
+      { encoding: "utf8", timeout: 120_000 }
+    );
+    assert.equal(execution.status, 0, execution.stderr || execution.stdout || execution.error?.message);
+    assert.equal(execution.stdout.trim().split(/\r?\n/).at(-1), "7:updated");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("strong-name signed PE32+ assemblies load and execute in .NET", {
   skip: dotnetAvailable ? false : ".NET SDK/runtime is unavailable"
 }, async () => {
