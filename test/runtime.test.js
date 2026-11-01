@@ -16,6 +16,7 @@ import {
   insertEmbeddedPortablePdbDocument,
   replaceClassicPdbStringTableName,
   replaceClassicPdbFileChecksum,
+  replaceClassicPdbLineBlock,
   replaceClassicPdbLineInfo,
   replaceClassicPdbSymbolName,
   replaceEmbeddedPortablePdbSequencePoints,
@@ -1748,6 +1749,33 @@ test("classic PDB parser reads a compiler-produced MSF identity", {
       changedLineOffset
     );
     assert.equal(editedPdbBytes.length, pdbBytes.length);
+    const editableBlock = pdb.dbi.modules.flatMap((module, moduleIndex) =>
+      module.c13?.lines.flatMap((line, lineSubsectionIndex) =>
+        line.blocks.map((block, blockIndex) => ({
+          moduleIndex,
+          lineSubsectionIndex,
+          blockIndex,
+          block
+        }))
+      ) ?? []
+    ).find((entry) => entry.block.lines.length > 0);
+    assert.ok(editableBlock);
+    const expandedLines = [
+      ...editableBlock.block.lines,
+      { ...editableBlock.block.lines.at(-1) }
+    ];
+    const resizedLineBlockPdb = parseClassicPdb(replaceClassicPdbLineBlock(pdbBytes, {
+      moduleIndex: editableBlock.moduleIndex,
+      lineSubsectionIndex: editableBlock.lineSubsectionIndex,
+      blockIndex: editableBlock.blockIndex,
+      lines: expandedLines
+    }));
+    assert.deepEqual(
+      resizedLineBlockPdb.dbi.modules[editableBlock.moduleIndex]
+        .c13.lines[editableBlock.lineSubsectionIndex]
+        .blocks[editableBlock.blockIndex].lines,
+      expandedLines
+    );
     const managedModuleIndex = pdb.dbi.modules.findIndex((module) =>
       module.symbols?.records.some((record) =>
         record.decoded?.kind === "managedProcedure" && record.decoded.name === "Answer"

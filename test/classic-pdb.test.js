@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   parseClassicPdb,
   replaceClassicPdbFileChecksum,
+  replaceClassicPdbLineBlock,
   replaceClassicPdbLineInfo,
   replaceClassicPdbModuleNames,
   replaceClassicPdbStringTableName,
@@ -44,9 +45,10 @@ function makeClassicPdb() {
   return bytes;
 }
 
-function makeC13LineBytes({ twoChecksums = false } = {}) {
+function makeC13LineBytes({ twoChecksums = false, hasColumns = true } = {}) {
   const blockCount = twoChecksums ? 2 : 1;
-  const lineDataLength = 12 + blockCount * 24;
+  const blockSize = hasColumns ? 24 : 20;
+  const lineDataLength = 12 + blockCount * blockSize;
   const checksumDataLength = blockCount * 24;
   const checksumSubsectionOffset = 8 + lineDataLength;
   const c13 = new Uint8Array(checksumSubsectionOffset + 8 + checksumDataLength);
@@ -55,17 +57,19 @@ function makeC13LineBytes({ twoChecksums = false } = {}) {
   view.setUint32(4, lineDataLength, true);
   view.setUint32(8, 0x20, true);
   view.setUint16(12, 2, true);
-  view.setUint16(14, 1, true);
+  view.setUint16(14, hasColumns ? 1 : 0, true);
   view.setUint32(16, 10, true);
   for (let index = 0; index < blockCount; index++) {
-    const blockOffset = 20 + index * 24;
+    const blockOffset = 20 + index * blockSize;
     view.setUint32(blockOffset, index * 24, true);
     view.setUint32(blockOffset + 4, 1, true);
-    view.setUint32(blockOffset + 8, 24, true);
+    view.setUint32(blockOffset + 8, blockSize, true);
     view.setUint32(blockOffset + 12, 4 + index, true);
     view.setUint32(blockOffset + 16, 0x80000005, true);
-    view.setUint16(blockOffset + 20, 3, true);
-    view.setUint16(blockOffset + 22, 9, true);
+    if (hasColumns) {
+      view.setUint16(blockOffset + 20, 3, true);
+      view.setUint16(blockOffset + 22, 9, true);
+    }
   }
   view.setUint32(checksumSubsectionOffset, 0xf4, true);
   view.setUint32(checksumSubsectionOffset + 4, checksumDataLength, true);
@@ -85,16 +89,20 @@ function makeClassicPdbWithSymbols({
   crossBlockName = false,
   withC13 = false,
   lineInfo = false,
-  twoChecksums = false
+  twoChecksums = false,
+  lineColumns = true,
+  trailingModuleBytes = new Uint8Array()
 } = {}) {
   const blockSize = 512;
   const symbolBytes = crossBlockName ? 516 : 24;
   const c13Bytes = lineInfo
-    ? makeC13LineBytes({ twoChecksums })
+    ? makeC13LineBytes({ twoChecksums, hasColumns: lineColumns })
     : withC13
       ? Uint8Array.from([0x77, 0x77, 0x77, 0x77, 3, 0, 0, 0, 1, 2, 3, 0])
       : new Uint8Array();
-  const symbolStream = new Uint8Array(symbolBytes + c13Bytes.length);
+  const symbolStream = new Uint8Array(
+    symbolBytes + c13Bytes.length + trailingModuleBytes.length
+  );
   const symbolView = new DataView(symbolStream.buffer);
   const symbolRecordOffset = crossBlockName ? 496 : 4;
   const bytes = new Uint8Array(blockSize * (crossBlockName ? 9 : 8));
@@ -147,6 +155,7 @@ function makeClassicPdbWithSymbols({
 
   symbolView.setUint32(0, 4, true);
   symbolStream.set(c13Bytes, symbolBytes);
+  symbolStream.set(trailingModuleBytes, symbolBytes + c13Bytes.length);
   if (crossBlockName) {
     symbolView.setUint16(4, 490, true);
     symbolView.setUint16(6, 0x7777, true);
@@ -791,6 +800,133 @@ test("classic PDB C13 line records can be edited without resizing module streams
     lineIndex: 0,
     line: { startColumn: 16, endColumn: 15 }
   }), /line column fields are out of range/);
+});
+
+test("classic PDB C13 line blocks can be resized with columns and trailing module data preserved", () => {
+  const trailing = Uint8Array.of(0x91, 0x92, 0x93);
+  const basePdb = makeClassicPdbWithSymbols({
+    lineInfo: true,
+    trailingModuleBytes: trailing
+  });
+  const overlay = Uint8Array.of(0xc1, 0xc2, 0xc3, 0xc4);
+  const original = new Uint8Array(basePdb.length + overlay.length);
+  original.set(basePdb);
+  original.set(overlay, basePdb.length);
+  const originalPdb = parseClassicPdb(original);
+  const originalModule = originalPdb.dbi.modules[0];
+  const originalC13Bytes = originalModule.c13Bytes;
+  const originalStream = originalPdb.streams[originalModule.streamIndex].bytes;
+  const trailingStart = originalModule.symbolBytes +
+    originalModule.c11Bytes + originalC13Bytes;
+  assert.deepEqual(originalStream.slice(trailingStart), trailing);
+
+  const lines = [
+    {
+      offset: 2,
+      startLine: 10,
+      endLineDelta: 1,
+      isStatement: true,
+      startColumn: 2,
+      endColumn: 8
+    },
+    {
+      offset: 7,
+      startLine: 20,
+      endLineDelta: 3,
+      isStatement: false,
+      startColumn: 1,
+      endColumn: 4
+    }
+  ];
+  const expanded = replaceClassicPdbLineBlock(original, {
+    moduleIndex: 0,
+    lineSubsectionIndex: 0,
+    blockIndex: 0,
+    lines
+  });
+  const expandedPdb = parseClassicPdb(expanded);
+  const expandedModule = expandedPdb.dbi.modules[0];
+  assert.deepEqual(expandedModule.c13.lines[0].blocks[0].lines, lines);
+  assert.equal(expandedModule.c13Bytes, originalC13Bytes + 12);
+  assert.deepEqual(
+    expanded.subarray(expandedPdb.numBlocks * expandedPdb.blockSize),
+    overlay
+  );
+  assert.deepEqual(
+    expandedPdb.streams[expandedModule.streamIndex].bytes.slice(
+      expandedModule.symbolBytes + expandedModule.c11Bytes + expandedModule.c13Bytes
+    ),
+    trailing
+  );
+  assert.deepEqual(
+    parseClassicPdb(original).dbi.modules[0].c13.lines[0].blocks[0].lines,
+    originalPdb.dbi.modules[0].c13.lines[0].blocks[0].lines
+  );
+
+  const shrunk = replaceClassicPdbLineBlock(expanded, {
+    moduleIndex: 0,
+    lineSubsectionIndex: 0,
+    blockIndex: 0,
+    lines: [lines[1]]
+  });
+  const shrunkPdb = parseClassicPdb(shrunk);
+  assert.deepEqual(shrunkPdb.dbi.modules[0].c13.lines[0].blocks[0].lines, [lines[1]]);
+  assert.equal(shrunkPdb.dbi.modules[0].c13Bytes, originalC13Bytes);
+  assert.deepEqual(
+    shrunkPdb.streams[shrunkPdb.dbi.modules[0].streamIndex].bytes.slice(
+      shrunkPdb.dbi.modules[0].symbolBytes +
+      shrunkPdb.dbi.modules[0].c11Bytes +
+      shrunkPdb.dbi.modules[0].c13Bytes
+    ),
+    trailing
+  );
+});
+
+test("classic PDB C13 line blocks resize without columns and validate replacements", () => {
+  const original = makeClassicPdbWithSymbols({ lineInfo: true, lineColumns: false });
+  const lines = [{
+    offset: 6,
+    startLine: 28,
+    endLineDelta: 0,
+    isStatement: false
+  }];
+  const rewritten = replaceClassicPdbLineBlock(original, {
+    moduleIndex: 0,
+    lineSubsectionIndex: 0,
+    blockIndex: 0,
+    lines
+  });
+  assert.deepEqual(
+    parseClassicPdb(rewritten).dbi.modules[0].c13.lines[0].blocks[0].lines,
+    lines
+  );
+  assert.throws(() => replaceClassicPdbLineBlock(original, {
+    moduleIndex: 0,
+    lineSubsectionIndex: 0,
+    blockIndex: 0,
+    lines: [{ ...lines[0], offset: 11 }]
+  }), /out-of-range fields/);
+  assert.throws(() => replaceClassicPdbLineBlock(original, {
+    moduleIndex: 0,
+    lineSubsectionIndex: 0,
+    blockIndex: 0,
+    lines: [{ ...lines[0], startColumn: 1, endColumn: 2 }]
+  }), /invalid fields/);
+  assert.throws(() => replaceClassicPdbLineBlock(original, {
+    moduleIndex: 0,
+    lineSubsectionIndex: 0,
+    blockIndex: 0,
+    lines: [
+      { ...lines[0], offset: 7 },
+      { ...lines[0], offset: 2 }
+    ]
+  }), /offsets must be nondecreasing/);
+  assert.throws(() => replaceClassicPdbLineBlock(original, {
+    moduleIndex: 0,
+    lineSubsectionIndex: 0,
+    blockIndex: 0,
+    lines: []
+  }), /non-empty lines array/);
 });
 
 test("classic PDB C13 file checksums can be replaced and resized with line references remapped", () => {
