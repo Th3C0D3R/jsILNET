@@ -1211,7 +1211,7 @@ export function replaceEmbeddedPortablePdbDocumentMetadata(pdb, documentRid, opt
   });
 }
 
-export function addEmbeddedPortablePdbDocument(
+function addPortablePdbDocumentToParsedPdb(
   pdb,
   name,
   {
@@ -1286,10 +1286,181 @@ export function addEmbeddedPortablePdbDocument(
   ]);
   const counts = [...pdb.tables.counts];
   counts[48] = rid;
-  return serializeEmbeddedPortablePdb({
+  return {
     ...pdb,
     metadataRoot: { ...pdb.metadataRoot, streams },
     tables: { ...pdb.tables, rows, counts, valid: pdb.tables.valid | (1n << 48n) }
+  };
+}
+
+export function addEmbeddedPortablePdbDocument(pdb, name, options) {
+  return serializeEmbeddedPortablePdb(
+    addPortablePdbDocumentToParsedPdb(pdb, name, options)
+  );
+}
+
+export function insertEmbeddedPortablePdbDocument(pdb, options = {}) {
+  if (!pdb?.metadataRoot?.streams || !(pdb.tables?.rows instanceof Map) ||
+      !Array.isArray(pdb.tables.counts) || !Array.isArray(pdb.documents) ||
+      !Array.isArray(pdb.methodDebugInformation) ||
+      !Array.isArray(pdb.customDebugInformation)) {
+    throw new TypeError("Portable PDB document editing requires parsed PDB data");
+  }
+  if (options === null || typeof options !== "object" || Array.isArray(options)) {
+    throw new TypeError("Portable PDB document insertion options must be an object");
+  }
+  const {
+    beforeRid,
+    name,
+    separator = "/",
+    hashAlgorithmGuid = null,
+    hash = new Uint8Array(),
+    languageGuid = null
+  } = options;
+  const documentRows = pdb.tables.rows.get(48) ?? [];
+  if (documentRows.length !== pdb.tables.counts[48] ||
+      pdb.documents.length !== documentRows.length) {
+    throw new FormatError("Portable PDB Document row count is inconsistent");
+  }
+  if (!Number.isInteger(beforeRid) || beforeRid < 1 ||
+      beforeRid > documentRows.length + 1) {
+    throw new RangeError(`Invalid Portable PDB Document insertion row ID ${beforeRid}`);
+  }
+  const insertedRid = documentRows.length + 1;
+  if (beforeRid !== insertedRid && pdb.customDebugInformation.some((record) =>
+    !Object.keys(record).some((key) =>
+      !["table", "tableName", "rid", "Parent", "Kind", "Value", "kind"].includes(key)
+    )
+  )) {
+    throw new UnsupportedFormatError(
+      "Portable PDB Document insertion cannot preserve opaque custom debug information"
+    );
+  }
+
+  const updated = addPortablePdbDocumentToParsedPdb(pdb, name, {
+    separator,
+    hashAlgorithmGuid,
+    hash,
+    languageGuid
+  });
+  if (beforeRid === insertedRid) return serializeEmbeddedPortablePdb(updated);
+  const remapDocumentRid = (rid) => {
+    if (rid === 0 || rid < beforeRid) return rid;
+    if (rid === insertedRid) return beforeRid;
+    return rid + 1;
+  };
+  const rows = new Map(updated.tables.rows);
+  const updatedDocumentRows = (rows.get(48) ?? [])
+    .map((row) => ({ ...row, rid: remapDocumentRid(row.rid) }))
+    .sort((left, right) => left.rid - right.rid);
+  rows.set(48, updatedDocumentRows);
+
+  let blobStream = null;
+  const appendBlob = (value) => {
+    if (!blobStream) {
+      blobStream = updated.metadataRoot.streams.get("#Blob");
+      if (!blobStream) {
+        throw new FormatError("Portable PDB metadata is missing its #Blob heap");
+      }
+    }
+    const appendedBlob = appendBlobHeap(blobStream.bytes, value);
+    blobStream.bytes = appendedBlob.heap;
+    return appendedBlob.index;
+  };
+  const methodRows = rows.get(49) ?? [];
+  if (methodRows.length !== updated.methodDebugInformation.length) {
+    throw new FormatError("Portable PDB MethodDebugInformation row count is inconsistent");
+  }
+  const updatedMethodRows = methodRows.map((row) => {
+    const method = updated.methodDebugInformation[row.rid - 1];
+    if (!method || method.rid !== row.rid) {
+      throw new FormatError(
+        `Portable PDB MethodDebugInformation row ${row.rid} is missing`
+      );
+    }
+    const document = remapDocumentRid(row.Document.rid);
+    const points = method.sequencePoints.map((point) => ({
+      ...point,
+      documentRid: remapDocumentRid(point.documentRid)
+    }));
+    const pointsChanged = points.some((point, index) =>
+      point.documentRid !== method.sequencePoints[index].documentRid
+    );
+    return {
+      ...row,
+      Document: document === row.Document.rid
+        ? { ...row.Document }
+        : {
+            ...row.Document,
+            raw: document,
+            rid: document
+          },
+      ...(row.SequencePoints !== 0 && pointsChanged
+        ? {
+            SequencePoints: appendBlob(encodePortablePdbSequencePoints({
+              localSignatureRid: method.localSignatureRid,
+              points
+            }, {
+              documentRid: document,
+              documentCount: updatedDocumentRows.length,
+              localSignatureCount: updated.rowCounts.get(17) ?? 0
+            }))
+          }
+        : {})
+    };
+  });
+  if (methodRows.length > 0) rows.set(49, updatedMethodRows);
+
+  const customDebugRows = rows.get(55) ?? [];
+  if (customDebugRows.length !== updated.customDebugInformation.length) {
+    throw new FormatError("Portable PDB CustomDebugInformation row count is inconsistent");
+  }
+  const records = new Map(
+    updated.customDebugInformation.map((record) => [record.rid, record])
+  );
+  const remappedCustomDebugRows = sortPortablePdbCustomDebugInformation(
+    customDebugRows.map((row) => {
+      const record = records.get(row.rid);
+      if (!record) {
+        throw new FormatError(
+          `Portable PDB CustomDebugInformation row ${row.rid} is missing its decoded record`
+        );
+      }
+      let updatedRow = { ...row };
+      if (record.Parent.target?.table === 48) {
+        const rid = remapDocumentRid(record.Parent.target.rid);
+        if (rid !== record.Parent.target.rid) {
+          updatedRow = {
+            ...updatedRow,
+            Parent: {
+              raw: encodeCodedIndex(48, rid, "HasCustomDebugInformation"),
+              target: { ...record.Parent.target, rid }
+            }
+          };
+        }
+      }
+      if (record.Parent.target?.table === 2 &&
+          Array.isArray(record.typeDefinitionDocuments)) {
+        const documentRids = record.typeDefinitionDocuments.map(remapDocumentRid);
+        if (documentRids.some((rid, index) =>
+          rid !== record.typeDefinitionDocuments[index]
+        )) {
+          updatedRow = {
+            ...updatedRow,
+            Value: appendBlob(encodeTypeDefinitionDocumentValue(
+              documentRids,
+              updatedDocumentRows.length
+            ))
+          };
+        }
+      }
+      return updatedRow;
+    })
+  );
+  if (customDebugRows.length > 0) rows.set(55, remappedCustomDebugRows);
+  return serializeEmbeddedPortablePdb({
+    ...updated,
+    tables: { ...updated.tables, rows }
   });
 }
 

@@ -13,6 +13,7 @@ import {
   parseClassicPdb,
   parsePE,
   replaceEmbeddedPortablePdbDocumentName,
+  insertEmbeddedPortablePdbDocument,
   replaceClassicPdbStringTableName,
   replaceClassicPdbFileChecksum,
   replaceClassicPdbLineInfo,
@@ -622,6 +623,10 @@ test("adding an embedded Portable PDB Document updates the PDB and PE identity",
       join(directory, "Fixture.cs"),
       "public class DocumentFixture { public int Get() { return 1; } }"
     );
+    await writeFile(
+      join(directory, "Other.cs"),
+      "public class OtherDocumentFixture { public int Get() { return 2; } }"
+    );
     const build = spawnSync(
       "dotnet",
       ["build", project, "--configuration", "Debug", "--output", output, "--nologo"],
@@ -685,6 +690,13 @@ test("adding an embedded Portable PDB Document updates the PDB and PE identity",
         record.rid === removableDebugInfo.rid
       ).kind,
       "a3a2a1a0-a5a4-a7a6-a8a9-aaabacadaeaf"
+    );
+    assert.throws(
+      () => insertEmbeddedPortablePdbDocument(opaquePdb, {
+        beforeRid: 1,
+        name: "generated/opaque-safe.cs"
+      }),
+      /cannot preserve opaque custom debug information/
     );
     const opaquePdbWithoutRecordBytes = removeEmbeddedPortablePdbCustomDebugInformation(
       opaquePdb,
@@ -810,6 +822,65 @@ test("adding an embedded Portable PDB Document updates the PDB and PE identity",
       restoredPdb.documents.some((document) => document.name === "generated/new-file.cs"),
       false
     );
+    assert.ok(originalDocumentCount >= 2);
+    const beforeInvalidInsertion = assembly.serialize();
+    assert.throws(
+      () => assembly.insertEmbeddedPortablePdbDocument(debugIndex, {
+        beforeRid: 0,
+        name: "generated/invalid-first.cs"
+      }),
+      RangeError
+    );
+    assert.deepEqual(assembly.serialize(), beforeInvalidInsertion);
+
+    assembly.insertEmbeddedPortablePdbDocument(debugIndex, {
+      beforeRid: 2,
+      name: "generated/inserted-file.cs"
+    });
+    const insertedPdb = parseAssembly(assembly.serialize())
+      .pe.debugDirectoryEntries.find((entry) => entry.embeddedPortablePdb)
+      .embeddedPortablePdb;
+    assert.equal(insertedPdb.documents.length, originalDocumentCount + 1);
+    assert.equal(insertedPdb.documents[1].name, "generated/inserted-file.cs");
+    const remapDocumentRid = (rid) => rid >= 2 ? rid + 1 : rid;
+    for (let index = 0; index < restoredPdb.documents.length; index++) {
+      assert.equal(
+        insertedPdb.documents[remapDocumentRid(index + 1) - 1].name,
+        restoredPdb.documents[index].name
+      );
+    }
+    for (let index = 0; index < restoredPdb.methodDebugInformation.length; index++) {
+      const before = restoredPdb.methodDebugInformation[index];
+      const after = insertedPdb.methodDebugInformation[index];
+      assert.equal(after.Document.rid, remapDocumentRid(before.Document.rid));
+      assert.deepEqual(
+        after.sequencePoints.map((point) => point.documentRid),
+        before.sequencePoints.map((point) => remapDocumentRid(point.documentRid))
+      );
+    }
+    const typeDefinitionDocuments = restoredPdb.customDebugInformation.filter((record) =>
+      Array.isArray(record.typeDefinitionDocuments)
+    );
+    for (const record of typeDefinitionDocuments) {
+      const shifted = insertedPdb.customDebugInformation.find((candidate) =>
+        candidate.kind === record.kind &&
+        candidate.Parent.target?.table === 2 &&
+        candidate.Parent.target.rid === record.Parent.target.rid
+      );
+      assert.deepEqual(
+        shifted?.typeDefinitionDocuments,
+        record.typeDefinitionDocuments.map(remapDocumentRid)
+      );
+    }
+    for (const record of restoredPdb.customDebugInformation.filter((candidate) =>
+      candidate.Parent.target?.table === 48
+    )) {
+      assert.ok(insertedPdb.customDebugInformation.some((candidate) =>
+        candidate.kind === record.kind &&
+        candidate.Parent.target?.table === 48 &&
+        candidate.Parent.target.rid === remapDocumentRid(record.Parent.target.rid)
+      ));
+    }
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
