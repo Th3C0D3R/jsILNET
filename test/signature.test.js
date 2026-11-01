@@ -37,6 +37,22 @@ test("array and generic-instance type signatures round-trip", () => {
   assert.deepEqual(encodeTypeSignature(generic), genericBytes);
 });
 
+test("signature encoding rejects invalid array shapes and empty generic instances", () => {
+  assert.throws(() => encodeTypeSignature({
+    kind: "array",
+    type: { kind: "primitive", elementType: 0x08 },
+    rank: 1,
+    sizes: [1, 2],
+    lowerBounds: []
+  }), /counts cannot exceed its rank/);
+  assert.throws(() => encodeTypeSignature({
+    kind: "genericInstance",
+    valueType: false,
+    genericType: { table: 1, rid: 1 },
+    arguments: []
+  }), /at least one type argument/);
+});
+
 test("field, local, property, and method-instantiation signatures round-trip", () => {
   for (const bytes of [
     [0x06, 0x12, 0x05],

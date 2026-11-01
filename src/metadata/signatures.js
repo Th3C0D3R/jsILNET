@@ -180,6 +180,10 @@ function writeType(output, type, depth = 0) {
     if (!Number.isInteger(type.rank) || type.rank <= 0) {
       throw new RangeError("Array signature rank must be a positive integer");
     }
+    if (!Array.isArray(type.sizes) || !Array.isArray(type.lowerBounds) ||
+        type.sizes.length > type.rank || type.lowerBounds.length > type.rank) {
+      throw new RangeError("Array signature size and lower-bound counts cannot exceed its rank");
+    }
     output.push(0x14);
     writeType(output, type.type, depth + 1);
     output.push(...appendCompressedUInt(type.rank), ...appendCompressedUInt(type.sizes.length));
@@ -187,6 +191,9 @@ function writeType(output, type, depth = 0) {
     output.push(...appendCompressedUInt(type.lowerBounds.length));
     for (const bound of type.lowerBounds) output.push(...appendCompressedInt(bound));
   } else if (type.kind === "genericInstance") {
+    if (!Array.isArray(type.arguments) || type.arguments.length === 0) {
+      throw new RangeError("Generic instances must contain at least one type argument");
+    }
     output.push(0x15, type.valueType ? 0x11 : 0x12, ...writeTypeDefOrRef(type.genericType));
     output.push(...appendCompressedUInt(type.arguments.length));
     for (const argument of type.arguments) writeType(output, argument, depth + 1);
