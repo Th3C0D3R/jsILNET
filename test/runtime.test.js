@@ -666,7 +666,14 @@ test("strong-name signed PE32+ assemblies load and execute in .NET", {
       "    public EnumDataAttribute(Outer.Mode mode) { }",
       "}",
       "[EnumData(Outer.Mode.Value)]",
-      "public class NestedEnumTarget { }"
+      "public class NestedEnumTarget { }",
+      "[System.AttributeUsage(System.AttributeTargets.Class)]",
+      "public sealed class GenericDataAttribute<T> : System.Attribute",
+      "{",
+      "    public GenericDataAttribute() { }",
+      "}",
+      "[GenericData<int>]",
+      "public class GenericDataTarget { }"
     ].join("\n"));
     const libraryBuild = spawnSync(
       "dotnet",
@@ -694,6 +701,54 @@ test("strong-name signed PE32+ assemblies load and execute in .NET", {
     assert.equal(
       assembly.parseCustomAttribute(enumDataAttribute.rid).fixedArguments[0],
       2
+    );
+    const genericAttributeType = assembly.types.find((type) =>
+      type.name === "GenericDataAttribute`1"
+    );
+    const genericAttribute = assembly.customAttributes.find((attribute) => {
+      if (attribute.constructor.table !== 10) return false;
+      const constructor = assembly.memberRefs.find((reference) =>
+        reference.rid === attribute.constructor.rid
+      );
+      const signature = constructor?.parent.table === 27
+        ? assembly.typeSpecs[constructor.parent.rid - 1]?.parsedSignature
+        : null;
+      return signature?.kind === "genericInstance" &&
+        signature.genericType.table === 2 &&
+        signature.genericType.rid === genericAttributeType?.rid;
+    });
+    assert.ok(genericAttributeType);
+    assert.ok(genericAttribute);
+    assert.deepEqual(assembly.parseCustomAttribute(genericAttribute.rid).fixedArguments, []);
+    const invalidGenericAttributeAssembly = parseAssembly(assemblyBytes);
+    const invalidGenericAttributeType = invalidGenericAttributeAssembly.types.find((type) =>
+      type.name === "GenericDataAttribute`1"
+    );
+    const invalidGenericAttribute = invalidGenericAttributeAssembly.customAttributes.find((attribute) => {
+      if (attribute.constructor.table !== 10) return false;
+      const constructor = invalidGenericAttributeAssembly.memberRefs.find((reference) =>
+        reference.rid === attribute.constructor.rid
+      );
+      const signature = constructor?.parent.table === 27
+        ? invalidGenericAttributeAssembly.typeSpecs[constructor.parent.rid - 1]?.parsedSignature
+        : null;
+      return signature?.kind === "genericInstance" &&
+        signature.genericType.table === 2 &&
+        signature.genericType.rid === invalidGenericAttributeType?.rid;
+    });
+    const genericObjectTypeRef = invalidGenericAttributeAssembly.typeRefs.find((type) =>
+      type.namespace === "System" && type.name === "Object"
+    );
+    assert.ok(invalidGenericAttributeType);
+    assert.ok(invalidGenericAttribute);
+    assert.ok(genericObjectTypeRef);
+    invalidGenericAttributeType.extends = {
+      table: 1,
+      rid: genericObjectTypeRef.rid
+    };
+    assert.throws(
+      () => invalidGenericAttributeAssembly.parseCustomAttribute(invalidGenericAttribute.rid),
+      /does not derive from System.Attribute/
     );
     const invalidAttributeAssembly = parseAssembly(assemblyBytes);
     const invalidAttribute = invalidAttributeAssembly.customAttributes.find((attribute) =>

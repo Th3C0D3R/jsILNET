@@ -127,6 +127,8 @@ PE CodeView records in RSDS and NB10 forms are parsed into PDB identity/path met
 
 Portable PDB token remapping has a narrow exception to the generic debug-data refusal: non-MethodDef/non-StandAloneSig RID changes are supported when exactly one embedded PDB is present, its CustomDebugInformation table is empty, and all PE debug-directory entries use recognized formats; `#Pdb` counts are synchronized for these changes. MethodDef and StandAloneSig changes continue to use their dedicated PDB remappers.
 
+Custom-attribute constructor validation resolves local generic TypeSpec parents back to their TypeDef before checking `System.Attribute` inheritance.
+
 Replacing an EmbeddedSource payload also recomputes its Document hash for recognized SHA-1/SHA-2 GUIDs; unsupported or nil document hash algorithms are rejected.
 
 `replaceClassicPdbStringTableName` supports variable-length UTF-8 names by rebuilding MSF streams and remapping C13 checksum references to shifted `/names` offsets.

@@ -124,7 +124,31 @@ function getManagedTypeName(assembly, reference) {
     const type = assembly.types[reference.rid - 1];
     return type ? getManagedTypeDefinitionName(assembly, type) : null;
   }
+  if (reference?.table === 27) {
+    const typeReference = getManagedTypeDefinitionReference(assembly, reference);
+    return typeReference ? getManagedTypeName(assembly, typeReference) : null;
+  }
   return null;
+}
+
+function getManagedTypeDefinitionReference(assembly, reference, visited = new Set()) {
+  if (reference?.table === 2 || reference?.table === 1) return reference;
+  if (reference?.table !== 27) return null;
+  if (visited.has(reference.rid)) {
+    throw new FormatError(`TypeSpec row ${reference.rid} contains a recursive TypeSpec reference`);
+  }
+  visited.add(reference.rid);
+  const signature = assembly.typeSpecs[reference.rid - 1]?.parsedSignature;
+  const nested = signature?.kind === "genericInstance"
+    ? signature.genericType
+    : signature?.kind === "class" || signature?.kind === "valueType"
+      ? signature.type
+      : null;
+  const result = nested
+    ? getManagedTypeDefinitionReference(assembly, nested, visited)
+    : null;
+  visited.delete(reference.rid);
+  return result;
 }
 
 function getManagedTypeDefinitionName(assembly, type, visited = new Set()) {
@@ -1063,8 +1087,11 @@ function getCustomAttributeConstructor(assembly, attribute, resolveEnum) {
   } else if (constructor?.table === 10) {
     method = assembly.memberRefs.find((reference) => reference.rid === constructor.rid);
     ownerType = method ? getManagedTypeName(assembly, method.parent) : null;
-    if (method?.parent.table === 2) {
-      localOwnerType = assembly.types[method.parent.rid - 1] ?? null;
+    const ownerReference = method
+      ? getManagedTypeDefinitionReference(assembly, method.parent)
+      : null;
+    if (ownerReference?.table === 2) {
+      localOwnerType = assembly.types[ownerReference.rid - 1] ?? null;
     }
   }
   if (!method || method.name !== ".ctor") {
