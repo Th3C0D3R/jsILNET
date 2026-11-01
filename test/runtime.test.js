@@ -464,6 +464,181 @@ test("MethodDef insertion and removal remap recognized method-scoped CDI", {
   }
 });
 
+test("external custom-attribute metadata can be resolved for constructors and named members", {
+  skip: dotnetAvailable ? false : ".NET SDK/runtime is unavailable"
+}, async () => {
+  const directory = await mkdtemp(join(tmpdir(), "jsilnet-external-attribute-"));
+  try {
+    const attributeDirectory = join(directory, "ExternalAttributes");
+    const consumerDirectory = join(directory, "Consumer");
+    await mkdir(attributeDirectory);
+    await mkdir(consumerDirectory);
+    const attributeProject = join(attributeDirectory, "ExternalAttributes.csproj");
+    await writeFile(attributeProject, [
+      "<Project Sdk=\"Microsoft.NET.Sdk\">",
+      "  <PropertyGroup>",
+      `    <TargetFramework>${targetFramework}</TargetFramework>`,
+      "    <DebugType>none</DebugType>",
+      "  </PropertyGroup>",
+      "</Project>"
+    ].join("\n"));
+    await writeFile(join(attributeDirectory, "ExternalAttributes.cs"), [
+      "using System;",
+      "namespace ExternalAttributes;",
+      "public enum Mode : short { Read = 1, Write = 2 }",
+      "[AttributeUsage(AttributeTargets.Class)]",
+      "public abstract class BaseAttribute : Attribute",
+      "{",
+      "    public string Label { get; set; } = \"\";",
+      "}",
+      "public sealed class DataAttribute : BaseAttribute",
+      "{",
+      "    public Mode Mode { get; set; }",
+      "    public bool Enabled;",
+      "    public DataAttribute(int code, Mode mode) { }",
+      "}"
+    ].join("\n"));
+    const consumerProject = join(consumerDirectory, "Consumer.csproj");
+    await writeFile(consumerProject, [
+      "<Project Sdk=\"Microsoft.NET.Sdk\">",
+      "  <PropertyGroup>",
+      `    <TargetFramework>${targetFramework}</TargetFramework>`,
+      "    <DebugType>none</DebugType>",
+      "  </PropertyGroup>",
+      "  <ItemGroup>",
+      "    <ProjectReference Include=\"..\\ExternalAttributes\\ExternalAttributes.csproj\" />",
+      "  </ItemGroup>",
+      "</Project>"
+    ].join("\n"));
+    await writeFile(join(consumerDirectory, "Consumer.cs"), [
+      "[ExternalAttributes.Data(7, ExternalAttributes.Mode.Write, Label = \"resolved\", Mode = ExternalAttributes.Mode.Write, Enabled = true)]",
+      "public class Target { }"
+    ].join("\n"));
+    const build = spawnSync(
+      "dotnet",
+      ["build", consumerProject, "--configuration", "Release", "--nologo"],
+      { encoding: "utf8", timeout: 120_000 }
+    );
+    assert.equal(build.status, 0, build.stderr || build.stdout || build.error?.message);
+
+    const externalPath = join(
+      attributeDirectory,
+      "bin",
+      "Release",
+      targetFramework,
+      "ExternalAttributes.dll"
+    );
+    const consumerPath = join(
+      consumerDirectory,
+      "bin",
+      "Release",
+      targetFramework,
+      "Consumer.dll"
+    );
+    const externalAssembly = parseAssembly(Uint8Array.from(await readFile(externalPath)));
+    const consumerAssembly = parseAssembly(Uint8Array.from(await readFile(consumerPath)));
+    const externalType = (name) => {
+      const type = externalAssembly.types.find((candidate) =>
+        `${candidate.namespace ? `${candidate.namespace}.` : ""}${candidate.name}` === name
+      );
+      return type ? { assembly: externalAssembly, rid: type.rid } : undefined;
+    };
+    const resolveType = (name) => externalType(name.split(",", 1)[0].trim());
+    const target = consumerAssembly.types.find((type) => type.name === "Target");
+    const attribute = consumerAssembly.customAttributes.find((record) =>
+      record.parent?.table === 2 && record.parent.rid === target?.rid
+    );
+    assert.ok(target);
+    assert.ok(attribute);
+    assert.throws(
+      () => consumerAssembly.parseCustomAttribute(attribute.rid),
+      /enum Mode is not defined/
+    );
+    const parsed = consumerAssembly.parseCustomAttribute(attribute.rid, { resolveType });
+    assert.deepEqual(parsed.fixedArguments, [7, 2]);
+    assert.deepEqual(parsed.namedArguments.map(({ name, value }) => [name, value]), [
+      ["Label", "resolved"],
+      ["Mode", 2],
+      ["Enabled", true]
+    ]);
+    assert.throws(
+      () => consumerAssembly.parseCustomAttribute(attribute.rid, {
+        resolveType: () => ({})
+      }),
+      /resolver must return \{ assembly, rid \}/
+    );
+    const inserted = consumerAssembly.insertCustomAttribute({
+      parent: { table: "TypeDef", rid: target.rid },
+      constructor: attribute.constructor,
+      value: parsed,
+      resolveType
+    });
+    assert.deepEqual(
+      consumerAssembly.parseCustomAttribute(inserted.rid, { resolveType }),
+      parsed
+    );
+
+    const invalidNamedValue = {
+      ...parsed,
+      namedArguments: parsed.namedArguments.map((argument) => ({ ...argument }))
+    };
+    invalidNamedValue.namedArguments[0].name = "Missing";
+    const beforeInvalidEdit = consumerAssembly.serialize();
+    assert.throws(
+      () => consumerAssembly.replaceCustomAttribute(
+        attribute.rid,
+        invalidNamedValue,
+        { resolveType }
+      ),
+      /named property Missing does not exist/
+    );
+    assert.deepEqual(consumerAssembly.serialize(), beforeInvalidEdit);
+
+    const invalidConstructorAssembly = parseAssembly(
+      Uint8Array.from(await readFile(consumerPath))
+    );
+    const invalidConstructor = invalidConstructorAssembly.memberRefs.find((reference) =>
+      reference.rid === attribute.constructor.rid
+    );
+    assert.ok(invalidConstructor);
+    invalidConstructor.signature = Uint8Array.of(0x20, 0x01, 0x01, 0x0e);
+    assert.throws(
+      () => invalidConstructorAssembly.parseCustomAttribute(attribute.rid, { resolveType }),
+      /does not match a declared constructor/
+    );
+
+    const permissionSet = {
+      format: "binary",
+      attributes: [{
+        typeName: "ExternalAttributes.DataAttribute, ExternalAttributes",
+        namedArguments: [{
+          kind: "property",
+          type: { kind: "enum", name: "ExternalAttributes.Mode", elementType: 0x06 },
+          name: "Mode",
+          value: 1
+        }, {
+          kind: "field",
+          type: { kind: "primitive", elementType: 0x02 },
+          name: "Enabled",
+          value: true
+        }]
+      }]
+    };
+    const securityRid = consumerAssembly.addDeclSecurity({
+      parent: { table: "Assembly", rid: 1 },
+      action: 2,
+      permissionSet,
+      resolveType
+    });
+    assert.deepEqual(
+      consumerAssembly.parseDeclSecurity(securityRid, { resolveType }).permissionSet,
+      permissionSet
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("TypeDefinitionDocument CDI follows TypeDef insertion and removal", {
   skip: dotnetAvailable ? false : ".NET SDK/runtime is unavailable"
 }, async () => {

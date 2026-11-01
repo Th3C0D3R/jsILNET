@@ -83,6 +83,38 @@ test("custom-attribute 64-bit integers preserve exact bigint values", () => {
   }, fixedTypes), /safe integers or bigints/);
 });
 
+test("custom-attribute codecs cover every supported fixed primitive encoding", () => {
+  const elementTypes = [
+    0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+    0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d
+  ];
+  const fixedTypes = elementTypes.map((elementType) => ({
+    kind: "primitive",
+    elementType
+  }));
+  const value = {
+    fixedArguments: [
+      true,
+      0xd800,
+      -0x80,
+      0xff,
+      -0x8000,
+      0xffff,
+      -0x80000000,
+      0xffffffff,
+      -0x8000000000000000n,
+      0xffffffffffffffffn,
+      1.25,
+      -2.5
+    ],
+    namedArguments: []
+  };
+  assert.deepEqual(
+    parseCustomAttribute(encodeCustomAttribute(value, fixedTypes), fixedTypes),
+    value
+  );
+});
+
 test("binary PermissionSet encoding preserves 64-bit integer arguments", () => {
   const permissionSet = {
     format: "binary",

@@ -142,10 +142,21 @@ function allowedTokenTables(opcodeName) {
   return [];
 }
 
-function getManagedTypeName(assembly, reference) {
+function getManagedTypeName(assembly, reference, visitedTypeRefs = new Set()) {
   if (reference?.table === 1) {
     const type = assembly.typeRefs[reference.rid - 1];
-    return type ? `${type.namespace ? `${type.namespace}.` : ""}${type.name}` : null;
+    if (!type) return null;
+    if (visitedTypeRefs.has(reference.rid)) {
+      throw new FormatError("Nested TypeRef resolution scopes contain a cycle");
+    }
+    visitedTypeRefs.add(reference.rid);
+    const enclosing = type.resolutionScope?.table === 1
+      ? getManagedTypeName(assembly, type.resolutionScope, visitedTypeRefs)
+      : null;
+    visitedTypeRefs.delete(reference.rid);
+    return enclosing
+      ? `${enclosing}+${type.name}`
+      : `${type.namespace ? `${type.namespace}.` : ""}${type.name}`;
   }
   if (reference?.table === 2) {
     const type = assembly.types[reference.rid - 1];
@@ -211,14 +222,81 @@ function getManagedTypeDefinitionName(assembly, type, visited = new Set()) {
   return enclosingName ? `${enclosingName}+${type.name}` : null;
 }
 
-function resolveEnumElementType(assembly, name) {
-  const fullName = name.split(",", 1)[0].trim();
-  const definition = assembly.types.find((type) =>
+function getAssemblyQualifiedTypeName(value) {
+  let bracketDepth = 0;
+  for (let index = 0; index < value.length; index++) {
+    if (value[index] === "[") bracketDepth++;
+    else if (value[index] === "]") bracketDepth--;
+    else if (value[index] === "," && bracketDepth === 0) {
+      return value.slice(0, index).trim();
+    }
+  }
+  return value.trim();
+}
+
+function getTypeRefAssemblyReference(assembly, reference, visited = new Set()) {
+  if (reference?.table !== 1) return null;
+  if (visited.has(reference.rid)) {
+    throw new FormatError("Nested TypeRef resolution scopes contain a cycle");
+  }
+  visited.add(reference.rid);
+  const type = assembly.typeRefs[reference.rid - 1];
+  const scope = type?.resolutionScope;
+  const result = scope?.table === 35
+    ? assembly.assemblyRefs[scope.rid - 1] ?? null
+    : scope?.table === 1
+      ? getTypeRefAssemblyReference(assembly, scope, visited)
+      : null;
+  visited.delete(reference.rid);
+  return result;
+}
+
+function resolveExternalCustomAttributeType(assembly, reference, resolver, explicitName = null) {
+  if (resolver === undefined) return null;
+  if (typeof resolver !== "function") {
+    throw new TypeError("Custom-attribute type resolver must be a function");
+  }
+  const name = explicitName ?? getManagedTypeName(assembly, reference);
+  if (!name) return null;
+  const resolved = resolver(name, {
+    assembly,
+    reference,
+    assemblyReference: getTypeRefAssemblyReference(
+      assembly,
+      getManagedTypeDefinitionReference(assembly, reference)
+    ),
+    assemblyIdentity: explicitName && explicitName.includes(",")
+      ? explicitName.slice(getAssemblyQualifiedTypeName(explicitName).length + 1).trim()
+      : null
+  });
+  if (resolved === undefined || resolved === null) return null;
+  if (!resolved.assembly || !Array.isArray(resolved.assembly.types) ||
+      !Number.isInteger(resolved.rid) || resolved.rid < 1) {
+    throw new TypeError("Custom-attribute type resolver must return { assembly, rid } or undefined");
+  }
+  const type = resolved.assembly.types[resolved.rid - 1];
+  if (!type) {
+    throw new RangeError(`Custom-attribute type resolver returned missing TypeDef row ${resolved.rid}`);
+  }
+  return { assembly: resolved.assembly, type };
+}
+
+function resolveEnumElementType(assembly, name, resolveType) {
+  const fullName = getAssemblyQualifiedTypeName(name);
+  let definitionAssembly = assembly;
+  let definition = assembly.types.find((type) =>
     getManagedTypeDefinitionName(assembly, type) === fullName
   );
-  if (!definition || getManagedTypeName(assembly, definition.extends) !== "System.Enum") {
+  if (!definition) {
+    const external = resolveExternalCustomAttributeType(assembly, null, resolveType, name);
+    definitionAssembly = external?.assembly ?? assembly;
+    definition = external?.type ?? null;
+  }
+  if (!definition ||
+      getManagedTypeName(definitionAssembly, definition.extends) !== "System.Enum") {
+    const simpleName = fullName.split(/[.+]/).at(-1);
     throw new UnsupportedFormatError(
-      `Custom-attribute enum ${name} is not defined in this assembly or does not derive from System.Enum`
+      `Custom-attribute enum ${simpleName} is not defined in this assembly or does not derive from System.Enum (${name})`
     );
   }
   const underlyingFields = definition.fields.filter((field) => field.name === "value__");
@@ -229,7 +307,9 @@ function resolveEnumElementType(assembly, name) {
   if ((underlyingField.flags & 0x10) !== 0) {
     throw new UnsupportedFormatError(`Custom-attribute enum ${name} has a static underlying field`);
   }
-  const signature = parseSignature(underlyingField.signature);
+  const signature = parseSignature(underlyingField.signature, {
+    counts: definitionAssembly.tables.counts
+  });
   const elementType = signature.kind === "field" && signature.type?.kind === "primitive"
     ? signature.type.elementType
     : 0;
@@ -1307,13 +1387,18 @@ function validateMethodSemanticsRecord(
   if (!method) throw new FormatError(`Missing MethodDef row ${methodRid}`);
 }
 
-function getCustomAttributeEnumResolver(assembly, resolver) {
+function getCustomAttributeEnumResolver(assembly, resolver, resolveType) {
   if (resolver !== undefined && typeof resolver !== "function") {
     throw new TypeError("Custom-attribute enum resolver must be a function");
   }
+  if (resolveType !== undefined && typeof resolveType !== "function") {
+    throw new TypeError("Custom-attribute type resolver must be a function");
+  }
   return (name) => {
     const resolved = resolver?.(name);
-    const elementType = resolved === undefined ? resolveEnumElementType(assembly, name) : resolved;
+    const elementType = resolved === undefined
+      ? resolveEnumElementType(assembly, name, resolveType)
+      : resolved;
     if (!customAttributeEnumTypes.has(elementType)) {
       throw new UnsupportedFormatError(`Unsupported custom-attribute enum underlying type for ${name}`);
     }
@@ -1344,43 +1429,64 @@ function getCustomAttributeArgumentType(assembly, signatureType, resolveEnum) {
   throw new UnsupportedFormatError(`Unsupported custom-attribute constructor parameter type ${signatureType.kind}`);
 }
 
-function getLocalCustomAttributeBaseStatus(assembly, type, visited = new Set()) {
+function getCustomAttributeTypeDefinition(assembly, reference, resolveType) {
+  const definitionReference = getManagedTypeDefinitionReference(assembly, reference);
+  if (definitionReference?.table === 2) {
+    const type = assembly.types[definitionReference.rid - 1];
+    return type ? { assembly, type } : null;
+  }
+  if (definitionReference?.table !== 1) return null;
+  return resolveExternalCustomAttributeType(
+    assembly,
+    definitionReference,
+    resolveType
+  );
+}
+
+function getCustomAttributeBaseStatus(assembly, type, resolveType, visited = new Map()) {
   if (!type) return false;
   const name = getManagedTypeDefinitionName(assembly, type);
   if (name === "System.Attribute") return true;
-  if (visited.has(type.rid)) {
+  let rids = visited.get(assembly);
+  if (!rids) visited.set(assembly, rids = new Set());
+  if (rids.has(type.rid)) {
     throw new FormatError("Custom-attribute constructor type inheritance contains a cycle");
   }
-  visited.add(type.rid);
+  rids.add(type.rid);
   const base = getManagedTypeDefinitionReference(assembly, type.extends);
-  if (base?.table === 2) {
-    return getLocalCustomAttributeBaseStatus(
-      assembly,
-      assembly.types[base.rid - 1],
-      visited
-    );
-  }
-  if (base?.table === 1) {
+  if (base) {
     const baseName = getManagedTypeName(assembly, base);
     if (baseName === "System.Attribute") return true;
     if (baseName === "System.Object") return false;
+    const baseDefinition = getCustomAttributeTypeDefinition(assembly, base, resolveType);
+    if (baseDefinition) {
+      return getCustomAttributeBaseStatus(
+        baseDefinition.assembly,
+        baseDefinition.type,
+        resolveType,
+        visited
+      );
+    }
   }
   return null;
 }
 
-function findLocalCustomAttributeNamedMember(
+function findCustomAttributeNamedMember(
   assembly,
   type,
   kind,
   name,
-  visited = new Set(),
+  resolveType,
+  visited = new Map(),
   typeArguments = []
 ) {
-  if (!type) return { member: null, complete: false, typeArguments };
-  if (visited.has(type.rid)) {
+  if (!type) return { member: null, complete: false, typeArguments, assembly };
+  let rids = visited.get(assembly);
+  if (!rids) visited.set(assembly, rids = new Set());
+  if (rids.has(type.rid)) {
     throw new FormatError("Custom-attribute named-member inheritance contains a cycle");
   }
-  visited.add(type.rid);
+  rids.add(type.rid);
   const members = kind === "field"
     ? type.fields.filter((field) => field.name === name)
     : type.properties.filter((property) => property.name === name);
@@ -1388,14 +1494,19 @@ function findLocalCustomAttributeNamedMember(
     throw new FormatError(`Custom-attribute named ${kind} ${name} is ambiguous`);
   }
   if (members.length === 1) {
-    return { member: members[0], complete: true, typeArguments };
+    return { member: members[0], complete: true, typeArguments, assembly };
   }
   const baseReference = getManagedTypeDefinitionReference(assembly, type.extends);
-  if (baseReference?.table === 2) {
+  if (baseReference) {
     const extendsSignature = type.extends.table === 27
       ? assembly.typeSpecs[type.extends.rid - 1]?.parsedSignature
       : null;
-    const baseType = assembly.types[baseReference.rid - 1];
+    const baseDefinition = getCustomAttributeTypeDefinition(
+      assembly,
+      baseReference,
+      resolveType
+    );
+    const baseType = baseDefinition?.type;
     const baseTypeArguments = extendsSignature?.kind === "genericInstance"
       ? typeArguments === null
         ? null
@@ -1405,20 +1516,27 @@ function findLocalCustomAttributeNamedMember(
       : baseType?.genericParams.length === 0
         ? []
         : null;
-    return findLocalCustomAttributeNamedMember(
-      assembly,
-      baseType,
-      kind,
-      name,
-      visited,
-      baseTypeArguments
-    );
+    return baseDefinition
+      ? findCustomAttributeNamedMember(
+        baseDefinition.assembly,
+        baseType,
+        kind,
+        name,
+        resolveType,
+        visited,
+        baseDefinition.assembly !== assembly && baseTypeArguments?.length
+          ? null
+          : baseTypeArguments
+      )
+      : {
+        member: null,
+        complete: baseReference.table === 1 &&
+          getManagedTypeName(assembly, baseReference) === "System.Attribute",
+        typeArguments,
+        assembly
+      };
   }
-  if (baseReference?.table === 1 &&
-      getManagedTypeName(assembly, baseReference) === "System.Attribute") {
-    return { member: null, complete: true, typeArguments };
-  }
-  return { member: null, complete: false, typeArguments };
+  return { member: null, complete: false, typeArguments, assembly };
 }
 
 function substituteCustomAttributeType(type, typeArguments) {
@@ -1485,21 +1603,23 @@ function sameCustomAttributeArgumentType(left, right) {
   return ["string", "type", "object"].includes(left.kind);
 }
 
-function validateLocalCustomAttributeNamedArguments(
+function validateCustomAttributeNamedArguments(
   assembly,
   ownerType,
   typeArguments,
   namedArguments,
-  resolveEnum
+  resolveEnum,
+  resolveType
 ) {
   if (!ownerType) return;
   for (const argument of namedArguments) {
-    const located = findLocalCustomAttributeNamedMember(
+    const located = findCustomAttributeNamedMember(
       assembly,
       ownerType,
       argument.kind,
       argument.name,
-      new Set(),
+      resolveType,
+      new Map(),
       typeArguments
     );
     if (!located.member) {
@@ -1517,14 +1637,16 @@ function validateLocalCustomAttributeNamedArguments(
           `Custom-attribute named field ${argument.name} must be public, writable, and nonstatic`
         );
       }
-      const signature = parseSignature(field.signature, { counts: assembly.tables.counts });
+      const signature = parseSignature(field.signature, {
+        counts: located.assembly.tables.counts
+      });
       if (signature.kind !== "field") {
         throw new FormatError(`Custom-attribute named field ${argument.name} has an invalid signature`);
       }
       const fieldType = substituteCustomAttributeType(signature.type, located.typeArguments);
       if (!hasOpenCustomAttributeType(fieldType) &&
           !sameCustomAttributeArgumentType(
-            getCustomAttributeArgumentType(assembly, fieldType, resolveEnum),
+            getCustomAttributeArgumentType(located.assembly, fieldType, resolveEnum),
             argument.type
           )) {
         throw new FormatError(
@@ -1536,7 +1658,7 @@ function validateLocalCustomAttributeNamedArguments(
 
     const property = located.member;
     const propertySignature = parseSignature(property.signature, {
-      counts: assembly.tables.counts
+      counts: located.assembly.tables.counts
     });
     if (propertySignature.kind !== "property" || propertySignature.parameters.length !== 0) {
       throw new FormatError(
@@ -1549,14 +1671,14 @@ function validateLocalCustomAttributeNamedArguments(
     );
     if (!hasOpenCustomAttributeType(propertyType) &&
         !sameCustomAttributeArgumentType(
-          getCustomAttributeArgumentType(assembly, propertyType, resolveEnum),
+          getCustomAttributeArgumentType(located.assembly, propertyType, resolveEnum),
           argument.type
         )) {
       throw new FormatError(
         `Custom-attribute named property ${argument.name} has a type that does not match its signature`
       );
     }
-    const setterSemantics = assembly.tables.get(24).filter((row) =>
+    const setterSemantics = located.assembly.tables.get(24).filter((row) =>
       row.Association.target?.table === 23 &&
       row.Association.target.rid === property.rid &&
       (row.Semantics & 0x01) !== 0
@@ -1566,9 +1688,9 @@ function validateLocalCustomAttributeNamedArguments(
         `Custom-attribute named property ${argument.name} must have one setter`
       );
     }
-    const setter = assembly.methods[setterSemantics[0].Method.rid - 1];
+    const setter = located.assembly.methods[setterSemantics[0].Method.rid - 1];
     const setterSignature = setter
-      ? parseSignature(setter.signature, { counts: assembly.tables.counts })
+      ? parseSignature(setter.signature, { counts: located.assembly.tables.counts })
       : null;
     const setterParameterType = setterSignature?.parameters.length === 1
       ? substituteCustomAttributeType(
@@ -1578,7 +1700,7 @@ function validateLocalCustomAttributeNamedArguments(
       : null;
     const setterParameterMatches = hasOpenCustomAttributeType(setterParameterType) ||
       sameCustomAttributeArgumentType(
-        getCustomAttributeArgumentType(assembly, setterParameterType, resolveEnum),
+        getCustomAttributeArgumentType(located.assembly, setterParameterType, resolveEnum),
         argument.type
       );
     if (!setter || (setter.flags & 0x7) !== 0x6 || (setter.flags & 0x10) !== 0 ||
@@ -1595,71 +1717,72 @@ function validateLocalCustomAttributeNamedArguments(
   }
 }
 
-function getLocalPermissionSetAttributeType(assembly, typeName) {
-  let bracketDepth = 0;
-  let nameEnd = typeName.length;
-  for (let index = 0; index < typeName.length; index++) {
-    if (typeName[index] === "[") bracketDepth++;
-    else if (typeName[index] === "]") bracketDepth--;
-    else if (typeName[index] === "," && bracketDepth === 0) {
-      nameEnd = index;
-      break;
-    }
-  }
-  const fullName = typeName.slice(0, nameEnd).trim();
-  return assembly.types.find((type) =>
+function getPermissionSetAttributeType(assembly, typeName, resolveType) {
+  const fullName = getAssemblyQualifiedTypeName(typeName);
+  const localType = assembly.types.find((type) =>
     getManagedTypeName(assembly, { table: 2, rid: type.rid }) === fullName
-  ) ?? null;
+  );
+  if (localType) return { assembly, type: localType };
+  return resolveExternalCustomAttributeType(assembly, null, resolveType, typeName);
 }
 
-function validateLocalPermissionSetNamedArguments(assembly, permissionSet, resolveEnum) {
+function validatePermissionSetNamedArguments(
+  assembly,
+  permissionSet,
+  resolveEnum,
+  resolveType
+) {
   if (permissionSet.format !== "binary") return;
   for (const attribute of permissionSet.attributes) {
-    const ownerType = getLocalPermissionSetAttributeType(assembly, attribute.typeName);
-    if (!ownerType) continue;
-    validateLocalCustomAttributeNamedArguments(
-      assembly,
-      ownerType,
-      ownerType.genericParams.length > 0 ? null : [],
+    const owner = getPermissionSetAttributeType(assembly, attribute.typeName, resolveType);
+    if (!owner) continue;
+    validateCustomAttributeNamedArguments(
+      owner.assembly,
+      owner.type,
+      owner.type.genericParams.length > 0 ? null : [],
       attribute.namedArguments,
-      resolveEnum
+      resolveEnum,
+      resolveType
     );
   }
 }
 
-function getCustomAttributeConstructor(assembly, attribute, resolveEnum) {
+function getCustomAttributeConstructor(assembly, attribute, resolveEnum, resolveType) {
   const constructor = attribute.constructor;
   let method;
-  let ownerType;
-  let localOwnerType = null;
+  let ownerAssembly = assembly;
+  let ownerType = null;
   let typeArguments = null;
   if (constructor?.table === 6) {
     method = assembly.methods[constructor.rid - 1];
-    localOwnerType = assembly.types.find((type) => type.methodRids.includes(constructor.rid));
-    ownerType = localOwnerType;
-    typeArguments = localOwnerType?.genericParams.length === 0 ? [] : null;
+    ownerType = assembly.types.find((type) => type.methodRids.includes(constructor.rid)) ?? null;
+    typeArguments = ownerType?.genericParams.length === 0 ? [] : null;
   } else if (constructor?.table === 10) {
     method = assembly.memberRefs.find((reference) => reference.rid === constructor.rid);
-    ownerType = method ? getManagedTypeName(assembly, method.parent) : null;
-    const ownerReference = method
-      ? getManagedTypeDefinitionReference(assembly, method.parent)
-      : null;
-    if (ownerReference?.table === 2) {
-      localOwnerType = assembly.types[ownerReference.rid - 1] ?? null;
+    if (method) {
+      const ownerDefinition = getCustomAttributeTypeDefinition(
+        assembly,
+        method.parent,
+        resolveType
+      );
+      if (ownerDefinition) {
+        ownerAssembly = ownerDefinition.assembly;
+        ownerType = ownerDefinition.type;
+      }
     }
     const parentSignature = method?.parent?.table === 27
       ? assembly.typeSpecs[method.parent.rid - 1]?.parsedSignature
       : null;
     typeArguments = parentSignature?.kind === "genericInstance"
-      ? parentSignature.arguments
-      : localOwnerType?.genericParams.length === 0
+      ? ownerAssembly === assembly ? parentSignature.arguments : null
+      : ownerType?.genericParams.length === 0
         ? []
         : null;
   }
   if (!method || method.name !== ".ctor") {
     throw new FormatError(`CustomAttribute row ${attribute.rid} does not reference a supported constructor`);
   }
-  const signature = parseSignature(method.signature);
+  const signature = parseSignature(method.signature, { counts: assembly.tables.counts });
   if (signature.kind !== "method" || signature.callingConvention !== 0 ||
       !signature.hasThis || signature.explicitThis || signature.generic ||
       signature.sentinelIndex !== null) {
@@ -1668,21 +1791,53 @@ function getCustomAttributeConstructor(assembly, attribute, resolveEnum) {
   if (signature.returnType.kind !== "primitive" || signature.returnType.elementType !== 0x01) {
     throw new FormatError(`CustomAttribute row ${attribute.rid} constructor must return void`);
   }
-  if (constructor.table === 6 && !ownerType) {
-    throw new FormatError(`CustomAttribute row ${attribute.rid} constructor has no declaring type`);
+  if (!ownerType) {
+    if (constructor.table === 6) {
+      throw new FormatError(`CustomAttribute row ${attribute.rid} constructor has no declaring type`);
+    }
   }
-  if (localOwnerType && getLocalCustomAttributeBaseStatus(assembly, localOwnerType) === false) {
+  if (ownerType && getCustomAttributeBaseStatus(ownerAssembly, ownerType, resolveType) === false) {
     throw new FormatError(
       `CustomAttribute row ${attribute.rid} constructor type does not derive from System.Attribute`
     );
   }
+  const fixedTypes = signature.parameters.map((parameter) =>
+    getCustomAttributeArgumentType(assembly, parameter, resolveEnum)
+  );
+  if (constructor.table === 10 && ownerType) {
+    const matchingConstructor = ownerType.methodRids.some((methodRid) => {
+      const candidate = ownerAssembly.methods[methodRid - 1];
+      if (!candidate || candidate.name !== ".ctor") return false;
+      const candidateSignature = parseSignature(candidate.signature, {
+        counts: ownerAssembly.tables.counts
+      });
+      if (candidateSignature.kind !== "method" || candidateSignature.callingConvention !== 0 ||
+          !candidateSignature.hasThis || candidateSignature.explicitThis ||
+          candidateSignature.generic || candidateSignature.sentinelIndex !== null ||
+          candidateSignature.returnType.kind !== "primitive" ||
+          candidateSignature.returnType.elementType !== 0x01 ||
+          candidateSignature.parameters.length !== fixedTypes.length) {
+        return false;
+      }
+      const candidateTypes = candidateSignature.parameters.map((parameter) =>
+        getCustomAttributeArgumentType(ownerAssembly, parameter, resolveEnum)
+      );
+      return candidateTypes.every((candidateType, index) =>
+        sameCustomAttributeArgumentType(candidateType, fixedTypes[index])
+      );
+    });
+    if (!matchingConstructor) {
+      throw new FormatError(
+        `CustomAttribute row ${attribute.rid} MemberRef does not match a declared constructor`
+      );
+    }
+  }
   return {
     signature,
-    localOwnerType,
+    ownerAssembly,
+    ownerType,
     typeArguments,
-    fixedTypes: signature.parameters.map((parameter) =>
-      getCustomAttributeArgumentType(assembly, parameter, resolveEnum)
-    )
+    fixedTypes
   };
 }
 
@@ -2403,40 +2558,41 @@ export class Assembly {
     return this.getMethodBody(methodRid)?.instructions ?? [];
   }
 
-  parseCustomAttribute(rid, { resolveEnum } = {}) {
+  parseCustomAttribute(rid, { resolveEnum, resolveType } = {}) {
     if (!Number.isInteger(rid) || rid < 1 || rid > this.customAttributes.length) {
       throw new RangeError(`Invalid CustomAttribute row ID ${rid}`);
     }
     const attribute = this.customAttributes[rid - 1];
-    const enumResolver = getCustomAttributeEnumResolver(this, resolveEnum);
-    const { fixedTypes, localOwnerType, typeArguments } =
-      getCustomAttributeConstructor(this, attribute, enumResolver);
+    const enumResolver = getCustomAttributeEnumResolver(this, resolveEnum, resolveType);
+    const { fixedTypes, ownerAssembly, ownerType, typeArguments } =
+      getCustomAttributeConstructor(this, attribute, enumResolver, resolveType);
     const parsed = parseCustomAttributeBlob(
       attribute.value,
       fixedTypes,
       enumResolver
     );
-    validateLocalCustomAttributeNamedArguments(
-      this,
-      localOwnerType,
+    validateCustomAttributeNamedArguments(
+      ownerAssembly,
+      ownerType,
       typeArguments,
       parsed.namedArguments,
-      enumResolver
+      enumResolver,
+      resolveType
     );
     return parsed;
   }
 
-  parseDeclSecurity(rid, { resolveEnum } = {}) {
+  parseDeclSecurity(rid, { resolveEnum, resolveType } = {}) {
     const row = this.tables.row(14, rid);
     if (!Number.isInteger(rid) || rid < 1 || !row) {
       throw new RangeError(`Invalid DeclSecurity row ID ${rid}`);
     }
-    const enumResolver = getCustomAttributeEnumResolver(this, resolveEnum);
+    const enumResolver = getCustomAttributeEnumResolver(this, resolveEnum, resolveType);
     const permissionSet = parsePermissionSetBlob(
       this.heaps.getBlob(row.PermissionSet),
       enumResolver
     );
-    validateLocalPermissionSetNamedArguments(this, permissionSet, enumResolver);
+    validatePermissionSetNamedArguments(this, permissionSet, enumResolver, resolveType);
     return {
       rid,
       action: row.Action,
@@ -2445,23 +2601,24 @@ export class Assembly {
     };
   }
 
-  replaceCustomAttribute(rid, value, { resolveEnum } = {}) {
+  replaceCustomAttribute(rid, value, { resolveEnum, resolveType } = {}) {
     this.#ensureEditable();
     if (!Number.isInteger(rid) || rid < 1 || rid > this.customAttributes.length) {
       throw new RangeError(`Invalid CustomAttribute row ID ${rid}`);
     }
     const attribute = this.customAttributes[rid - 1];
-    const enumResolver = getCustomAttributeEnumResolver(this, resolveEnum);
-    const { fixedTypes, localOwnerType, typeArguments } =
-      getCustomAttributeConstructor(this, attribute, enumResolver);
+    const enumResolver = getCustomAttributeEnumResolver(this, resolveEnum, resolveType);
+    const { fixedTypes, ownerAssembly, ownerType, typeArguments } =
+      getCustomAttributeConstructor(this, attribute, enumResolver, resolveType);
     const encoded = encodeCustomAttributeBlob(value, fixedTypes);
     const parsed = parseCustomAttributeBlob(encoded, fixedTypes, enumResolver);
-    validateLocalCustomAttributeNamedArguments(
-      this,
-      localOwnerType,
+    validateCustomAttributeNamedArguments(
+      ownerAssembly,
+      ownerType,
       typeArguments,
       parsed.namedArguments,
-      enumResolver
+      enumResolver,
+      resolveType
     );
     const row = this.tables.row(12, rid);
     if (!row) throw new FormatError(`CustomAttribute row ${rid} is missing from metadata tables`);
@@ -2481,21 +2638,21 @@ export class Assembly {
     return this;
   }
 
-  addCustomAttribute({ parent, constructor, value, resolveEnum }) {
+  addCustomAttribute({ parent, constructor, value, resolveEnum, resolveType }) {
     return this.#writeCustomAttribute(
-      { parent, constructor, value, resolveEnum },
+      { parent, constructor, value, resolveEnum, resolveType },
       false
     ).token;
   }
 
-  insertCustomAttribute({ parent, constructor, value, resolveEnum }) {
+  insertCustomAttribute({ parent, constructor, value, resolveEnum, resolveType }) {
     return this.#writeCustomAttribute(
-      { parent, constructor, value, resolveEnum },
+      { parent, constructor, value, resolveEnum, resolveType },
       true
     );
   }
 
-  #writeCustomAttribute({ parent, constructor, value, resolveEnum }, insertSorted) {
+  #writeCustomAttribute({ parent, constructor, value, resolveEnum, resolveType }, insertSorted) {
     this.#ensureEditable();
     const parentTable = metadataTableId(parent?.table);
     if (!parent || parentTable < 0 || !Number.isInteger(parent.rid) || parent.rid < 1 ||
@@ -2535,7 +2692,7 @@ export class Assembly {
     const { tokenMap, rowChanges, tokenUpdates, patches } =
       this.#prepareTokenRowInsertion(12, rid, customRows.length, "CustomAttribute");
 
-    const enumResolver = getCustomAttributeEnumResolver(this, resolveEnum);
+    const enumResolver = getCustomAttributeEnumResolver(this, resolveEnum, resolveType);
     const newAttribute = {
       rid,
       parent: { table: parentTable, tableName: metadataTableNames[parentTable], rid: parent.rid },
@@ -2546,16 +2703,17 @@ export class Assembly {
       },
       value: new Uint8Array()
     };
-    const { fixedTypes, localOwnerType, typeArguments } =
-      getCustomAttributeConstructor(this, newAttribute, enumResolver);
+    const { fixedTypes, ownerAssembly, ownerType, typeArguments } =
+      getCustomAttributeConstructor(this, newAttribute, enumResolver, resolveType);
     const encoded = encodeCustomAttributeBlob(value, fixedTypes);
     const parsed = parseCustomAttributeBlob(encoded, fixedTypes, enumResolver);
-    validateLocalCustomAttributeNamedArguments(
-      this,
-      localOwnerType,
+    validateCustomAttributeNamedArguments(
+      ownerAssembly,
+      ownerType,
       typeArguments,
       parsed.namedArguments,
-      enumResolver
+      enumResolver,
+      resolveType
     );
     const heapStreams = new Map(
       [...(this._heapStreams ?? new Map([...this.metadataRoot.streams].map(([streamName, stream]) =>
@@ -5267,15 +5425,21 @@ export class Assembly {
     return this.#removeTokenRow(25, rid, "MethodImpl");
   }
 
-  addDeclSecurity({ parent, action, permissionSet, resolveEnum }) {
-    return this.#writeDeclSecurity({ parent, action, permissionSet, resolveEnum }, false).rid;
+  addDeclSecurity({ parent, action, permissionSet, resolveEnum, resolveType }) {
+    return this.#writeDeclSecurity(
+      { parent, action, permissionSet, resolveEnum, resolveType },
+      false
+    ).rid;
   }
 
-  insertDeclSecurity({ parent, action, permissionSet, resolveEnum }) {
-    return this.#writeDeclSecurity({ parent, action, permissionSet, resolveEnum }, true);
+  insertDeclSecurity({ parent, action, permissionSet, resolveEnum, resolveType }) {
+    return this.#writeDeclSecurity(
+      { parent, action, permissionSet, resolveEnum, resolveType },
+      true
+    );
   }
 
-  #writeDeclSecurity({ parent, action, permissionSet, resolveEnum }, insertSorted) {
+  #writeDeclSecurity({ parent, action, permissionSet, resolveEnum, resolveType }, insertSorted) {
     this.#ensureEditable();
     const parentTable = metadataTableId(parent?.table);
     if (![2, 6, 32].includes(parentTable) || !Number.isInteger(parent.rid) ||
@@ -5291,9 +5455,9 @@ export class Assembly {
     if (permissionSetBytes.length === 0) {
       throw new TypeError("PermissionSet must be non-empty");
     }
-    const enumResolver = getCustomAttributeEnumResolver(this, resolveEnum);
+    const enumResolver = getCustomAttributeEnumResolver(this, resolveEnum, resolveType);
     if (!(permissionSet instanceof Uint8Array)) {
-      validateLocalPermissionSetNamedArguments(this, permissionSet, enumResolver);
+      validatePermissionSetNamedArguments(this, permissionSet, enumResolver, resolveType);
     }
     const rows = this.tables.rows.get(14) ?? [];
     if (rows.length !== this.tables.counts[14] || rows.length >= 0xffffffff) {
@@ -5371,7 +5535,7 @@ export class Assembly {
     return { rid, tokenMap };
   }
 
-  replaceDeclSecurity(rid, { action, permissionSet, resolveEnum } = {}) {
+  replaceDeclSecurity(rid, { action, permissionSet, resolveEnum, resolveType } = {}) {
     this.#ensureEditable();
     const row = this.tables.row(14, rid);
     if (!Number.isInteger(rid) || rid < 1 || !row) {
@@ -5391,8 +5555,8 @@ export class Assembly {
       throw new TypeError("PermissionSet must be non-empty");
     }
     if (permissionSet !== undefined && !(permissionSet instanceof Uint8Array)) {
-      const enumResolver = getCustomAttributeEnumResolver(this, resolveEnum);
-      validateLocalPermissionSetNamedArguments(this, permissionSet, enumResolver);
+      const enumResolver = getCustomAttributeEnumResolver(this, resolveEnum, resolveType);
+      validatePermissionSetNamedArguments(this, permissionSet, enumResolver, resolveType);
     }
     if (nextAction === row.Action && nextPermissionSet === null) return this;
     if (this.tables.rows.get(14).some((other) =>
