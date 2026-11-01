@@ -307,7 +307,7 @@ function validateTypeSpecGenericContext(
     for (const parameter of signature.parameters) visitType(parameter, nestedMethodArity);
   };
   const visitType = (type, currentMethodArity = methodArity) => {
-    if (type.kind === "typeParameter" && type.index >= typeArity) {
+    if (type.kind === "typeParameter" && typeArity !== null && type.index >= typeArity) {
       throw new FormatError(`TypeSpec generic variable !${type.index} exceeds its declaring type's arity`);
     }
     if (type.kind === "methodParameter" && type.index >= currentMethodArity) {

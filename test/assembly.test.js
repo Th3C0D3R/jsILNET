@@ -6891,6 +6891,16 @@ test("MemberRef signatures keep generic variables unknown when TypeRef arity is 
     name: "Value",
     signature: Uint8Array.from([0x06, 0x13, 0x00])
   }));
+  const typeSpec = assembly.addTypeSpec({ signature: Uint8Array.of(0x13, 0x00) });
+  const typeSpecSignature = Uint8Array.from([
+    0x00, 0x01, 0x01, 0x12,
+    ...appendCompressedUInt(((typeSpec & 0x00ffffff) << 2) | 2)
+  ]);
+  assert.doesNotThrow(() => assembly.insertMemberRefSorted({
+    parent,
+    name: "NestedValue",
+    signature: typeSpecSignature
+  }));
 });
 
 test("MemberRef append rejects sorted-table order changes before mutating state", () => {
