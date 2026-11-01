@@ -27,6 +27,7 @@ import {
   replaceEmbeddedPortablePdbLocalVariable,
   replaceEmbeddedPortablePdbLocalConstant,
   replaceEmbeddedPortablePdbCustomDebugInformation,
+  replaceEmbeddedPortablePdbMethodDocument,
   replaceEmbeddedPortablePdbSequencePoints,
   replaceEmbeddedPortablePdbSourceLink,
   addEmbeddedPortablePdbSourceLink,
@@ -1187,6 +1188,10 @@ test("embedded Portable PDB LocalScope replacement validates method boundaries",
       "  }",
       "}"
     ].join("\n"));
+    await writeFile(
+      join(directory, "Other.cs"),
+      "public static class PdbLocalScopeEditOther { public static int Value() => 5; }"
+    );
     const build = spawnSync(
       "dotnet",
       ["build", project, "--configuration", "Debug", "--output", output, "--nologo"],
@@ -1202,6 +1207,14 @@ test("embedded Portable PDB LocalScope replacement validates method boundaries",
     assert.notEqual(debugIndex, -1);
     const pdb = assembly.pe.debugDirectoryEntries[debugIndex].embeddedPortablePdb;
     const scopeRows = pdb.tables.rows.get(50) ?? [];
+    const methodDocument = pdb.methodDebugInformation.find((row) =>
+      row.sequencePoints.length > 0 &&
+      pdb.documents.some((document) => document.rid !== row.Document.rid)
+    );
+    assert.ok(methodDocument, "compiler PDB should contain methods and multiple source documents");
+    const targetDocumentRid = pdb.documents.find((document) =>
+      document.rid !== methodDocument.Document.rid
+    ).rid;
     const scopeEdit = scopeRows.map((scope) => {
       const body = assembly.getMethodBody(scope.Method.rid);
       if (!body) return null;
@@ -1245,6 +1258,23 @@ test("embedded Portable PDB LocalScope replacement validates method boundaries",
     const replacementOptions = new TextEncoder().encode(
       "language\0C#\0optimization\0debug\0"
     );
+    const methodDocumentBytes = replaceEmbeddedPortablePdbMethodDocument(
+      pdb,
+      methodDocument.rid,
+      targetDocumentRid
+    );
+    const methodDocumentPdb = parseEmbeddedPortablePdbData(
+      methodDocumentBytes,
+      0,
+      methodDocumentBytes.length
+    );
+    const replacedMethodDocument = methodDocumentPdb.methodDebugInformation[
+      methodDocument.rid - 1
+    ];
+    assert.equal(replacedMethodDocument.Document.rid, targetDocumentRid);
+    assert.ok(replacedMethodDocument.sequencePoints.every((point) =>
+      point.documentRid === targetDocumentRid
+    ));
 
     const standaloneBytes = replaceEmbeddedPortablePdbLocalScope(
       pdb,
@@ -1367,6 +1397,14 @@ test("embedded Portable PDB LocalScope replacement validates method boundaries",
       ),
       /valid UTF-8/
     );
+    assert.throws(
+      () => assembly.replaceEmbeddedPortablePdbMethodDocument(
+        debugIndex,
+        methodDocument.rid,
+        pdb.documents.length + 1
+      ),
+      /Invalid Portable PDB Document row ID/
+    );
     assert.deepEqual(assembly.serialize(), beforeInvalidEdit);
     assembly.replaceEmbeddedPortablePdbLocalScope(
       debugIndex,
@@ -1392,6 +1430,11 @@ test("embedded Portable PDB LocalScope replacement validates method boundaries",
       debugIndex,
       compilationOptions.rid,
       replacementOptions
+    );
+    assembly.replaceEmbeddedPortablePdbMethodDocument(
+      debugIndex,
+      methodDocument.rid,
+      targetDocumentRid
     );
     const rewritten = parseAssembly(assembly.serialize());
     const rewrittenPdb = rewritten.pe.debugDirectoryEntries.find((entry) =>
@@ -1426,6 +1469,13 @@ test("embedded Portable PDB LocalScope replacement validates method boundaries",
         { name: "optimization", value: "debug" }
       ]
     );
+    assert.equal(
+      rewrittenPdb.methodDebugInformation[methodDocument.rid - 1].Document.rid,
+      targetDocumentRid
+    );
+    assert.ok(rewrittenPdb.methodDebugInformation[methodDocument.rid - 1].sequencePoints.every(
+      (point) => point.documentRid === targetDocumentRid
+    ));
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

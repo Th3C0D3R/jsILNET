@@ -1810,6 +1810,70 @@ export function replaceEmbeddedPortablePdbSequencePoints(pdb, methodRid, sequenc
   });
 }
 
+export function replaceEmbeddedPortablePdbMethodDocument(pdb, methodRid, documentRid) {
+  if (!pdb?.metadataRoot?.streams || !(pdb.tables?.rows instanceof Map) ||
+      !Array.isArray(pdb.tables.counts) || !(pdb.rowCounts instanceof Map) ||
+      !Array.isArray(pdb.methodDebugInformation) || !Array.isArray(pdb.documents)) {
+    throw new TypeError("Portable PDB method-document editing requires parsed PDB data");
+  }
+  if (!Number.isInteger(methodRid) || methodRid < 1 ||
+      methodRid > pdb.methodDebugInformation.length) {
+    throw new RangeError(`Invalid Portable PDB MethodDebugInformation row ID ${methodRid}`);
+  }
+  if (!Number.isInteger(documentRid) || documentRid < 0 ||
+      documentRid > pdb.documents.length) {
+    throw new RangeError(`Invalid Portable PDB Document row ID ${documentRid}`);
+  }
+  const methodRows = pdb.tables.rows.get(49) ?? [];
+  const row = methodRows[methodRid - 1];
+  const method = pdb.methodDebugInformation[methodRid - 1];
+  if (!row || row.rid !== methodRid || !method || method.rid !== methodRid) {
+    throw new FormatError(
+      `Portable PDB MethodDebugInformation row ${methodRid} is missing`
+    );
+  }
+  const points = method.sequencePoints.map((point) => ({
+    ...point,
+    documentRid: documentRid || point.documentRid
+  }));
+  const streams = new Map([...pdb.metadataRoot.streams].map(([name, stream]) =>
+    [name, { ...stream, bytes: Uint8Array.from(stream.bytes) }]
+  ));
+  let sequencePointsIndex = row.SequencePoints;
+  if (row.SequencePoints !== 0 && points.length > 0) {
+    const blobStream = streams.get("#Blob");
+    if (!blobStream) throw new FormatError("Portable PDB metadata is missing its #Blob heap");
+    const encoded = encodePortablePdbSequencePoints({
+      localSignatureRid: method.localSignatureRid,
+      points
+    }, {
+      documentRid,
+      documentCount: pdb.documents.length,
+      localSignatureCount: pdb.rowCounts.get(17) ?? 0
+    });
+    const appended = appendBlobHeap(blobStream.bytes, encoded);
+    blobStream.bytes = appended.heap;
+    sequencePointsIndex = appended.index;
+  }
+  const document = { ...row.Document, raw: documentRid, rid: documentRid };
+  const rows = new Map(pdb.tables.rows);
+  rows.set(49, methodRows.map((methodRow) =>
+    methodRow.rid === methodRid
+      ? { ...methodRow, Document: document, SequencePoints: sequencePointsIndex }
+      : { ...methodRow }
+  ));
+  return serializeEmbeddedPortablePdb({
+    ...pdb,
+    methodDebugInformation: pdb.methodDebugInformation.map((methodRow) =>
+      methodRow.rid === methodRid
+        ? { ...methodRow, Document: document, sequencePoints: points }
+        : { ...methodRow }
+    ),
+    metadataRoot: { ...pdb.metadataRoot, streams },
+    tables: { ...pdb.tables, rows }
+  });
+}
+
 export function replaceEmbeddedPortablePdbCustomDebugInformation(pdb, customDebugInformationRid, value) {
   if (!pdb?.metadataRoot?.streams || !(pdb.tables?.rows instanceof Map) ||
       !Array.isArray(pdb.tables.counts) || !(pdb.rowCounts instanceof Map) ||
