@@ -21,6 +21,7 @@ const documentHashAlgorithms = new Map([
 ]);
 const embeddedSourceKind = "0e8a571b-6926-466e-b4ad-8ab04611f5fe";
 const sourceLinkKind = "cc110556-a091-4d38-9fec-25ab9a351a6a";
+const defaultNamespaceKind = "58b2eab6-209f-4e4e-a22c-b2d0f910c782";
 const embeddedSourceGuidBytes = Uint8Array.from([
   0x1b, 0x57, 0x8a, 0x0e, 0x26, 0x69, 0x6e, 0x46,
   0xb4, 0xad, 0x8a, 0xb0, 0x46, 0x11, 0xf5, 0xfe
@@ -191,6 +192,15 @@ export function decodePortablePdbCustomDebugInformation(row, heaps) {
       throw new FormatError("Portable PDB SourceLink document mappings must be strings");
     }
     return { kind, sourceLink };
+  }
+  if (kind === defaultNamespaceKind) {
+    if (row.Parent.target?.table !== 0) {
+      throw new FormatError("DefaultNamespace custom debug information must belong to the Module");
+    }
+    return {
+      kind,
+      defaultNamespace: decodeUtf8(value, "Portable PDB DefaultNamespace")
+    };
   }
   return { kind };
 }

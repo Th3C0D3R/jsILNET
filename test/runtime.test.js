@@ -56,6 +56,25 @@ function stripPortablePdbCustomDebugInformation(pdb) {
   pdb.tables.valid &= ~(1n << 55n);
 }
 
+function retainPortablePdbCustomDebugInformation(pdb, predicate) {
+  const retained = pdb.customDebugInformation.filter(predicate);
+  const retainedRids = new Set(retained.map((record) => record.rid));
+  const rows = (pdb.tables.rows.get(55) ?? [])
+    .filter((row) => retainedRids.has(row.rid))
+    .map((row, index) => ({ ...row, rid: index + 1 }));
+  pdb.customDebugInformation = retained.map((record, index) => ({
+    ...record,
+    rid: index + 1
+  }));
+  if (rows.length === 0) {
+    pdb.tables.rows.delete(55);
+    pdb.tables.valid &= ~(1n << 55n);
+  } else {
+    pdb.tables.rows.set(55, rows);
+  }
+  pdb.tables.counts[55] = rows.length;
+}
+
 test("trailing abstract MethodDef removal updates an embedded Portable PDB", {
   skip: dotnetAvailable ? false : ".NET SDK/runtime is unavailable"
 }, async () => {
@@ -279,6 +298,70 @@ test("trailing abstract MethodDef removal updates an embedded Portable PDB", {
       { encoding: "utf8", timeout: 120_000 }
     );
     assert.equal(load.status, 0, load.stderr || load.stdout || load.error?.message);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("VB DefaultNamespace custom debug data survives safe metadata RID remapping", {
+  skip: dotnetAvailable ? false : ".NET SDK/runtime is unavailable"
+}, async () => {
+  const directory = await mkdtemp(join(tmpdir(), "jsilnet-vb-pdb-namespace-"));
+  try {
+    const project = join(directory, "NamespaceFixture.vbproj");
+    const output = join(directory, "out");
+    await writeFile(project, [
+      "<Project Sdk=\"Microsoft.NET.Sdk\">",
+      "  <PropertyGroup>",
+      `    <TargetFramework>${targetFramework}</TargetFramework>`,
+      "    <RootNamespace>PortableRoot</RootNamespace>",
+      "    <DebugType>embedded</DebugType>",
+      "  </PropertyGroup>",
+      "</Project>"
+    ].join("\n"));
+    await writeFile(join(directory, "Fixture.vb"), [
+      "Public Module Fixture",
+      "    Public Function Answer() As Integer",
+      "        Return 42",
+      "    End Function",
+      "End Module"
+    ].join("\n"));
+    const build = spawnSync(
+      "dotnet",
+      ["build", project, "--configuration", "Release", "--output", output, "--nologo"],
+      { encoding: "utf8", timeout: 120_000 }
+    );
+    assert.equal(build.status, 0, build.stderr || build.stdout || build.error?.message);
+
+    const assemblyPath = join(output, "NamespaceFixture.dll");
+    const assembly = parseAssembly(Uint8Array.from(await readFile(assemblyPath)));
+    const debugIndex = assembly.pe.debugDirectoryEntries.findIndex((entry) =>
+      entry.embeddedPortablePdb
+    );
+    assert.notEqual(debugIndex, -1);
+    const pdb = assembly.pe.debugDirectoryEntries[debugIndex].embeddedPortablePdb;
+    const defaultNamespace = pdb.customDebugInformation.find((record) =>
+      record.defaultNamespace !== undefined
+    );
+    assert.equal(defaultNamespace?.Parent.target?.table, 0);
+    assert.equal(defaultNamespace?.defaultNamespace, "PortableRoot");
+
+    retainPortablePdbCustomDebugInformation(
+      pdb,
+      (record) => record.defaultNamespace !== undefined
+    );
+    assembly.replaceEmbeddedPortablePdb(debugIndex, serializeEmbeddedPortablePdb(pdb));
+    const { tokenMap } = assembly.insertTypeRefSorted({
+      name: "Added.Before.PortableRoot"
+    });
+    assert.ok(tokenMap.size > 0);
+    const reparsed = parseAssembly(assembly.serialize());
+    const reparsedPdb = reparsed.pe.debugDirectoryEntries.find((entry) =>
+      entry.embeddedPortablePdb
+    )?.embeddedPortablePdb;
+    assert.equal(reparsedPdb?.customDebugInformation.length, 1);
+    assert.equal(reparsedPdb?.customDebugInformation[0].defaultNamespace, "PortableRoot");
+    assert.equal(reparsedPdb?.rowCounts.get(1), reparsed.tables.counts[1]);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
