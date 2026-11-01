@@ -45,6 +45,7 @@ import {
   replaceEmbeddedPortablePdbMethodOffsets as replacePortablePdbMethodOffsets,
   addEmbeddedPortablePdbDocument as addPortablePdbDocument,
   removeEmbeddedPortablePdbDocument as removePortablePdbDocument,
+  replaceEmbeddedPortablePdbDocumentMetadata as replacePortablePdbDocumentMetadata,
   replaceEmbeddedPortablePdbDocumentName as replacePortablePdbDocumentName,
   replaceEmbeddedPortablePdbSequencePoints as replacePortablePdbSequencePoints,
   replaceEmbeddedPortablePdbSource as replacePortablePdbSource,
@@ -1538,6 +1539,7 @@ export {
   encodePortablePdbSequencePoints,
   addEmbeddedPortablePdbDocument,
   removeEmbeddedPortablePdbDocument,
+  replaceEmbeddedPortablePdbDocumentMetadata,
   replaceEmbeddedPortablePdbDocumentName,
   replaceEmbeddedPortablePdbSequencePoints,
   addEmbeddedPortablePdbSource,
@@ -3604,6 +3606,24 @@ export class Assembly {
     const data = removePortablePdbDocument(
       this.#getPortablePdbForEdit(debugEntryIndex, entry),
       documentRid
+    );
+    return this.replaceEmbeddedPortablePdb(debugEntryIndex, data);
+  }
+
+  replaceEmbeddedPortablePdbDocumentMetadata(debugEntryIndex, documentRid, options) {
+    this.#ensureEditable();
+    if (!Number.isInteger(debugEntryIndex) || debugEntryIndex < 0 ||
+        debugEntryIndex >= this.pe.debugDirectoryEntries.length) {
+      throw new RangeError(`Invalid debug-directory entry index ${debugEntryIndex}`);
+    }
+    const entry = this.pe.debugDirectoryEntries[debugEntryIndex];
+    if (entry.type !== 17 || !entry.embeddedPortablePdb) {
+      throw new UnsupportedFormatError("Debug-directory entry is not an embedded Portable PDB");
+    }
+    const data = replacePortablePdbDocumentMetadata(
+      this.#getPortablePdbForEdit(debugEntryIndex, entry),
+      documentRid,
+      options
     );
     return this.replaceEmbeddedPortablePdb(debugEntryIndex, data);
   }

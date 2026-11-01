@@ -619,6 +619,47 @@ test("adding an embedded Portable PDB Document updates the PDB and PE identity",
       hash
     );
     assert.notDeepEqual(rewrittenPdb.id, originalId);
+    const updatedHash = Uint8Array.of(9, 8, 7);
+    assembly.replaceEmbeddedPortablePdbDocumentMetadata(
+      debugIndex,
+      originalDocumentCount + 1,
+      { hash: updatedHash }
+    );
+    const metadataUpdatedPdb = parseAssembly(assembly.serialize())
+      .pe.debugDirectoryEntries.find((entry) => entry.embeddedPortablePdb)
+      .embeddedPortablePdb;
+    const updatedDocument = metadataUpdatedPdb.documents.at(-1);
+    assert.deepEqual(
+      Uint8Array.from(metadataUpdatedPdb.heaps.getGuid(updatedDocument.HashAlgorithm)),
+      hashAlgorithmGuid
+    );
+    assert.deepEqual(
+      Uint8Array.from(metadataUpdatedPdb.heaps.getGuid(updatedDocument.Language)),
+      languageGuid
+    );
+    assert.deepEqual(
+      Uint8Array.from(metadataUpdatedPdb.heaps.getBlob(updatedDocument.Hash)),
+      updatedHash
+    );
+    assert.throws(
+      () => assembly.replaceEmbeddedPortablePdbDocumentMetadata(
+        debugIndex,
+        originalDocumentCount + 1,
+        { hashAlgorithmGuid: null }
+      ),
+      /hashes and GUIDs have invalid values/
+    );
+    assembly.replaceEmbeddedPortablePdbDocumentMetadata(
+      debugIndex,
+      originalDocumentCount + 1,
+      { hashAlgorithmGuid: null, hash: null, languageGuid: null }
+    );
+    const clearedMetadataPdb = parseAssembly(assembly.serialize())
+      .pe.debugDirectoryEntries.find((entry) => entry.embeddedPortablePdb)
+      .embeddedPortablePdb;
+    assert.equal(clearedMetadataPdb.documents.at(-1).HashAlgorithm, 0);
+    assert.equal(clearedMetadataPdb.documents.at(-1).Hash, 0);
+    assert.equal(clearedMetadataPdb.documents.at(-1).Language, 0);
     assert.throws(
       () => assembly.removeEmbeddedPortablePdbDocument(debugIndex, referencedDocumentRid),
       /referenced by method debug information/
