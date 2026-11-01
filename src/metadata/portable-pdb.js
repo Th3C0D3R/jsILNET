@@ -57,8 +57,7 @@ export function updateEmbeddedPortablePdbRowCounts(pdb, assemblyRowCounts) {
   for (const [table, count] of pdb.rowCounts) {
     const updatedCount = assemblyRowCounts[table];
     if (!Number.isInteger(updatedCount) || updatedCount < 0 ||
-        (updatedCount < count &&
-          (table === 6 || table === 17 || pdb.customDebugInformation.length > 0))) {
+        (updatedCount < count && (table === 6 || table === 17))) {
       throw new UnsupportedFormatError(
         `Portable PDB row-count update cannot safely change type-system table ${table}`
       );

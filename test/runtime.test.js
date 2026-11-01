@@ -102,9 +102,22 @@ test("trailing abstract MethodDef removal updates an embedded Portable PDB", {
     const typeRefPdb = typeRefRemap.pe.debugDirectoryEntries[typeRefPdbIndex]
       .embeddedPortablePdb;
     stripPortablePdbCustomDebugInformation(typeRefPdb);
+    const typeRefSourceLinkPdbBytes = addEmbeddedPortablePdbSourceLink(typeRefPdb, {
+      documents: { "**/*.cs": "https://example.invalid/sources/*" }
+    });
+    const typeRefSourceLinkPdb = parseEmbeddedPortablePdbData(
+      typeRefSourceLinkPdbBytes,
+      0,
+      typeRefSourceLinkPdbBytes.length
+    );
+    const typeRefPdbBytes = addEmbeddedPortablePdbSource(
+      typeRefSourceLinkPdb,
+      1,
+      new TextEncoder().encode("safe remapping fixture")
+    );
     typeRefRemap.replaceEmbeddedPortablePdb(
       typeRefPdbIndex,
-      serializeEmbeddedPortablePdb(typeRefPdb)
+      typeRefPdbBytes
     );
     const { token: insertedTypeRefToken, tokenMap: typeRefTokenMap } =
       typeRefRemap.insertTypeRefSorted({
@@ -116,12 +129,24 @@ test("trailing abstract MethodDef removal updates an embedded Portable PDB", {
       entry.embeddedPortablePdb
     )?.embeddedPortablePdb;
     assert.equal(typeRefRemappedPdb?.rowCounts.get(1), typeRefRemapReparsed.tables.counts[1]);
+    assert.ok(typeRefRemappedPdb?.customDebugInformation.some((record) =>
+      record.sourceLink?.documents["**/*.cs"] === "https://example.invalid/sources/*"
+    ));
+    assert.ok(typeRefRemappedPdb?.customDebugInformation.some((record) =>
+      record.embeddedSource?.length === 22
+    ));
     typeRefRemap.removeTypeRef(insertedTypeRefToken & 0x00ffffff);
     const typeRefRemovalReparsed = parseAssembly(typeRefRemap.serialize());
     const typeRefRemovalPdb = typeRefRemovalReparsed.pe.debugDirectoryEntries.find((entry) =>
       entry.embeddedPortablePdb
     )?.embeddedPortablePdb;
     assert.equal(typeRefRemovalPdb?.rowCounts.get(1), typeRefRemovalReparsed.tables.counts[1]);
+    assert.ok(typeRefRemovalPdb?.customDebugInformation.some((record) =>
+      record.sourceLink?.documents["**/*.cs"] === "https://example.invalid/sources/*"
+    ));
+    assert.ok(typeRefRemovalPdb?.customDebugInformation.some((record) =>
+      record.embeddedSource?.length === 22
+    ));
 
     const appendedReference = parseAssembly(original);
     const appendedReferencePdb = appendedReference.pe.debugDirectoryEntries.find((entry) =>

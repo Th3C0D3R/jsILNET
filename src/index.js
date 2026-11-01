@@ -906,6 +906,13 @@ function validateTypeSpecUseSites(assembly, typeSpecOverride) {
   validateMethodSpecUseSites(assembly, null, typeSpecOverride);
 }
 
+function canPreservePortablePdbCustomDebugInformation(pdb) {
+  return pdb.customDebugInformation.every((record) =>
+    (record.embeddedSource instanceof Uint8Array && record.Parent.target?.table === 48) ||
+    (record.sourceLink && record.Parent.target?.table === 0)
+  );
+}
+
 function sameEncodedType(left, right) {
   const leftBytes = encodeTypeSignature(left);
   const rightBytes = encodeTypeSignature(right);
@@ -13024,7 +13031,7 @@ export class Assembly {
       const portablePdbCanPreserveTokenRemapping =
         embeddedPdbEntries.length === 1 &&
         !["MethodDef", "StandAloneSig"].includes(tableName) &&
-        portablePdb.customDebugInformation.length === 0 &&
+        canPreservePortablePdbCustomDebugInformation(portablePdb) &&
         this.pe.debugDirectoryEntries.every((entry) => [2, 16, 17, 19].includes(entry.type));
       if ((!allowEmbeddedPortablePdb && !portablePdbCanPreserveTokenRemapping) ||
           embeddedPdbEntries.length !== 1) {
