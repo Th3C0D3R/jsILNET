@@ -17,7 +17,8 @@ import {
   insertClassicPdbPublicSymbol,
   insertClassicPdbDataSymbol,
   insertClassicPdbThreadDataSymbol,
-  replaceClassicPdbConstantSymbol
+  replaceClassicPdbConstantSymbol,
+  replaceClassicPdbThreadDataSymbol
 } from "../src/index.js";
 import {
   parseCodeViewC13Subsections,
@@ -577,6 +578,83 @@ test("classic PDB local thread-data symbols can be appended and removed", () => 
     name: "Invalid"
   }), /unsigned 16-bit integer/);
   assert.deepEqual(original, unchanged);
+});
+
+test("classic PDB local thread-data symbols can be updated in place", () => {
+  const original = makeClassicPdbWithSymbols({
+    lineInfo: true,
+    trailingModuleBytes: Uint8Array.of(0x31, 0x32, 0x33)
+  });
+  const overlay = Uint8Array.of(0x91, 0x82, 0x73);
+  const overlaid = new Uint8Array(original.length + overlay.length);
+  overlaid.set(original);
+  overlaid.set(overlay, original.length);
+  const inserted = insertClassicPdbThreadDataSymbol(overlaid, {
+    moduleIndex: 0,
+    typeIndex: 0x1006,
+    offset: 0x2345,
+    segment: 7,
+    name: "ThreadValue"
+  });
+  const insertedPdb = parseClassicPdb(inserted);
+  const insertedModule = insertedPdb.dbi.modules[0];
+  const insertedStream = insertedPdb.streams[insertedModule.streamIndex];
+  const recordIndex = insertedModule.symbols.records.length - 1;
+  const rewritten = replaceClassicPdbThreadDataSymbol(inserted, {
+    moduleIndex: 0,
+    recordIndex,
+    typeIndex: 0x1007,
+    offset: 0x7654,
+    segment: 9
+  });
+  const rewrittenPdb = parseClassicPdb(rewritten);
+  const rewrittenModule = rewrittenPdb.dbi.modules[0];
+  const decoded = rewrittenModule.symbols.records[recordIndex].decoded;
+  assert.equal(decoded.kind, "threadData");
+  assert.equal(decoded.typeIndex, 0x1007);
+  assert.equal(decoded.offset, 0x7654);
+  assert.equal(decoded.segment, 9);
+  assert.equal(decoded.name, "ThreadValue");
+  assert.equal(
+    rewrittenPdb.streams[rewrittenModule.streamIndex].size,
+    insertedStream.size
+  );
+  assert.deepEqual(
+    rewrittenPdb.streams[rewrittenModule.streamIndex].bytes.subarray(rewrittenModule.symbolBytes),
+    insertedStream.bytes.subarray(insertedModule.symbolBytes)
+  );
+  assert.deepEqual(rewritten.subarray(-overlay.length), overlay);
+
+  const partial = replaceClassicPdbThreadDataSymbol(rewritten, {
+    moduleIndex: 0,
+    recordIndex,
+    offset: 0
+  });
+  const partialDecoded =
+    parseClassicPdb(partial).dbi.modules[0].symbols.records[recordIndex].decoded;
+  assert.equal(partialDecoded.offset, 0);
+  assert.equal(partialDecoded.typeIndex, 0x1007);
+  assert.equal(partialDecoded.segment, 9);
+  assert.equal(partialDecoded.name, "ThreadValue");
+
+  const unchanged = Uint8Array.from(inserted);
+  assert.throws(() => replaceClassicPdbThreadDataSymbol(inserted, {
+    moduleIndex: 0,
+    recordIndex,
+    segment: 0x10000
+  }), /unsigned 16-bit integer/);
+  assert.deepEqual(inserted, unchanged);
+  assert.throws(() => replaceClassicPdbThreadDataSymbol(inserted, {
+    moduleIndex: 0,
+    recordIndex
+  }), /must include at least one field/);
+  assert.deepEqual(inserted, unchanged);
+  assert.throws(() => replaceClassicPdbThreadDataSymbol(inserted, {
+    moduleIndex: 0,
+    recordIndex: 0,
+    offset: 1
+  }), /not a module-local thread-data symbol/);
+  assert.deepEqual(inserted, unchanged);
 });
 
 test("classic PDB constant symbols encode supported numeric values and preserve module data", () => {

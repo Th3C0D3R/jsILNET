@@ -24,6 +24,7 @@ import {
   replaceClassicPdbLineInfo as replaceClassicPdbLineInfoFile,
   replaceClassicPdbModuleNames as replaceClassicPdbModuleNamesFile,
   replaceClassicPdbStringTableName as replaceClassicPdbStringTableNameFile,
+  replaceClassicPdbThreadDataSymbol as replaceClassicPdbThreadDataSymbolFile,
   replaceClassicPdbSymbolName as replaceClassicPdbSymbolNameFile
 } from "./metadata/classic-pdb.js";
 import { parseMethodBody } from "./il/body.js";
@@ -1582,6 +1583,7 @@ export {
   replaceClassicPdbLineInfoFile as replaceClassicPdbLineInfo,
   replaceClassicPdbModuleNamesFile as replaceClassicPdbModuleNames,
   replaceClassicPdbStringTableNameFile as replaceClassicPdbStringTableName,
+  replaceClassicPdbThreadDataSymbolFile as replaceClassicPdbThreadDataSymbol,
   replaceClassicPdbSymbolNameFile as replaceClassicPdbSymbolName
 };
 export {
