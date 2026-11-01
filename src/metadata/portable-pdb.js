@@ -26,6 +26,7 @@ const dynamicLocalVariablesKind = "83c563c4-b4f3-47d5-b824-ba5441477ea8";
 const compilationMetadataReferencesKind = "7e4d4708-096e-4c5c-aeda-cb10ba6a740d";
 const compilationOptionsKind = "b5feec05-8cd0-4a83-96da-466284bb4bd8";
 const typeDefinitionDocumentKind = "932e74bc-dba9-4478-8d46-0f32a7bab3d3";
+const stateMachineHoistedLocalScopesKind = "6da9a61e-f8c7-4874-be62-68bc5630df71";
 const embeddedSourceGuidBytes = Uint8Array.from([
   0x1b, 0x57, 0x8a, 0x0e, 0x26, 0x69, 0x6e, 0x46,
   0xb4, 0xad, 0x8a, 0xb0, 0x46, 0x11, 0xf5, 0xfe
@@ -304,6 +305,30 @@ export function decodePortablePdbCustomDebugInformation(row, heaps, documentCoun
       documents.push(documentRid);
     }
     return { kind, typeDefinitionDocuments: documents };
+  }
+  if (kind === stateMachineHoistedLocalScopesKind) {
+    if (row.Parent.target?.table !== 6) {
+      throw new FormatError(
+        "StateMachineHoistedLocalScopes custom debug information must belong to a MethodDef"
+      );
+    }
+    if (value.length % 8 !== 0) {
+      throw new FormatError("Portable PDB StateMachineHoistedLocalScopes data is truncated");
+    }
+    const scopes = [];
+    const view = new DataView(value.buffer, value.byteOffset, value.byteLength);
+    for (let offset = 0; offset < value.length; offset += 8) {
+      const startOffset = view.getUint32(offset, true);
+      const length = view.getUint32(offset + 4, true);
+      if (startOffset >= 0x80000000 || length === 0 || length >= 0x80000000 ||
+          startOffset + length > 0x80000000) {
+        throw new FormatError(
+          "Portable PDB StateMachineHoistedLocalScopes contains an invalid IL scope"
+        );
+      }
+      scopes.push({ startOffset, length });
+    }
+    return { kind, stateMachineHoistedLocalScopes: scopes };
   }
   return { kind };
 }

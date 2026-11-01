@@ -164,6 +164,42 @@ test("Portable PDB compilation CDI decoders validate strings and record bounds",
     () => decodeTypeDefinitionDocuments(Uint8Array.of(1), 2, 0),
     /must belong to a TypeDef/
   );
+
+  const stateMachineScopesGuid = Uint8Array.from([
+    0x1e, 0xa6, 0xa9, 0x6d, 0xc7, 0xf8, 0x74, 0x48,
+    0xbe, 0x62, 0x68, 0xbc, 0x56, 0x30, 0xdf, 0x71
+  ]);
+  const decodeStateMachineScopes = (value, parentTable = 6) =>
+    decodePortablePdbCustomDebugInformation(
+      { Kind: 1, Value: 1, Parent: { target: { table: parentTable } } },
+      {
+        getGuid: () => stateMachineScopesGuid,
+        getBlob: () => value
+      }
+    );
+  const scopeBytes = new Uint8Array(16);
+  const scopeView = new DataView(scopeBytes.buffer);
+  scopeView.setUint32(0, 0, true);
+  scopeView.setUint32(4, 5, true);
+  scopeView.setUint32(8, 42, true);
+  scopeView.setUint32(12, 3, true);
+  assert.deepEqual(
+    decodeStateMachineScopes(scopeBytes).stateMachineHoistedLocalScopes,
+    [{ startOffset: 0, length: 5 }, { startOffset: 42, length: 3 }]
+  );
+  assert.throws(
+    () => decodeStateMachineScopes(scopeBytes.subarray(0, 7)),
+    /data is truncated/
+  );
+  const zeroLengthScope = new Uint8Array(8);
+  assert.throws(() => decodeStateMachineScopes(zeroLengthScope), /invalid IL scope/);
+  const outOfRangeScope = Uint8Array.from(scopeBytes.subarray(0, 8));
+  new DataView(outOfRangeScope.buffer).setUint32(0, 0x80000000, true);
+  assert.throws(() => decodeStateMachineScopes(outOfRangeScope), /invalid IL scope/);
+  assert.throws(
+    () => decodeStateMachineScopes(scopeBytes, 50),
+    /must belong to a MethodDef/
+  );
 });
 
 test("trailing abstract MethodDef removal updates an embedded Portable PDB", {
