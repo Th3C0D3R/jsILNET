@@ -20,6 +20,8 @@ This document records detailed feature coverage, exported APIs, behavioral limit
 - `insertClassicPdbDataSymbol` appends a validated module-local `S_LDATA32` record before C11/C13 data with its type index, address, segment, and name.
 - `insertClassicPdbThreadDataSymbol` appends a validated module-local `S_LTHREAD32` record; standalone thread-data symbols can also be removed with `removeClassicPdbSymbol`.
 - `insertClassicPdbConstantSymbol` appends an `S_CONSTANT` record with a 32-bit type index and finite numeric or exact BigInt value; integer encodings are limited to 64 bits.
+- `replaceClassicPdbConstantSymbol` updates an `S_CONSTANT` type index/value and can resize its record. Resizing is refused when scoped/unknown records make following symbol offsets unsafe.
+- `replaceClassicPdbConstantSymbol` updates an `S_CONSTANT` type index/value and can resize its record. Resizing is refused when scoped/unknown records make following symbol offsets unsafe.
 - `insertClassicPdbLineBlock`, `replaceClassicPdbLineBlock`, and `removeClassicPdbLineBlock` edit C13 file blocks; insertion validates the referenced checksum entry, and replacement supports line-count changes with or without columns. These edits rebuild affected module/MSF streams, update DBI lengths, preserve surrounding module data, and reparse output; reserved/shared streams and unrecognized per-block payloads are refused.
 - Read the metadata root, `#~`/`#-` table streams, and the `#Strings`, `#US`, `#GUID`, and `#Blob` heaps.
 - Decode ECMA-335 metadata tables and expose core module, type, field, method, member-reference, and assembly-reference data.

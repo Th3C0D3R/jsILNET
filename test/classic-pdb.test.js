@@ -16,7 +16,8 @@ import {
   insertClassicPdbConstantSymbol,
   insertClassicPdbPublicSymbol,
   insertClassicPdbDataSymbol,
-  insertClassicPdbThreadDataSymbol
+  insertClassicPdbThreadDataSymbol,
+  replaceClassicPdbConstantSymbol
 } from "../src/index.js";
 import {
   parseCodeViewC13Subsections,
@@ -669,6 +670,97 @@ test("classic PDB constant symbols encode supported numeric values and preserve 
     name: "Invalid"
   }), /type index must be an unsigned 32-bit integer/);
   assert.deepEqual(original, unchanged);
+});
+
+test("classic PDB constant symbols can be replaced and resized safely", () => {
+  const original = makeClassicPdbWithSymbols({
+    lineInfo: true,
+    trailingModuleBytes: Uint8Array.of(0x31, 0x32, 0x33)
+  });
+  const originalPdb = parseClassicPdb(original);
+  const originalModule = originalPdb.dbi.modules[0];
+  const originalStream = originalPdb.streams[originalModule.streamIndex];
+  const overlay = Uint8Array.of(0x91, 0x82, 0x73);
+  const overlaid = new Uint8Array(original.length + overlay.length);
+  overlaid.set(original);
+  overlaid.set(overlay, original.length);
+  const inserted = insertClassicPdbConstantSymbol(overlaid, {
+    moduleIndex: 0,
+    typeIndex: 0x1005,
+    value: 1,
+    name: "ReplaceMe"
+  });
+  const recordIndex = parseClassicPdb(inserted).dbi.modules[0].symbols.records.length - 1;
+
+  const sameWidth = replaceClassicPdbConstantSymbol(inserted, {
+    moduleIndex: 0,
+    recordIndex,
+    value: 5
+  });
+  let decoded = parseClassicPdb(sameWidth).dbi.modules[0].symbols.records[recordIndex].decoded;
+  assert.equal(decoded.value, 5);
+  assert.equal(decoded.typeIndex, 0x1005);
+  assert.equal(decoded.name, "ReplaceMe");
+
+  const resized = replaceClassicPdbConstantSymbol(sameWidth, {
+    moduleIndex: 0,
+    recordIndex,
+    typeIndex: 0x1006,
+    value: -(1n << 63n)
+  });
+  const resizedPdb = parseClassicPdb(resized);
+  const resizedModule = resizedPdb.dbi.modules[0];
+  decoded = resizedModule.symbols.records[recordIndex].decoded;
+  assert.equal(decoded.value, -(1n << 63n));
+  assert.equal(decoded.typeIndex, 0x1006);
+  assert.equal(decoded.name, "ReplaceMe");
+  assert.deepEqual(
+    resizedPdb.streams[resizedModule.streamIndex].bytes.subarray(resizedModule.symbolBytes),
+    originalStream.bytes.subarray(originalModule.symbolBytes)
+  );
+  assert.deepEqual(resized.subarray(-overlay.length), overlay);
+
+  const restored = replaceClassicPdbConstantSymbol(resized, {
+    moduleIndex: 0,
+    recordIndex,
+    value: 1
+  });
+  const restoredPdb = parseClassicPdb(restored);
+  const restoredModule = restoredPdb.dbi.modules[0];
+  assert.equal(restoredModule.symbols.records[recordIndex].decoded.value, 1);
+  assert.deepEqual(
+    restoredPdb.streams[restoredModule.streamIndex].bytes.subarray(restoredModule.symbolBytes),
+    originalStream.bytes.subarray(originalModule.symbolBytes)
+  );
+  assert.deepEqual(restored.subarray(-overlay.length), overlay);
+
+  const unchanged = Uint8Array.from(inserted);
+  assert.throws(() => replaceClassicPdbConstantSymbol(inserted, {
+    moduleIndex: 0,
+    recordIndex,
+    value: 1n << 64n
+  }), /must fit in 64 bits/);
+  assert.deepEqual(inserted, unchanged);
+  assert.throws(() => replaceClassicPdbConstantSymbol(inserted, {
+    moduleIndex: 0,
+    recordIndex: 0,
+    value: 1
+  }), /not a supported constant/);
+  assert.deepEqual(inserted, unchanged);
+
+  const unknownSymbols = insertClassicPdbConstantSymbol(
+    makeClassicPdbWithSymbols({ crossBlockName: true }),
+    { moduleIndex: 0, typeIndex: 0x1005, value: 1, name: "Guarded" }
+  );
+  const unknownBefore = Uint8Array.from(unknownSymbols);
+  const unknownRecordIndex =
+    parseClassicPdb(unknownSymbols).dbi.modules[0].symbols.records.length - 1;
+  assert.throws(() => replaceClassicPdbConstantSymbol(unknownSymbols, {
+    moduleIndex: 0,
+    recordIndex: unknownRecordIndex,
+    value: 1n << 63n
+  }), /scoped or unknown symbols/);
+  assert.deepEqual(unknownSymbols, unknownBefore);
 });
 
 test("classic PDB symbol resizing preserves trailing C13 module data", () => {

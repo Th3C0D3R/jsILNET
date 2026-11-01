@@ -2162,47 +2162,12 @@ export function insertClassicPdbConstantSymbol(
   });
 }
 
-export function replaceClassicPdbSymbolName(input, { moduleIndex, recordIndex, name } = {}) {
-  const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
-  if (!Number.isInteger(moduleIndex) || moduleIndex < 0) {
-    throw new RangeError("Classic PDB module index must be a non-negative integer");
-  }
-  if (!Number.isInteger(recordIndex) || recordIndex < 0) {
-    throw new RangeError("Classic PDB symbol record index must be a non-negative integer");
-  }
-  const replacement = encodeClassicPdbReplacementText(name, "Classic PDB symbol names");
-  const pdb = parseClassicPdb(bytes);
-  const module = pdb.dbi?.modules[moduleIndex];
-  if (!module?.symbols) {
-    throw new RangeError(`Classic PDB module ${moduleIndex} has no symbol records`);
-  }
-  const record = module.symbols.records[recordIndex];
-  if (!record) throw new RangeError(`Classic PDB symbol record ${recordIndex} does not exist`);
-  const nameOffset = getCodeViewSymbolNameOffset(record);
-  if (nameOffset === null || typeof record.decoded?.name !== "string") {
-    throw new UnsupportedFormatError("Classic PDB symbol record does not expose a replaceable name");
-  }
-  const recordDataEnd = record.offset + 4 + nameOffset + replacement.length + 1;
-  const paddingSize = (4 - (recordDataEnd % 4)) % 4;
-  const replacementData = new Uint8Array(nameOffset + replacement.length + 1 + paddingSize);
-  replacementData.set(record.data.subarray(0, nameOffset));
-  replacementData.set(replacement, nameOffset);
-  replacementData[nameOffset + replacement.length] = 0;
-  if (paddingSize > 0) {
-    for (let index = 0; index < paddingSize; index++) {
-      replacementData[nameOffset + replacement.length + 1 + index] = 0xf0 + paddingSize - index;
-    }
-  }
-  const recordSize = 4 + replacementData.length;
-  const recordBytes = new Uint8Array(recordSize);
-  const recordView = new DataView(recordBytes.buffer);
-  recordView.setUint16(0, 2 + replacementData.length, true);
-  recordView.setUint16(2, record.kind, true);
-  recordBytes.set(replacementData, 4);
+function replaceClassicPdbSymbolRecord(bytes, pdb, module, moduleIndex, record, recordBytes) {
+  const recordSize = recordBytes.length;
   const oldRecordSize = 4 + record.data.length;
   const sizeDelta = recordSize - oldRecordSize;
-  const stream = pdb.streams[module.streamIndex];
   const newSymbolBytes = module.symbolBytes + sizeDelta;
+  const stream = pdb.streams[module.streamIndex];
   const newStreamSize = stream.size + sizeDelta;
   if (sizeDelta !== 0 && module.symbols.records.some((symbol) =>
     codeViewScopeSymbolKinds.has(symbol.kind) || symbol.decoded === undefined
@@ -2240,6 +2205,89 @@ export function replaceClassicPdbSymbolName(input, { moduleIndex, recordIndex, n
   const output = writeClassicPdbStream(bytes, pdb, module.streamIndex, streamBytes);
   parseClassicPdb(output);
   return output;
+}
+
+export function replaceClassicPdbConstantSymbol(input, options = {}) {
+  const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
+  const { moduleIndex, recordIndex, value } = options;
+  const typeIndexWasProvided = Object.hasOwn(options, "typeIndex");
+  if (!Number.isInteger(moduleIndex) || moduleIndex < 0) {
+    throw new RangeError("Classic PDB module index must be a non-negative integer");
+  }
+  if (!Number.isInteger(recordIndex) || recordIndex < 0) {
+    throw new RangeError("Classic PDB symbol record index must be a non-negative integer");
+  }
+  const pdb = parseClassicPdb(bytes);
+  const module = pdb.dbi?.modules[moduleIndex];
+  if (!module?.symbols) {
+    throw new RangeError(`Classic PDB module ${moduleIndex} has no symbol records`);
+  }
+  const record = module.symbols.records[recordIndex];
+  if (!record) throw new RangeError(`Classic PDB symbol record ${recordIndex} does not exist`);
+  if (record.decoded?.kind !== "constant" ||
+      !Number.isInteger(record.decoded.typeIndex) ||
+      typeof record.decoded.name !== "string") {
+    throw new UnsupportedFormatError("Classic PDB symbol record is not a supported constant");
+  }
+  const typeIndex = typeIndexWasProvided ? options.typeIndex : record.decoded.typeIndex;
+  if (!Number.isInteger(typeIndex) || typeIndex < 0 || typeIndex > 0xffffffff) {
+    throw new RangeError("Classic PDB constant-symbol type index must be an unsigned 32-bit integer");
+  }
+  const numeric = encodeCodeViewNumeric(value);
+  const fields = new Uint8Array(4 + numeric.length);
+  new DataView(fields.buffer).setUint32(0, typeIndex, true);
+  fields.set(numeric, 4);
+  const nameBytes = encodeClassicPdbReplacementText(
+    record.decoded.name,
+    "Classic PDB constant-symbol names"
+  );
+  const recordBytes = encodeClassicPdbNamedSymbolRecord(
+    0x1107,
+    fields,
+    nameBytes,
+    record.offset
+  );
+  return replaceClassicPdbSymbolRecord(bytes, pdb, module, moduleIndex, record, recordBytes);
+}
+
+export function replaceClassicPdbSymbolName(input, { moduleIndex, recordIndex, name } = {}) {
+  const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
+  if (!Number.isInteger(moduleIndex) || moduleIndex < 0) {
+    throw new RangeError("Classic PDB module index must be a non-negative integer");
+  }
+  if (!Number.isInteger(recordIndex) || recordIndex < 0) {
+    throw new RangeError("Classic PDB symbol record index must be a non-negative integer");
+  }
+  const replacement = encodeClassicPdbReplacementText(name, "Classic PDB symbol names");
+  const pdb = parseClassicPdb(bytes);
+  const module = pdb.dbi?.modules[moduleIndex];
+  if (!module?.symbols) {
+    throw new RangeError(`Classic PDB module ${moduleIndex} has no symbol records`);
+  }
+  const record = module.symbols.records[recordIndex];
+  if (!record) throw new RangeError(`Classic PDB symbol record ${recordIndex} does not exist`);
+  const nameOffset = getCodeViewSymbolNameOffset(record);
+  if (nameOffset === null || typeof record.decoded?.name !== "string") {
+    throw new UnsupportedFormatError("Classic PDB symbol record does not expose a replaceable name");
+  }
+  const recordDataEnd = record.offset + 4 + nameOffset + replacement.length + 1;
+  const paddingSize = (4 - (recordDataEnd % 4)) % 4;
+  const replacementData = new Uint8Array(nameOffset + replacement.length + 1 + paddingSize);
+  replacementData.set(record.data.subarray(0, nameOffset));
+  replacementData.set(replacement, nameOffset);
+  replacementData[nameOffset + replacement.length] = 0;
+  if (paddingSize > 0) {
+    for (let index = 0; index < paddingSize; index++) {
+      replacementData[nameOffset + replacement.length + 1 + index] = 0xf0 + paddingSize - index;
+    }
+  }
+  const recordSize = 4 + replacementData.length;
+  const recordBytes = new Uint8Array(recordSize);
+  const recordView = new DataView(recordBytes.buffer);
+  recordView.setUint16(0, 2 + replacementData.length, true);
+  recordView.setUint16(2, record.kind, true);
+  recordBytes.set(replacementData, 4);
+  return replaceClassicPdbSymbolRecord(bytes, pdb, module, moduleIndex, record, recordBytes);
 }
 
 export function replaceClassicPdbStringTableName(input, { nameOffset, name } = {}) {

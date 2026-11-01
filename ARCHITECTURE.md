@@ -153,6 +153,10 @@ Replacing an EmbeddedSource payload also recomputes its Document hash for recogn
 
 `insertClassicPdbConstantSymbol` appends an `S_CONSTANT` record with bounded CodeView integer or floating-point numeric leaves; integer values are preserved exactly through signed/unsigned 64-bit encodings.
 
+`replaceClassicPdbConstantSymbol` updates a constant's type index or numeric leaf and rebuilds the module/MSF streams when the record changes size. Resizing remains refused in modules containing scoped or unknown symbols.
+
+`replaceClassicPdbConstantSymbol` updates a constant's type index or numeric leaf and rebuilds the module/MSF streams when the record changes size. Resizing remains refused in modules containing scoped or unknown symbols.
+
 `insertClassicPdbThreadDataSymbol` appends an `S_LTHREAD32` record. `removeClassicPdbSymbol` also removes standalone thread-data symbols; both operations preserve C13 and trailing module data.
 
 Unsuffixed external TypeRef names retain unknown generic arity; MemberRef validation does not assume those types are nongeneric.
