@@ -1136,6 +1136,107 @@ function encodeClassicPdbReplacementText(value, context) {
   return bytes;
 }
 
+export function replaceClassicPdbModuleNames(input, options = {}) {
+  const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
+  if (!options || typeof options !== "object" || Array.isArray(options)) {
+    throw new TypeError("Classic PDB module replacement must be an object");
+  }
+  const { moduleIndex, moduleName, objectName } = options;
+  if (!Number.isInteger(moduleIndex) || moduleIndex < 0) {
+    throw new RangeError("Classic PDB module index must be a non-negative integer");
+  }
+  const updatesModuleName = Object.hasOwn(options, "moduleName");
+  const updatesObjectName = Object.hasOwn(options, "objectName");
+  if ((!updatesModuleName && !updatesObjectName) ||
+      Object.keys(options).some((field) =>
+        !["moduleIndex", "moduleName", "objectName"].includes(field)
+      )) {
+    throw new TypeError("Classic PDB module replacement requires supported name fields");
+  }
+
+  const pdb = parseClassicPdb(bytes);
+  const module = pdb.dbi?.modules[moduleIndex];
+  if (!module) throw new RangeError("Classic PDB module index does not exist");
+  const nextModuleName = updatesModuleName
+    ? moduleName
+    : module.moduleName;
+  const nextObjectName = updatesObjectName
+    ? objectName
+    : module.objectName;
+  const moduleNameBytes = encodeClassicPdbReplacementText(
+    nextModuleName,
+    "Classic PDB module name"
+  );
+  const objectNameBytes = encodeClassicPdbReplacementText(
+    nextObjectName,
+    "Classic PDB object name"
+  );
+  if (nextModuleName === module.moduleName && nextObjectName === module.objectName) {
+    return Uint8Array.from(bytes);
+  }
+
+  const dbiStream = pdb.streams[3]?.bytes;
+  const moduleInfoSize = pdb.dbi.substreamSizes.moduleInfo;
+  const moduleInfoEnd = 64 + moduleInfoSize;
+  const recordStart = module.moduleInfoOffset;
+  const recordEnd = pdb.dbi.modules[moduleIndex + 1]?.moduleInfoOffset ?? moduleInfoEnd;
+  if (!dbiStream || recordStart < 64 || recordEnd > moduleInfoEnd ||
+      recordEnd < recordStart + 64) {
+    throw new FormatError("Classic PDB DBI module-info record has invalid bounds");
+  }
+  const findTerminator = (start, context) => {
+    const end = dbiStream.indexOf(0, start);
+    if (end < start || end >= recordEnd) {
+      throw new FormatError(`Classic PDB DBI ${context} is not null-terminated`);
+    }
+    return end;
+  };
+  const moduleNameEnd = findTerminator(recordStart + 64, "module name");
+  const objectNameEnd = findTerminator(moduleNameEnd + 1, "object name");
+  if (((objectNameEnd + 1 + 3) & ~3) !== recordEnd) {
+    throw new FormatError("Classic PDB DBI module-info record has invalid padding");
+  }
+
+  const recordSize = (64 + moduleNameBytes.length + 1 +
+    objectNameBytes.length + 1 + 3) & ~3;
+  const replacementRecord = new Uint8Array(recordSize);
+  replacementRecord.set(dbiStream.subarray(recordStart, recordStart + 64));
+  let replacementOffset = 64;
+  replacementRecord.set(moduleNameBytes, replacementOffset);
+  replacementOffset += moduleNameBytes.length + 1;
+  replacementRecord.set(objectNameBytes, replacementOffset);
+  const oldRecordSize = recordEnd - recordStart;
+  const sizeDelta = recordSize - oldRecordSize;
+  const newModuleInfoSize = moduleInfoSize + sizeDelta;
+  if (newModuleInfoSize < 0 || newModuleInfoSize > 0xffffffff ||
+      dbiStream.length + sizeDelta > 0xffffffff) {
+    throw new UnsupportedFormatError("Classic PDB DBI module names exceed supported size limits");
+  }
+  const rewrittenModuleInfo = new Uint8Array(newModuleInfoSize);
+  rewrittenModuleInfo.set(dbiStream.subarray(64, recordStart));
+  rewrittenModuleInfo.set(replacementRecord, recordStart - 64);
+  rewrittenModuleInfo.set(
+    dbiStream.subarray(recordEnd, moduleInfoEnd),
+    recordStart - 64 + recordSize
+  );
+  const rewrittenDbi = new Uint8Array(dbiStream.length + sizeDelta);
+  rewrittenDbi.set(dbiStream.subarray(0, 64));
+  rewrittenDbi.set(rewrittenModuleInfo, 64);
+  rewrittenDbi.set(dbiStream.subarray(moduleInfoEnd), 64 + newModuleInfoSize);
+  new DataView(rewrittenDbi.buffer).setUint32(24, newModuleInfoSize, true);
+
+  let output = rebuildClassicPdbStreams(pdb, new Map([[3, rewrittenDbi]]));
+  const overlay = bytes.subarray(pdb.numBlocks * pdb.blockSize);
+  if (overlay.length > 0) {
+    const withOverlay = new Uint8Array(output.length + overlay.length);
+    withOverlay.set(output);
+    withOverlay.set(overlay, output.length);
+    output = withOverlay;
+  }
+  parseClassicPdb(output);
+  return output;
+}
+
 export function replaceClassicPdbLineInfo(
   input,
   { moduleIndex, lineSubsectionIndex, blockIndex, lineIndex, line } = {}

@@ -4,6 +4,7 @@ import {
   parseClassicPdb,
   replaceClassicPdbFileChecksum,
   replaceClassicPdbLineInfo,
+  replaceClassicPdbModuleNames,
   replaceClassicPdbStringTableName,
   replaceClassicPdbSymbolName
 } from "../src/index.js";
@@ -226,6 +227,54 @@ test("classic PDB parser rejects invalid signatures and overlapping MSF blocks",
   const overlapping = makeClassicPdb();
   new DataView(overlapping.buffer).setUint32(512 * 4 + 12, 4, true);
   assert.throws(() => parseClassicPdb(overlapping), /overlaps another MSF structure/);
+});
+
+test("classic PDB module names can be replaced with DBI stream rebuilding", () => {
+  const original = makeClassicPdbWithSymbols({ withC13: true });
+  const originalPdb = parseClassicPdb(original);
+  const rewritten = replaceClassicPdbModuleNames(original, {
+    moduleIndex: 0,
+    moduleName: "renamed-module"
+  });
+  const rewrittenPdb = parseClassicPdb(rewritten);
+  assert.equal(rewrittenPdb.dbi.modules[0].moduleName, "renamed-module");
+  assert.equal(rewrittenPdb.dbi.modules[0].objectName, "test.obj");
+  assert.equal(
+    rewrittenPdb.dbi.substreamSizes.moduleInfo,
+    originalPdb.dbi.substreamSizes.moduleInfo + 8
+  );
+  assert.deepEqual(
+    rewrittenPdb.streams[4].bytes,
+    originalPdb.streams[4].bytes
+  );
+  assert.deepEqual(rewrittenPdb.dbi.modules[0].c13, originalPdb.dbi.modules[0].c13);
+
+  const renamedObject = replaceClassicPdbModuleNames(rewritten, {
+    moduleIndex: 0,
+    objectName: "x.obj"
+  });
+  const renamedObjectPdb = parseClassicPdb(renamedObject);
+  assert.equal(renamedObjectPdb.dbi.modules[0].moduleName, "renamed-module");
+  assert.equal(renamedObjectPdb.dbi.modules[0].objectName, "x.obj");
+  assert.throws(() => replaceClassicPdbModuleNames(original, {
+    moduleIndex: 0,
+    moduleName: "invalid\0name"
+  }), /without null characters/);
+  assert.throws(() => replaceClassicPdbModuleNames(original, {
+    moduleIndex: 2,
+    moduleName: "missing"
+  }), /module index does not exist/);
+
+  const overlay = Uint8Array.of(0xde, 0xad, 0xbe, 0xef);
+  const overlaid = new Uint8Array(original.length + overlay.length);
+  overlaid.set(original);
+  overlaid.set(overlay, original.length);
+  const editedOverlay = replaceClassicPdbModuleNames(overlaid, {
+    moduleIndex: 0,
+    objectName: "overlay.obj"
+  });
+  assert.deepEqual(editedOverlay.subarray(-overlay.length), overlay);
+  assert.equal(parseClassicPdb(editedOverlay).dbi.modules[0].objectName, "overlay.obj");
 });
 
 test("classic PDB symbol names resize across MSF block allocations", () => {

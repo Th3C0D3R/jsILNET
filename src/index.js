@@ -11,6 +11,7 @@ import {
   parseClassicPdb as parseClassicPdbFile,
   replaceClassicPdbFileChecksum as replaceClassicPdbFileChecksumFile,
   replaceClassicPdbLineInfo as replaceClassicPdbLineInfoFile,
+  replaceClassicPdbModuleNames as replaceClassicPdbModuleNamesFile,
   replaceClassicPdbStringTableName as replaceClassicPdbStringTableNameFile,
   replaceClassicPdbSymbolName as replaceClassicPdbSymbolNameFile
 } from "./metadata/classic-pdb.js";
@@ -1553,6 +1554,7 @@ export {
   parseClassicPdbFile as parseClassicPdb,
   replaceClassicPdbFileChecksumFile as replaceClassicPdbFileChecksum,
   replaceClassicPdbLineInfoFile as replaceClassicPdbLineInfo,
+  replaceClassicPdbModuleNamesFile as replaceClassicPdbModuleNames,
   replaceClassicPdbStringTableNameFile as replaceClassicPdbStringTableName,
   replaceClassicPdbSymbolNameFile as replaceClassicPdbSymbolName
 };
