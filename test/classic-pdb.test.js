@@ -661,6 +661,7 @@ test("classic PDB C13 line records can be edited without resizing module streams
     blockIndex: 0,
     lineIndex: 0,
     line: {
+      offset: 8,
       startLine: 42,
       endLineDelta: 2,
       isStatement: false,
@@ -670,7 +671,7 @@ test("classic PDB C13 line records can be edited without resizing module streams
   });
   const rewrittenPdb = parseClassicPdb(rewritten);
   assert.deepEqual(rewrittenPdb.dbi.modules[0].c13.lines[0].blocks[0].lines[0], {
-    offset: 4,
+    offset: 8,
     startLine: 42,
     endLineDelta: 2,
     isStatement: false,
@@ -688,6 +689,20 @@ test("classic PDB C13 line records can be edited without resizing module streams
     blockIndex: 0,
     lineIndex: 0,
     line: { startLine: 0x1000000 }
+  }), /line number fields are out of range/);
+  assert.throws(() => replaceClassicPdbLineInfo(original, {
+    moduleIndex: 0,
+    lineSubsectionIndex: 0,
+    blockIndex: 0,
+    lineIndex: 0,
+    line: { offset: 11 }
+  }), /line offset exceeds its code contribution/);
+  assert.throws(() => replaceClassicPdbLineInfo(original, {
+    moduleIndex: 0,
+    lineSubsectionIndex: 0,
+    blockIndex: 0,
+    lineIndex: 0,
+    line: { offset: 0x100000000 }
   }), /line number fields are out of range/);
   assert.throws(() => replaceClassicPdbLineInfo(original, {
     moduleIndex: 0,

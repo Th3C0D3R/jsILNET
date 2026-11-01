@@ -1155,7 +1155,7 @@ export function replaceClassicPdbLineInfo(
     throw new TypeError("Classic PDB line replacement must be an object");
   }
   const allowedFields = new Set([
-    "startLine", "endLineDelta", "isStatement", "startColumn", "endColumn"
+    "offset", "startLine", "endLineDelta", "isStatement", "startColumn", "endColumn"
   ]);
   if (Object.keys(line).length === 0 ||
       Object.keys(line).some((field) => !allowedFields.has(field))) {
@@ -1175,7 +1175,9 @@ export function replaceClassicPdbLineInfo(
   const isStatement = line.isStatement ?? existingLine.isStatement;
   const startColumn = line.startColumn ?? existingLine.startColumn;
   const endColumn = line.endColumn ?? existingLine.endColumn;
-  if (!Number.isInteger(startLine) || startLine < 0 || startLine > 0x00ffffff ||
+  const offset = line.offset ?? existingLine.offset;
+  if (!Number.isInteger(offset) || offset < 0 || offset > 0xffffffff ||
+      !Number.isInteger(startLine) || startLine < 0 || startLine > 0x00ffffff ||
       !Number.isInteger(endLineDelta) || endLineDelta < 0 || endLineDelta > 0x7f ||
       startLine + endLineDelta > 0x00ffffff ||
       typeof isStatement !== "boolean") {
@@ -1215,25 +1217,28 @@ export function replaceClassicPdbLineInfo(
     (endLineDelta << 24) |
     (isStatement ? 0x80000000 : 0)
   ) >>> 0;
-  const replacement = new Uint8Array(hasColumns ? 8 : 4);
+  const replacement = new Uint8Array(8);
   const replacementView = new DataView(replacement.buffer);
-  replacementView.setUint32(0, lineFlags, true);
+  replacementView.setUint32(0, offset, true);
+  replacementView.setUint32(4, lineFlags, true);
+  const columnReplacement = new Uint8Array(4);
+  const columnView = new DataView(columnReplacement.buffer);
   if (hasColumns) {
     const columnOffset = blockOffset + 12 + lineCount * 8 + lineIndex * 4;
-    replacementView.setUint16(4, startColumn, true);
-    replacementView.setUint16(6, endColumn, true);
+    columnView.setUint16(0, startColumn, true);
+    columnView.setUint16(2, endColumn, true);
     if (columnOffset + 4 > lineData.length) {
       throw new FormatError("Classic PDB line column record exceeds its subsection");
     }
   }
   const streamOffset = module.symbolBytes + module.c11Bytes +
-    c13Offset + 8 + lineRecordOffset + 4;
+    c13Offset + 8 + lineRecordOffset;
   let output = replaceClassicPdbStreamBytes(
     bytes,
     pdb,
     module.streamIndex,
     streamOffset,
-    replacement.subarray(0, 4)
+    replacement
   );
   if (hasColumns && ("startColumn" in line || "endColumn" in line)) {
     const columnOffset = module.symbolBytes + module.c11Bytes +
@@ -1243,7 +1248,7 @@ export function replaceClassicPdbLineInfo(
       pdb,
       module.streamIndex,
       columnOffset,
-      replacement.subarray(4)
+      columnReplacement
     );
   }
   parseClassicPdb(output);
