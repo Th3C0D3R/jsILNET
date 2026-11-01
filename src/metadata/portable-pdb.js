@@ -27,6 +27,8 @@ const compilationMetadataReferencesKind = "7e4d4708-096e-4c5c-aeda-cb10ba6a740d"
 const compilationOptionsKind = "b5feec05-8cd0-4a83-96da-466284bb4bd8";
 const typeDefinitionDocumentKind = "932e74bc-dba9-4478-8d46-0f32a7bab3d3";
 const stateMachineHoistedLocalScopesKind = "6da9a61e-f8c7-4874-be62-68bc5630df71";
+const editAndContinueLocalSlotMapKind = "755f52a8-91c5-45be-b4b8-209571e552bd";
+const editAndContinueLambdaAndClosureMapKind = "a643004c-0240-496f-a783-30d64f4979de";
 const embeddedSourceGuidBytes = Uint8Array.from([
   0x1b, 0x57, 0x8a, 0x0e, 0x26, 0x69, 0x6e, 0x46,
   0xb4, 0xad, 0x8a, 0xb0, 0x46, 0x11, 0xf5, 0xfe
@@ -329,6 +331,77 @@ export function decodePortablePdbCustomDebugInformation(row, heaps, documentCoun
       scopes.push({ startOffset, length });
     }
     return { kind, stateMachineHoistedLocalScopes: scopes };
+  }
+  if (kind === editAndContinueLocalSlotMapKind) {
+    if (row.Parent.target?.table !== 6) {
+      throw new FormatError(
+        "EditAndContinueLocalSlotMap custom debug information must belong to a MethodDef"
+      );
+    }
+    const reader = new BinaryReader(value, {
+      context: "Portable PDB EditAndContinueLocalSlotMap"
+    });
+    let syntaxOffsetBaseline = -1;
+    if (reader.remaining > 0 && value[0] === 0xff) {
+      reader.u1();
+      syntaxOffsetBaseline = -readCompressedUInt(reader);
+    }
+    const slots = [];
+    while (reader.remaining > 0) {
+      const header = reader.u1();
+      const kind = header & 0x7f;
+      if (kind === 0x7f) {
+        throw new FormatError("Portable PDB EditAndContinueLocalSlotMap has an invalid slot kind");
+      }
+      const syntaxOffset = readCompressedUInt(reader);
+      const ordinal = (header & 0x80) !== 0 ? readCompressedUInt(reader) : null;
+      if (syntaxOffset + syntaxOffsetBaseline < 0) {
+        throw new FormatError(
+          "Portable PDB EditAndContinueLocalSlotMap has an invalid syntax offset"
+        );
+      }
+      slots.push({ kind, syntaxOffset, ordinal });
+    }
+    return { kind, editAndContinueLocalSlotMap: { syntaxOffsetBaseline, slots } };
+  }
+  if (kind === editAndContinueLambdaAndClosureMapKind) {
+    if (row.Parent.target?.table !== 6) {
+      throw new FormatError(
+        "EditAndContinueLambdaAndClosureMap custom debug information must belong to a MethodDef"
+      );
+    }
+    const reader = new BinaryReader(value, {
+      context: "Portable PDB EditAndContinueLambdaAndClosureMap"
+    });
+    const methodOrdinal = readCompressedUInt(reader);
+    const syntaxOffsetBaseline = readCompressedUInt(reader);
+    const closureCount = readCompressedUInt(reader);
+    if (closureCount > reader.remaining) {
+      throw new FormatError(
+        "Portable PDB EditAndContinueLambdaAndClosureMap closure list is truncated"
+      );
+    }
+    const closures = Array.from({ length: closureCount }, () => readCompressedUInt(reader));
+    const lambdas = [];
+    while (reader.remaining > 0) {
+      const syntaxOffset = readCompressedUInt(reader);
+      const closureOrdinal = readCompressedUInt(reader);
+      if (closureOrdinal > closureCount) {
+        throw new FormatError(
+          "Portable PDB EditAndContinueLambdaAndClosureMap references a missing closure"
+        );
+      }
+      lambdas.push({ syntaxOffset, closureOrdinal });
+    }
+    return {
+      kind,
+      editAndContinueLambdaAndClosureMap: {
+        methodOrdinal,
+        syntaxOffsetBaseline,
+        closures,
+        lambdas
+      }
+    };
   }
   return { kind };
 }

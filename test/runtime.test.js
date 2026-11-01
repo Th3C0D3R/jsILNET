@@ -200,6 +200,73 @@ test("Portable PDB compilation CDI decoders validate strings and record bounds",
     () => decodeStateMachineScopes(scopeBytes, 50),
     /must belong to a MethodDef/
   );
+
+  const localSlotMapGuid = Uint8Array.from([
+    0xa8, 0x52, 0x5f, 0x75, 0xc5, 0x91, 0xbe, 0x45,
+    0xb4, 0xb8, 0x20, 0x95, 0x71, 0xe5, 0x52, 0xbd
+  ]);
+  const decodeLocalSlotMap = (value, parentTable = 6) =>
+    decodePortablePdbCustomDebugInformation(
+      { Kind: 1, Value: 1, Parent: { target: { table: parentTable } } },
+      {
+        getGuid: () => localSlotMapGuid,
+        getBlob: () => value
+      }
+    );
+  assert.deepEqual(
+    decodeLocalSlotMap(Uint8Array.of(0x81, 1, 1)).editAndContinueLocalSlotMap,
+    {
+      syntaxOffsetBaseline: -1,
+      slots: [{ kind: 1, syntaxOffset: 1, ordinal: 1 }]
+    }
+  );
+  assert.deepEqual(
+    decodeLocalSlotMap(Uint8Array.of(0xff, 2, 0x81, 2, 1)).editAndContinueLocalSlotMap,
+    {
+      syntaxOffsetBaseline: -2,
+      slots: [{ kind: 1, syntaxOffset: 2, ordinal: 1 }]
+    }
+  );
+  assert.throws(() => decodeLocalSlotMap(Uint8Array.of(0x7f, 0)), /invalid slot kind/);
+  assert.throws(() => decodeLocalSlotMap(Uint8Array.of(0x81, 1)), /exceeds the available/);
+  assert.throws(
+    () => decodeLocalSlotMap(Uint8Array.of(0x81, 0, 0)),
+    /invalid syntax offset/
+  );
+  assert.throws(() => decodeLocalSlotMap(Uint8Array.of(0), 52), /must belong to a MethodDef/);
+
+  const lambdaMapGuid = Uint8Array.from([
+    0x4c, 0x00, 0x43, 0xa6, 0x40, 0x02, 0x6f, 0x49,
+    0xa7, 0x83, 0x30, 0xd6, 0x4f, 0x49, 0x79, 0xde
+  ]);
+  const decodeLambdaMap = (value, parentTable = 6) =>
+    decodePortablePdbCustomDebugInformation(
+      { Kind: 1, Value: 1, Parent: { target: { table: parentTable } } },
+      {
+        getGuid: () => lambdaMapGuid,
+        getBlob: () => value
+      }
+    );
+  assert.deepEqual(
+    decodeLambdaMap(Uint8Array.of(1, 0, 1, 2, 3, 1))
+      .editAndContinueLambdaAndClosureMap,
+    {
+      methodOrdinal: 1,
+      syntaxOffsetBaseline: 0,
+      closures: [2],
+      lambdas: [{ syntaxOffset: 3, closureOrdinal: 1 }]
+    }
+  );
+  assert.throws(() => decodeLambdaMap(Uint8Array.of(1)), /exceeds the available/);
+  assert.throws(
+    () => decodeLambdaMap(Uint8Array.of(1, 0, 1)),
+    /closure list is truncated/
+  );
+  assert.throws(
+    () => decodeLambdaMap(Uint8Array.of(1, 0, 0, 1, 1)),
+    /references a missing closure/
+  );
+  assert.throws(() => decodeLambdaMap(Uint8Array.of(1, 0, 0), 0), /must belong to a MethodDef/);
 });
 
 test("trailing abstract MethodDef removal updates an embedded Portable PDB", {
