@@ -1810,6 +1810,66 @@ export function replaceEmbeddedPortablePdbSequencePoints(pdb, methodRid, sequenc
   });
 }
 
+export function replaceEmbeddedPortablePdbCustomDebugInformation(pdb, customDebugInformationRid, value) {
+  if (!pdb?.metadataRoot?.streams || !(pdb.tables?.rows instanceof Map) ||
+      !Array.isArray(pdb.tables.counts) || !(pdb.rowCounts instanceof Map) ||
+      !pdb.heaps?.getBlob || !pdb.heaps?.getGuid ||
+      !Array.isArray(pdb.customDebugInformation)) {
+    throw new TypeError("Portable PDB custom-debug editing requires parsed PDB data");
+  }
+  if (!Number.isInteger(customDebugInformationRid) || customDebugInformationRid < 1 ||
+      customDebugInformationRid > (pdb.tables.counts[55] ?? 0)) {
+    throw new RangeError(
+      `Invalid Portable PDB CustomDebugInformation row ID ${customDebugInformationRid}`
+    );
+  }
+  if (!(value instanceof Uint8Array)) {
+    throw new TypeError("Portable PDB custom-debug values must be a Uint8Array");
+  }
+  const records = pdb.tables.rows.get(55) ?? [];
+  const original = records[customDebugInformationRid - 1];
+  if (!original || original.rid !== customDebugInformationRid) {
+    throw new FormatError(
+      `Portable PDB CustomDebugInformation row ${customDebugInformationRid} is missing`
+    );
+  }
+  const streams = new Map([...pdb.metadataRoot.streams].map(([name, stream]) =>
+    [name, { ...stream, bytes: Uint8Array.from(stream.bytes) }]
+  ));
+  const blobStream = streams.get("#Blob");
+  if (!blobStream) throw new FormatError("Portable PDB metadata is missing its #Blob heap");
+  const appended = appendBlobHeap(blobStream.bytes, value);
+  blobStream.bytes = appended.heap;
+  const replacement = { ...original, Value: appended.index };
+  const validationHeaps = {
+    getBlob: (index) => index === appended.index ? value : pdb.heaps.getBlob(index),
+    getGuid: (index) => pdb.heaps.getGuid(index),
+    getString: (index) => pdb.heaps.getString(index)
+  };
+  const decoded = decodePortablePdbCustomDebugInformation(
+    replacement,
+    validationHeaps,
+    pdb.tables.counts[48] ?? 0,
+    pdb.rowCounts.get(6) ?? 0
+  );
+  const updatedRecords = records.map((record) =>
+    record.rid === customDebugInformationRid ? replacement : { ...record }
+  );
+  const customDebugInformation = pdb.customDebugInformation.map((record) =>
+    record.rid === customDebugInformationRid
+      ? { ...record, ...decoded }
+      : { ...record }
+  );
+  const rows = new Map(pdb.tables.rows);
+  rows.set(55, updatedRecords);
+  return serializeEmbeddedPortablePdb({
+    ...pdb,
+    customDebugInformation,
+    metadataRoot: { ...pdb.metadataRoot, streams },
+    tables: { ...pdb.tables, rows }
+  });
+}
+
 export function replaceEmbeddedPortablePdbLocalScope(pdb, localScopeRid, options) {
   if (!pdb?.metadataRoot?.streams || !(pdb.tables?.rows instanceof Map) ||
       !Array.isArray(pdb.tables.counts) || !pdb.heaps?.getString || !pdb.heaps?.getBlob) {
@@ -1823,8 +1883,11 @@ export function replaceEmbeddedPortablePdbLocalScope(pdb, localScopeRid, options
     throw new TypeError("Portable PDB LocalScope replacement options must be an object");
   }
   const keys = Object.keys(options);
-  if (keys.length === 0 || keys.some((key) => key !== "startOffset" && key !== "length")) {
-    throw new TypeError("Portable PDB LocalScope replacement requires startOffset and/or length");
+  if (keys.length === 0 ||
+      keys.some((key) => !["startOffset", "length", "importScopeRid"].includes(key))) {
+    throw new TypeError(
+      "Portable PDB LocalScope replacement requires startOffset, length, and/or importScopeRid"
+    );
   }
   const scopes = pdb.tables.rows.get(50) ?? [];
   const original = scopes[localScopeRid - 1];
@@ -1841,10 +1904,26 @@ export function replaceEmbeddedPortablePdbLocalScope(pdb, localScopeRid, options
        options.length >= 0x80000000)) {
     throw new RangeError("Portable PDB LocalScope length must be a positive 31-bit integer");
   }
+  if (Object.hasOwn(options, "importScopeRid") &&
+      (!Number.isInteger(options.importScopeRid) || options.importScopeRid < 0 ||
+       options.importScopeRid > (pdb.tables.counts[53] ?? 0))) {
+    throw new RangeError("Portable PDB LocalScope importScopeRid is out of range");
+  }
+  if (Object.hasOwn(options, "importScopeRid") && options.importScopeRid > 0) {
+    const importScope = pdb.tables.rows.get(53)?.[options.importScopeRid - 1];
+    if (!importScope || importScope.rid !== options.importScopeRid) {
+      throw new FormatError(
+        `Portable PDB ImportScope row ${options.importScopeRid} is missing`
+      );
+    }
+  }
   const replacement = {
     ...original,
     ...(Object.hasOwn(options, "startOffset") ? { StartOffset: options.startOffset } : {}),
-    ...(Object.hasOwn(options, "length") ? { Length: options.length } : {})
+    ...(Object.hasOwn(options, "length") ? { Length: options.length } : {}),
+    ...(Object.hasOwn(options, "importScopeRid")
+      ? { ImportScope: { rid: options.importScopeRid } }
+      : {})
   };
   const updatedScopes = scopes.map((scope) =>
     scope.rid === localScopeRid ? replacement : { ...scope }

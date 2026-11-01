@@ -26,6 +26,7 @@ import {
   replaceEmbeddedPortablePdbLocalScope,
   replaceEmbeddedPortablePdbLocalVariable,
   replaceEmbeddedPortablePdbLocalConstant,
+  replaceEmbeddedPortablePdbCustomDebugInformation,
   replaceEmbeddedPortablePdbSequencePoints,
   replaceEmbeddedPortablePdbSourceLink,
   addEmbeddedPortablePdbSourceLink,
@@ -1225,6 +1226,8 @@ test("embedded Portable PDB LocalScope replacement validates method boundaries",
         : null;
     }).find(Boolean);
     assert.ok(scopeEdit, "compiler PDB should contain a leaf scope with an interior instruction boundary");
+    const importScopeEdit = scopeRows.find((scope) => scope.ImportScope.rid > 0);
+    assert.ok(importScopeEdit, "compiler PDB should associate a LocalScope with an ImportScope");
     const localVariable = (pdb.tables.rows.get(51) ?? []).find((row) =>
       pdb.heaps.getString(row.Name).length > 0
     );
@@ -1235,6 +1238,13 @@ test("embedded Portable PDB LocalScope replacement validates method boundaries",
     );
     assert.ok(localConstant, "compiler PDB should contain a named local constant");
     const replacementConstantName = `${pdb.heaps.getString(localConstant.Name)}_edited`;
+    const compilationOptions = pdb.customDebugInformation.find((record) =>
+      Array.isArray(record.compilationOptions)
+    );
+    assert.ok(compilationOptions, "compiler PDB should contain CompilationOptions CDI");
+    const replacementOptions = new TextEncoder().encode(
+      "language\0C#\0optimization\0debug\0"
+    );
 
     const standaloneBytes = replaceEmbeddedPortablePdbLocalScope(
       pdb,
@@ -1249,6 +1259,20 @@ test("embedded Portable PDB LocalScope replacement validates method boundaries",
     assert.equal(
       standalonePdb.tables.rows.get(50)[scopeEdit.scope.rid - 1].Length,
       scopeEdit.shorterLength
+    );
+    const standaloneImportBytes = replaceEmbeddedPortablePdbLocalScope(
+      pdb,
+      importScopeEdit.rid,
+      { importScopeRid: 0 }
+    );
+    const standaloneImportPdb = parseEmbeddedPortablePdbData(
+      standaloneImportBytes,
+      0,
+      standaloneImportBytes.length
+    );
+    assert.equal(
+      standaloneImportPdb.tables.rows.get(50)[importScopeEdit.rid - 1].ImportScope.rid,
+      0
     );
     const standaloneVariableBytes = replaceEmbeddedPortablePdbLocalVariable(
       pdb,
@@ -1282,6 +1306,25 @@ test("embedded Portable PDB LocalScope replacement validates method boundaries",
       ),
       replacementConstantName
     );
+    const standaloneCdiBytes = replaceEmbeddedPortablePdbCustomDebugInformation(
+      pdb,
+      compilationOptions.rid,
+      replacementOptions
+    );
+    const standaloneCdiPdb = parseEmbeddedPortablePdbData(
+      standaloneCdiBytes,
+      0,
+      standaloneCdiBytes.length
+    );
+    assert.deepEqual(
+      standaloneCdiPdb.customDebugInformation.find((record) =>
+        record.rid === compilationOptions.rid
+      ).compilationOptions,
+      [
+        { name: "language", value: "C#" },
+        { name: "optimization", value: "debug" }
+      ]
+    );
 
     const beforeInvalidEdit = assembly.serialize();
     assert.throws(
@@ -1308,11 +1351,32 @@ test("embedded Portable PDB LocalScope replacement validates method boundaries",
       ),
       /null-free/
     );
+    assert.throws(
+      () => assembly.replaceEmbeddedPortablePdbLocalScope(
+        debugIndex,
+        importScopeEdit.rid,
+        { importScopeRid: pdb.tables.counts[53] + 1 }
+      ),
+      /importScopeRid is out of range/
+    );
+    assert.throws(
+      () => assembly.replaceEmbeddedPortablePdbCustomDebugInformation(
+        debugIndex,
+        compilationOptions.rid,
+        Uint8Array.of(0xff, 0)
+      ),
+      /valid UTF-8/
+    );
     assert.deepEqual(assembly.serialize(), beforeInvalidEdit);
     assembly.replaceEmbeddedPortablePdbLocalScope(
       debugIndex,
       scopeEdit.scope.rid,
       { length: scopeEdit.shorterLength }
+    );
+    assembly.replaceEmbeddedPortablePdbLocalScope(
+      debugIndex,
+      importScopeEdit.rid,
+      { importScopeRid: 0 }
     );
     assembly.replaceEmbeddedPortablePdbLocalVariable(
       debugIndex,
@@ -1324,6 +1388,11 @@ test("embedded Portable PDB LocalScope replacement validates method boundaries",
       localConstant.rid,
       { name: replacementConstantName }
     );
+    assembly.replaceEmbeddedPortablePdbCustomDebugInformation(
+      debugIndex,
+      compilationOptions.rid,
+      replacementOptions
+    );
     const rewritten = parseAssembly(assembly.serialize());
     const rewrittenPdb = rewritten.pe.debugDirectoryEntries.find((entry) =>
       entry.embeddedPortablePdb
@@ -1331,6 +1400,10 @@ test("embedded Portable PDB LocalScope replacement validates method boundaries",
     assert.equal(
       rewrittenPdb.tables.rows.get(50)[scopeEdit.scope.rid - 1].Length,
       scopeEdit.shorterLength
+    );
+    assert.equal(
+      rewrittenPdb.tables.rows.get(50)[importScopeEdit.rid - 1].ImportScope.rid,
+      0
     );
     assert.equal(
       rewrittenPdb.heaps.getString(
@@ -1343,6 +1416,15 @@ test("embedded Portable PDB LocalScope replacement validates method boundaries",
         rewrittenPdb.tables.rows.get(52)[localConstant.rid - 1].Name
       ),
       replacementConstantName
+    );
+    assert.deepEqual(
+      rewrittenPdb.customDebugInformation.find((record) =>
+        record.rid === compilationOptions.rid
+      ).compilationOptions,
+      [
+        { name: "language", value: "C#" },
+        { name: "optimization", value: "debug" }
+      ]
     );
   } finally {
     await rm(directory, { recursive: true, force: true });
