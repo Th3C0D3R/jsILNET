@@ -2,6 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   parseClassicPdb,
+  insertClassicPdbFileChecksum,
+  removeClassicPdbFileChecksum,
   replaceClassicPdbFileChecksum,
   insertClassicPdbLineBlock,
   removeClassicPdbLineBlock,
@@ -1074,6 +1076,85 @@ test("classic PDB C13 file checksums can be replaced and resized with line refer
     checksum: sha256Checksum
   });
   assert.deepEqual(resizedWithOverlay.subarray(-overlay.length), overlay);
+});
+
+test("classic PDB C13 checksums can be appended and safely removed", () => {
+  const original = makeClassicPdbWithSymbols({ lineInfo: true, twoChecksums: true });
+  const originalPdb = parseClassicPdb(original);
+  const originalModule = originalPdb.dbi.modules[0];
+  const appendedDigest = new Uint8Array(20).fill(0x5a);
+  const appended = insertClassicPdbFileChecksum(original, {
+    moduleIndex: 0,
+    fileNameOffset: 1,
+    checksum: appendedDigest
+  });
+  const appendedPdb = parseClassicPdb(appended);
+  const appendedModule = appendedPdb.dbi.modules[0];
+  assert.deepEqual([...appendedModule.c13.fileChecksums.keys()], [0, 24, 48]);
+  assert.deepEqual(appendedModule.c13.fileChecksums.get(48).checksum, appendedDigest);
+  assert.equal(appendedModule.c13.fileChecksums.get(48).checksumKind, 2);
+  assert.deepEqual(
+    appendedModule.c13.lines[0].blocks.map((block) => block.fileChecksumOffset),
+    originalModule.c13.lines[0].blocks.map((block) => block.fileChecksumOffset)
+  );
+  const appendedLineBlock = insertClassicPdbLineBlock(appended, {
+    moduleIndex: 0,
+    lineSubsectionIndex: 0,
+    beforeBlockIndex: 2,
+    fileChecksumOffset: 48,
+    lines: originalModule.c13.lines[0].blocks[0].lines
+  });
+  assert.equal(
+    parseClassicPdb(appendedLineBlock).dbi.modules[0].c13.lines[0].blocks[2]
+      .fileChecksumOffset,
+    48
+  );
+  const removedLineBlock = removeClassicPdbLineBlock(appendedLineBlock, {
+    moduleIndex: 0,
+    lineSubsectionIndex: 0,
+    blockIndex: 2
+  });
+  const withoutAppended = removeClassicPdbFileChecksum(removedLineBlock, {
+    moduleIndex: 0,
+    fileChecksumOffset: 48
+  });
+  assert.deepEqual(
+    [...parseClassicPdb(withoutAppended).dbi.modules[0].c13.fileChecksums.keys()],
+    [0, 24]
+  );
+  assert.throws(() => removeClassicPdbFileChecksum(original, {
+    moduleIndex: 0,
+    fileChecksumOffset: 0
+  }), /referenced by line blocks/);
+
+  const noFirstBlock = removeClassicPdbLineBlock(original, {
+    moduleIndex: 0,
+    lineSubsectionIndex: 0,
+    blockIndex: 0
+  });
+  const removedFirstChecksum = parseClassicPdb(removeClassicPdbFileChecksum(noFirstBlock, {
+    moduleIndex: 0,
+    fileChecksumOffset: 0
+  }));
+  const remappedModule = removedFirstChecksum.dbi.modules[0];
+  assert.deepEqual([...remappedModule.c13.fileChecksums.keys()], [0]);
+  assert.equal(remappedModule.c13.lines[0].blocks[0].fileChecksumOffset, 0);
+  assert.deepEqual(
+    remappedModule.c13.fileChecksums.get(0).checksum,
+    originalModule.c13.fileChecksums.get(24).checksum
+  );
+
+  const noC13 = makeClassicPdbWithSymbols();
+  const firstChecksum = parseClassicPdb(insertClassicPdbFileChecksum(noC13, {
+    moduleIndex: 0,
+    fileNameOffset: 1,
+    checksum: new Uint8Array()
+  }));
+  assert.deepEqual(
+    [...firstChecksum.dbi.modules[0].c13.fileChecksums.keys()],
+    [0]
+  );
+  assert.equal(firstChecksum.dbi.modules[0].c13.fileChecksums.get(0).checksumKind, 0);
 });
 
 test("classic PDB string table resolves file names from checksum offsets", () => {

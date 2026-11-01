@@ -9,7 +9,9 @@ import { parseMetadataRoot, MetadataHeaps } from "./metadata/streams.js";
 import { parseTablesStream } from "./metadata/tables.js";
 import {
   parseClassicPdb as parseClassicPdbFile,
+  insertClassicPdbFileChecksum as insertClassicPdbFileChecksumFile,
   insertClassicPdbLineBlock as insertClassicPdbLineBlockFile,
+  removeClassicPdbFileChecksum as removeClassicPdbFileChecksumFile,
   removeClassicPdbLineBlock as removeClassicPdbLineBlockFile,
   replaceClassicPdbFileChecksum as replaceClassicPdbFileChecksumFile,
   replaceClassicPdbLineBlock as replaceClassicPdbLineBlockFile,
@@ -1559,7 +1561,9 @@ export {
 export { MetadataHeaps, parseMetadataRoot } from "./metadata/streams.js";
 export {
   parseClassicPdbFile as parseClassicPdb,
+  insertClassicPdbFileChecksumFile as insertClassicPdbFileChecksum,
   insertClassicPdbLineBlockFile as insertClassicPdbLineBlock,
+  removeClassicPdbFileChecksumFile as removeClassicPdbFileChecksum,
   removeClassicPdbLineBlockFile as removeClassicPdbLineBlock,
   replaceClassicPdbFileChecksumFile as replaceClassicPdbFileChecksum,
   replaceClassicPdbLineBlockFile as replaceClassicPdbLineBlock,
