@@ -537,6 +537,11 @@ function validateMemberRefGenericContext(
     if (!typeRef) throw new FormatError(`MemberRef parent references a missing TypeRef row ${parent.rid}`);
     const typeArity = getTypeRefGenericArity(assembly, parent.rid, typeRefOverride);
     validateGenericVariableReferences(signature, typeArity, assembly, typeSpecOverride);
+  } else if (parentTable === 6) {
+    const { typeArity, methodArity } = getMethodGenericArities(assembly, parent.rid);
+    validateGenericVariableReferences(
+      signature, typeArity, assembly, typeSpecOverride, methodArity
+    );
   } else if (parentTable === 26) {
     validateGenericVariableReferences(signature, 0, assembly, typeSpecOverride);
   } else if (parentTable === 27) {
@@ -581,14 +586,56 @@ function getGenericParameterOwnerContext(assembly, parameter) {
   return { typeArity: 0, methodArity: 0 };
 }
 
-function validateMethodSpecUseAtCallSite(assembly, methodRid, methodSpec, typeSpecOverride = null) {
+function validateMethodSpecUseAtCallSite(
+  assembly,
+  methodRid,
+  methodSpec,
+  typeSpecOverride = null,
+  memberRefOverride = null
+) {
   const { typeArity, methodArity } = getMethodGenericArities(assembly, methodRid);
+  if (methodSpec.method?.table === 10) {
+    const memberRef = memberRefOverride?.rid === methodSpec.method.rid
+      ? memberRefOverride
+      : assembly.memberRefs[methodSpec.method.rid - 1];
+    if (!memberRef) {
+      throw new FormatError(`MethodSpec references missing MemberRef row ${methodSpec.method.rid}`);
+    }
+    validateMemberRefUseAtContext(
+      assembly, memberRef, typeArity, methodArity, typeSpecOverride
+    );
+  }
   validateGenericVariableReferences(
     methodSpec.parsedInstantiation,
     typeArity,
     assembly,
     typeSpecOverride,
     methodArity
+  );
+}
+
+function validateMemberRefUseAtCallSite(assembly, methodRid, memberRef, typeSpecOverride = null) {
+  const { typeArity, methodArity } = getMethodGenericArities(assembly, methodRid);
+  validateMemberRefUseAtContext(
+    assembly, memberRef, typeArity, methodArity, typeSpecOverride
+  );
+}
+
+function validateMemberRefUseAtContext(
+  assembly,
+  memberRef,
+  typeArity,
+  methodArity,
+  typeSpecOverride = null
+) {
+  if (memberRef.parent?.table !== 27) return;
+  validateTypeSpecGenericContext(
+    assembly,
+    memberRef.parent.rid,
+    typeArity,
+    methodArity,
+    new Set(),
+    typeSpecOverride
   );
 }
 
@@ -646,13 +693,20 @@ function validateMethodSpecUseSites(
   assembly,
   methodSpecRid = null,
   typeSpecOverride = null,
-  methodSpecOverride = null
+  methodSpecOverride = null,
+  memberRefOverride = null
 ) {
   for (const method of assembly.methods) {
     const body = assembly.getMethodBody(method.rid);
     if (!body) continue;
     validateGenericUsesInBody(
-      assembly, method, body, methodSpecRid, typeSpecOverride, methodSpecOverride
+      assembly,
+      method,
+      body,
+      methodSpecRid,
+      typeSpecOverride,
+      methodSpecOverride,
+      memberRefOverride
     );
   }
 }
@@ -663,7 +717,8 @@ function validateGenericUsesInBody(
   body,
   methodSpecRid = null,
   typeSpecOverride = null,
-  methodSpecOverride = null
+  methodSpecOverride = null,
+  memberRefOverride = null
 ) {
   if (body.localVarSigToken !== 0) {
     const table = body.localVarSigToken >>> 24;
@@ -683,6 +738,14 @@ function validateGenericUsesInBody(
       validateStandAloneSigCallSite(assembly, method.rid, currentRid);
       continue;
     }
+    if ((token >>> 24) === 0x0a) {
+      const memberRef = memberRefOverride?.rid === currentRid
+        ? memberRefOverride
+        : assembly.memberRefs[currentRid - 1];
+      if (!memberRef) throw new FormatError(`CIL references missing MemberRef row ${currentRid}`);
+      validateMemberRefUseAtCallSite(assembly, method.rid, memberRef, typeSpecOverride);
+      continue;
+    }
     if ((token >>> 24) !== 0x2b ||
         (methodSpecRid !== null && currentRid !== methodSpecRid)) continue;
     const methodSpec = methodSpecOverride?.rid === currentRid
@@ -691,7 +754,9 @@ function validateGenericUsesInBody(
     if (!methodSpec) {
       throw new FormatError(`CIL references missing MethodSpec row ${currentRid}`);
     }
-    validateMethodSpecUseAtCallSite(assembly, method.rid, methodSpec, typeSpecOverride);
+    validateMethodSpecUseAtCallSite(
+      assembly, method.rid, methodSpec, typeSpecOverride, memberRefOverride
+    );
   }
 }
 
@@ -754,9 +819,20 @@ function validateNewMethodBody(assembly, bodyBytes, ownerType, methodRid, method
         throw new FormatError("calli operand must identify a StandAloneSig method signature");
       }
       validateGenericVariableReferences(signature, typeArity, assembly, null, methodArity);
+    } else if (table === 10) {
+      const memberRef = assembly.memberRefs[rid - 1];
+      if (!memberRef) throw new FormatError(`CIL references missing MemberRef row ${rid}`);
+      validateMemberRefUseAtContext(assembly, memberRef, typeArity, methodArity);
     } else if (table === 43) {
       const methodSpec = assembly.methodSpecs[rid - 1];
       if (!methodSpec) throw new FormatError(`CIL references missing MethodSpec row ${rid}`);
+      if (methodSpec.method?.table === 10) {
+        const memberRef = assembly.memberRefs[methodSpec.method.rid - 1];
+        if (!memberRef) {
+          throw new FormatError(`MethodSpec references missing MemberRef row ${methodSpec.method.rid}`);
+        }
+        validateMemberRefUseAtContext(assembly, memberRef, typeArity, methodArity);
+      }
       validateGenericVariableReferences(
         methodSpec.parsedInstantiation, typeArity, assembly, null, methodArity
       );
@@ -8063,6 +8139,10 @@ export class Assembly {
         const methodSpec = this.methodSpecs[rid - 1];
         if (!methodSpec) throw new FormatError(`CIL references missing MethodSpec row ${rid}`);
         validateMethodSpecUseAtCallSite(this, methodRid, methodSpec);
+      } else if (table === 10) {
+        const memberRef = this.memberRefs[rid - 1];
+        if (!memberRef) throw new FormatError(`CIL references missing MemberRef row ${rid}`);
+        validateMemberRefUseAtCallSite(this, methodRid, memberRef);
       } else if (instruction.opcode.name === "calli" && table === 17) {
         validateStandAloneSigCallSite(this, methodRid, rid);
       }
@@ -8257,6 +8337,14 @@ export class Assembly {
           `MemberRef replacement would invalidate MethodSpec row ${methodSpec.rid}`
         );
       }
+    }
+    if (memberRef.parent.table === 27 || nextParent.table === 27) {
+      validateMethodSpecUseSites(this, null, null, null, {
+        ...memberRef,
+        name: nextName,
+        parent: nextParent,
+        signature: nextSignature
+      });
     }
     if ((this.tables.sorted & (1n << 10n)) !== 0n) {
       const previous = this.tables.row(10, rid - 1);

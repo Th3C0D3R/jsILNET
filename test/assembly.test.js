@@ -1914,6 +1914,40 @@ test("ModuleRef MemberRefs validate generic variables without a declaring type",
   assert.equal(assembly.memberRefs.length, originalCount);
 });
 
+test("MethodDef MemberRefs validate declaring type and method generic variables", () => {
+  const assembly = parseAssembly(fixture);
+  const genericType = assembly.types.find((type) => type.name === "Sample`1");
+  const method = genericType?.methods[0];
+  assert.ok(genericType && method);
+
+  assembly.replaceMethodSignature(method.rid, Uint8Array.from([0x10, 0x01, 0x00, 0x01]));
+  assembly.addGenericParam({
+    owner: { table: "MethodDef", rid: method.rid },
+    name: "TMethod"
+  });
+  const parent = { table: "MethodDef", rid: method.rid };
+  assembly.addMemberRef({
+    parent,
+    name: "ValidTypeVariable",
+    signature: Uint8Array.from([0x05, 0x00, 0x13, 0x00])
+  });
+  assembly.addMemberRef({
+    parent,
+    name: "ValidMethodVariable",
+    signature: Uint8Array.from([0x05, 0x00, 0x1e, 0x00])
+  });
+  assert.throws(() => assembly.addMemberRef({
+    parent,
+    name: "InvalidTypeVariable",
+    signature: Uint8Array.from([0x05, 0x00, 0x13, 0x01])
+  }), /Type generic variable !1 exceeds its declaring type's arity/);
+  assert.throws(() => assembly.addMemberRef({
+    parent,
+    name: "InvalidMethodVariable",
+    signature: Uint8Array.from([0x05, 0x00, 0x1e, 0x01])
+  }), /Method generic variable !!1 exceeds its method's arity/);
+});
+
 test("TypeSpec generic instances validate generic TypeRef arity", () => {
   const assembly = parseAssembly(withoutDebugDirectory());
   assembly.tables.sorted &= ~(1n << 1n);
@@ -2216,6 +2250,120 @@ test("TypeSpec replacement revalidates nested generic-context use sites atomical
     Uint8Array.from([0x13, 0x01])
   ), /TypeSpec generic variable !1 exceeds its declaring type's arity/);
   assert.deepEqual(callSiteAssembly.serialize(), methodSpecCallOutput);
+});
+
+test("TypeSpec-parented MemberRefs validate generic context at direct and MethodSpec call sites", () => {
+  const assembly = parseAssembly(fixture);
+  const callerType = assembly.types.find((type) => type.name === "Sample`1");
+  const callSite = callerType?.methods.map((method) => ({
+    method,
+    instruction: assembly.getInstructions(method.rid)
+      .find((item) => item.opcode.name === "call")
+  })).find((entry) => entry.instruction);
+  assert.ok(callerType && callSite);
+  assembly.tables.sorted &= ~(1n << 10n);
+
+  const invalidTypeSpecToken = assembly.addTypeSpec({
+    signature: Uint8Array.from([0x13, 0x01])
+  });
+  const invalidMemberRefToken = assembly.addMemberRef({
+    parent: { table: "TypeSpec", rid: invalidTypeSpecToken & 0x00ffffff },
+    name: "InvalidGenericParent",
+    signature: Uint8Array.from([0x10, 0x01, 0x00, 0x01])
+  });
+  const invalidMethodSpecToken = assembly.addMethodSpec({
+    method: { table: "MemberRef", rid: invalidMemberRefToken & 0x00ffffff },
+    instantiation: Uint8Array.from([0x0a, 0x01, 0x08])
+  });
+  const originalCallToken = callSite.instruction.operand.value;
+  assert.throws(() => assembly.setInstructionOperand(
+    callSite.method.rid,
+    callSite.instruction.offset,
+    invalidMemberRefToken
+  ), /TypeSpec generic variable !1 exceeds its declaring type's arity/);
+  assert.throws(() => assembly.setInstructionOperand(
+    callSite.method.rid,
+    callSite.instruction.offset,
+    invalidMethodSpecToken
+  ), /TypeSpec generic variable !1 exceeds its declaring type's arity/);
+  assert.equal(callSite.instruction.operand.value, originalCallToken);
+
+  const validTypeSpecToken = assembly.addTypeSpec({
+    signature: Uint8Array.from([0x13, 0x00])
+  });
+  const validMemberRefToken = assembly.addMemberRef({
+    parent: { table: "TypeSpec", rid: validTypeSpecToken & 0x00ffffff },
+    name: "ValidGenericParent",
+    signature: Uint8Array.from([0x10, 0x01, 0x00, 0x01])
+  });
+  assembly.setInstructionOperand(
+    callSite.method.rid,
+    callSite.instruction.offset,
+    validMemberRefToken
+  );
+  const validOutput = assembly.serialize();
+  const validMemberRefRid = validMemberRefToken & 0x00ffffff;
+  assert.throws(() => assembly.replaceMemberRef(validMemberRefRid, {
+    parent: { table: "TypeSpec", rid: invalidTypeSpecToken & 0x00ffffff }
+  }), /TypeSpec generic variable !1 exceeds its declaring type's arity/);
+  assert.equal(assembly.memberRefs[validMemberRefRid - 1].parent.rid,
+    validTypeSpecToken & 0x00ffffff);
+  assert.deepEqual(assembly.serialize(), validOutput);
+
+  const bytes = Uint8Array.from(assembly.serialize());
+  const parsed = parseAssembly(bytes);
+  const parsedCall = parsed.getInstructions(callSite.method.rid)
+    .find((instruction) => instruction.offset === callSite.instruction.offset);
+  new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+    .setUint32(parsedCall.operandOffset, invalidMemberRefToken, true);
+  assert.throws(
+    () => parseAssembly(bytes).getMethodBody(callSite.method.rid),
+    /TypeSpec generic variable !1 exceeds its declaring type's arity/
+  );
+});
+
+test("new method bodies validate TypeSpec-parented MemberRefs in the new owner context", () => {
+  const assembly = parseAssembly(withoutDebugDirectory());
+  const owner = assembly.types.find((type) => type.name === "Sample`1");
+  assert.ok(owner);
+  assembly.tables.sorted &= ~(1n << 10n);
+  const typeSpecToken = assembly.addTypeSpec({
+    signature: Uint8Array.from([0x13, 0x01])
+  });
+  const memberRefToken = assembly.addMemberRef({
+    parent: { table: "TypeSpec", rid: typeSpecToken & 0x00ffffff },
+    name: "GenericParentMethod",
+    signature: Uint8Array.from([0x00, 0x00, 0x01])
+  });
+  const methodSpecMemberRefToken = assembly.addMemberRef({
+    parent: { table: "TypeSpec", rid: typeSpecToken & 0x00ffffff },
+    name: "GenericParentGenericMethod",
+    signature: Uint8Array.from([0x10, 0x01, 0x00, 0x01])
+  });
+  const methodSpecToken = assembly.addMethodSpec({
+    method: { table: "MemberRef", rid: methodSpecMemberRefToken & 0x00ffffff },
+    instantiation: Uint8Array.from([0x0a, 0x01, 0x08])
+  });
+  const callBody = (token) => Uint8Array.of(
+    0x1a, 0x28,
+    token & 0xff,
+    (token >>> 8) & 0xff,
+    (token >>> 16) & 0xff,
+    (token >>> 24) & 0xff,
+    0x2a
+  );
+  const addCaller = (name, body) => assembly.addMethod({
+    owner: { table: "TypeDef", rid: owner.rid },
+    name,
+    flags: 0x0096,
+    signature: Uint8Array.of(0x00, 0x00, 0x01),
+    body
+  });
+
+  assert.throws(() => addCaller("InvalidMemberRefCall", callBody(memberRefToken)),
+    /TypeSpec generic variable !1 exceeds its declaring type's arity/);
+  assert.throws(() => addCaller("InvalidMethodSpecCall", callBody(methodSpecToken)),
+    /TypeSpec generic variable !1 exceeds its declaring type's arity/);
 });
 
 test("TypeSpec removal rejects live references and remaps signatures and CIL tokens", () => {
