@@ -728,6 +728,27 @@ test("rewritten custom-attribute named arguments load in .NET", {
       value.namedArguments.map(({ name, value: argumentValue }) => [name, argumentValue]),
       [["Count", 5], ["Label", "original"]]
     );
+    const beforeInvalidAttributes = assembly.serialize();
+    const missingNamedMember = {
+      ...value,
+      namedArguments: value.namedArguments.map((argument) => ({ ...argument }))
+    };
+    missingNamedMember.namedArguments[0].name = "Missing";
+    assert.throws(
+      () => assembly.replaceCustomAttribute(attribute.rid, missingNamedMember),
+      /named property Missing does not exist/
+    );
+    const mismatchedNamedMember = {
+      ...value,
+      namedArguments: value.namedArguments.map((argument) => ({ ...argument }))
+    };
+    mismatchedNamedMember.namedArguments[0].type = { kind: "string" };
+    mismatchedNamedMember.namedArguments[0].value = "seven";
+    assert.throws(
+      () => assembly.replaceCustomAttribute(attribute.rid, mismatchedNamedMember),
+      /named property Count has a type that does not match/
+    );
+    assert.deepEqual(assembly.serialize(), beforeInvalidAttributes);
     value.namedArguments.find((argument) => argument.name === "Count").value = 7;
     value.namedArguments.find((argument) => argument.name === "Label").value = "updated";
     assembly.replaceCustomAttribute(attribute.rid, value);
