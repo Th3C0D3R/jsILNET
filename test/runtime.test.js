@@ -539,6 +539,82 @@ test("TypeDefinitionDocument CDI follows TypeDef insertion and removal", {
   }
 });
 
+test("adding an embedded Portable PDB Document updates the PDB and PE identity", {
+  skip: dotnetAvailable ? false : ".NET SDK/runtime is unavailable"
+}, async () => {
+  const directory = await mkdtemp(join(tmpdir(), "jsilnet-pdb-document-add-"));
+  try {
+    const project = join(directory, "PdbDocumentAdd.csproj");
+    const output = join(directory, "out");
+    await writeFile(project, [
+      "<Project Sdk=\"Microsoft.NET.Sdk\">",
+      "  <PropertyGroup>",
+      `    <TargetFramework>${targetFramework}</TargetFramework>`,
+      "    <DebugType>embedded</DebugType>",
+      "  </PropertyGroup>",
+      "</Project>"
+    ].join("\n"));
+    await writeFile(join(directory, "Fixture.cs"), "public class DocumentFixture { }");
+    const build = spawnSync(
+      "dotnet",
+      ["build", project, "--configuration", "Debug", "--output", output, "--nologo"],
+      { encoding: "utf8", timeout: 120_000 }
+    );
+    assert.equal(build.status, 0, build.stderr || build.stdout || build.error?.message);
+
+    const assembly = parseAssembly(
+      Uint8Array.from(await readFile(join(output, "PdbDocumentAdd.dll")))
+    );
+    const debugIndex = assembly.pe.debugDirectoryEntries.findIndex((entry) =>
+      entry.embeddedPortablePdb
+    );
+    assert.notEqual(debugIndex, -1);
+    const originalPdb = assembly.pe.debugDirectoryEntries[debugIndex].embeddedPortablePdb;
+    const originalDocumentCount = originalPdb.documents.length;
+    const originalId = Uint8Array.from(originalPdb.id);
+    const hashAlgorithmGuid = Uint8Array.from({ length: 16 }, (_, index) => index + 1);
+    const languageGuid = Uint8Array.from({ length: 16 }, (_, index) => 16 - index);
+    const hash = Uint8Array.of(1, 2, 3, 4);
+    assembly.addEmbeddedPortablePdbDocument(debugIndex, "generated/new-file.cs", {
+      hashAlgorithmGuid,
+      hash,
+      languageGuid
+    });
+    assert.throws(
+      () => assembly.addEmbeddedPortablePdbDocument(debugIndex, "generated/new-file.cs"),
+      /already exists/
+    );
+    assert.throws(
+      () => assembly.addEmbeddedPortablePdbDocument(debugIndex, "generated/invalid.cs", {
+        hash: Uint8Array.of(1)
+      }),
+      /hashes and GUIDs have invalid values/
+    );
+
+    const rewritten = parseAssembly(assembly.serialize());
+    const rewrittenPdb = rewritten.pe.debugDirectoryEntries.find((entry) =>
+      entry.embeddedPortablePdb
+    ).embeddedPortablePdb;
+    assert.equal(rewrittenPdb.documents.length, originalDocumentCount + 1);
+    assert.equal(rewrittenPdb.documents.at(-1).name, "generated/new-file.cs");
+    assert.deepEqual(
+      Uint8Array.from(rewrittenPdb.heaps.getGuid(rewrittenPdb.documents.at(-1).HashAlgorithm)),
+      hashAlgorithmGuid
+    );
+    assert.deepEqual(
+      Uint8Array.from(rewrittenPdb.heaps.getGuid(rewrittenPdb.documents.at(-1).Language)),
+      languageGuid
+    );
+    assert.deepEqual(
+      Uint8Array.from(rewrittenPdb.heaps.getBlob(rewrittenPdb.documents.at(-1).Hash)),
+      hash
+    );
+    assert.notDeepEqual(rewrittenPdb.id, originalId);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("IL edits rebase state-machine hoisted-local scopes", {
   skip: dotnetAvailable ? false : ".NET SDK/runtime is unavailable"
 }, async () => {

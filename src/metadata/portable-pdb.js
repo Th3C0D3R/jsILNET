@@ -1112,6 +1112,88 @@ export function replaceEmbeddedPortablePdbDocumentName(pdb, documentRid, name, s
   });
 }
 
+export function addEmbeddedPortablePdbDocument(
+  pdb,
+  name,
+  {
+    separator = "/",
+    hashAlgorithmGuid = null,
+    hash = new Uint8Array(),
+    languageGuid = null
+  } = {}
+) {
+  if (!pdb?.metadataRoot?.streams || !(pdb.tables?.rows instanceof Map) ||
+      !Array.isArray(pdb.tables.counts) || !Array.isArray(pdb.documents)) {
+    throw new TypeError("Portable PDB document editing requires parsed PDB data");
+  }
+  if (typeof name !== "string" || name.length === 0 || name.includes("\0")) {
+    throw new TypeError("Portable PDB document names must be nonempty null-free strings");
+  }
+  if (!(hash instanceof Uint8Array) ||
+      (hashAlgorithmGuid === null && hash.length > 0) ||
+      (hashAlgorithmGuid !== null &&
+        (!(hashAlgorithmGuid instanceof Uint8Array) || hashAlgorithmGuid.length !== 16)) ||
+      (languageGuid !== null &&
+        (!(languageGuid instanceof Uint8Array) || languageGuid.length !== 16))) {
+    throw new TypeError("Portable PDB document hashes and GUIDs have invalid values");
+  }
+  const documentRows = pdb.tables.rows.get(48) ?? [];
+  if (documentRows.length !== pdb.tables.counts[48] ||
+      pdb.documents.length !== documentRows.length) {
+    throw new FormatError("Portable PDB Document row count is inconsistent");
+  }
+  if (pdb.documents.some((document) => document.name === name)) {
+    throw new FormatError(`Portable PDB Document name ${JSON.stringify(name)} already exists`);
+  }
+  const streams = new Map([...pdb.metadataRoot.streams].map(([streamName, stream]) =>
+    [streamName, { ...stream, bytes: Uint8Array.from(stream.bytes) }]
+  ));
+  const blobStream = streams.get("#Blob");
+  if (!blobStream) throw new FormatError("Portable PDB metadata is missing its #Blob heap");
+  const documentName = appendPortablePdbDocumentName(blobStream.bytes, name, separator);
+  blobStream.bytes = documentName.heap;
+  const hashBlob = appendBlobHeap(blobStream.bytes, hash);
+  blobStream.bytes = hashBlob.heap;
+
+  const appendGuid = (guid) => {
+    if (guid === null) return 0;
+    const guidStream = streams.get("#GUID");
+    if (!guidStream) throw new FormatError("Portable PDB metadata is missing its #GUID heap");
+    if (guidStream.bytes.length % 16 !== 0) {
+      throw new FormatError("Portable PDB GUID heap size is not a multiple of 16 bytes");
+    }
+    const index = guidStream.bytes.length / 16 + 1;
+    const updated = new Uint8Array(guidStream.bytes.length + 16);
+    updated.set(guidStream.bytes);
+    updated.set(guid, guidStream.bytes.length);
+    guidStream.bytes = updated;
+    return index;
+  };
+  const hashAlgorithm = appendGuid(hashAlgorithmGuid);
+  const language = appendGuid(languageGuid);
+  const rows = new Map(pdb.tables.rows);
+  const rid = documentRows.length + 1;
+  rows.set(48, [
+    ...documentRows.map((row) => ({ ...row })),
+    {
+      table: 48,
+      tableName: "Document",
+      rid,
+      Name: documentName.nameBlobIndex,
+      HashAlgorithm: hashAlgorithm,
+      Hash: hashBlob.index,
+      Language: language
+    }
+  ]);
+  const counts = [...pdb.tables.counts];
+  counts[48] = rid;
+  return serializeEmbeddedPortablePdb({
+    ...pdb,
+    metadataRoot: { ...pdb.metadataRoot, streams },
+    tables: { ...pdb.tables, rows, counts, valid: pdb.tables.valid | (1n << 48n) }
+  });
+}
+
 export function replaceEmbeddedPortablePdbSequencePoints(pdb, methodRid, sequencePoints) {
   if (!pdb?.metadataRoot?.streams || !(pdb.tables?.rows instanceof Map) ||
       !Array.isArray(pdb.tables.counts) || !(pdb.rowCounts instanceof Map) ||
