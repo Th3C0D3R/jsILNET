@@ -39,6 +39,10 @@ const sourceLinkGuidBytes = Uint8Array.from([
   0x56, 0x05, 0x11, 0xcc, 0x91, 0xa0, 0x38, 0x4d,
   0x9f, 0xec, 0x25, 0xab, 0x9a, 0x35, 0x1a, 0x6a
 ]);
+const typeDefinitionDocumentGuidBytes = Uint8Array.from([
+  0xbc, 0x74, 0x2e, 0x93, 0xa9, 0xdb, 0x78, 0x44,
+  0x8d, 0x46, 0x0f, 0x32, 0xa7, 0xba, 0xb3, 0xd3
+]);
 
 export function validatePortablePdbAssemblyReferences(pdb, assemblyRowCounts) {
   if (!pdb || !(pdb.rowCounts instanceof Map) || !Array.isArray(assemblyRowCounts)) {
@@ -1289,6 +1293,156 @@ export function addEmbeddedPortablePdbDocument(
   });
 }
 
+function encodeTypeDefinitionDocumentValue(documentRids, documentCount) {
+  if (!Array.isArray(documentRids)) {
+    throw new TypeError("TypeDefinitionDocument values must be an array of Document row IDs");
+  }
+  const encoded = [];
+  for (const documentRid of documentRids) {
+    if (!Number.isInteger(documentRid) || documentRid < 1 ||
+        documentRid > documentCount) {
+      throw new RangeError(`Invalid Portable PDB Document row ID ${documentRid}`);
+    }
+    encoded.push(...appendCompressedUInt(documentRid));
+  }
+  return Uint8Array.from(encoded);
+}
+
+function editEmbeddedPortablePdbTypeDefinitionDocuments(pdb, typeRid, documentRids, add) {
+  if (!pdb?.metadataRoot?.streams || !(pdb.tables?.rows instanceof Map) ||
+      !Array.isArray(pdb.tables.counts) || !(pdb.rowCounts instanceof Map) ||
+      !Array.isArray(pdb.customDebugInformation)) {
+    throw new TypeError("Portable PDB TypeDefinitionDocument editing requires parsed PDB data");
+  }
+  const typeCount = pdb.rowCounts.get(2) ?? 0;
+  const documentRows = pdb.tables.rows.get(48) ?? [];
+  const debugRows = pdb.tables.rows.get(55) ?? [];
+  if (!Number.isInteger(typeRid) || typeRid < 1 || typeRid > typeCount) {
+    throw new RangeError(`Invalid Portable PDB TypeDef row ID ${typeRid}`);
+  }
+  if (documentRows.length !== pdb.tables.counts[48] ||
+      debugRows.length !== pdb.tables.counts[55] ||
+      pdb.customDebugInformation.length !== debugRows.length) {
+    throw new FormatError("Portable PDB Document or custom-debug row count is inconsistent");
+  }
+  const value = encodeTypeDefinitionDocumentValue(documentRids, documentRows.length);
+  const existing = pdb.customDebugInformation.filter((record) =>
+    record.kind === typeDefinitionDocumentKind &&
+    record.Parent.target?.table === 2 &&
+    record.Parent.target.rid === typeRid
+  );
+  if (existing.length > 1) {
+    throw new FormatError(
+      `Portable PDB TypeDef row ${typeRid} has duplicate TypeDefinitionDocument records`
+    );
+  }
+  const targetRecord = existing[0];
+  const targetRow = targetRecord
+    ? debugRows.find((row) => row.rid === targetRecord.rid)
+    : undefined;
+  if (targetRecord && (!targetRow || targetRow.Kind !== targetRecord.Kind)) {
+    throw new FormatError(
+      `Portable PDB TypeDef row ${typeRid} has inconsistent TypeDefinitionDocument data`
+    );
+  }
+  if (add && existing.length !== 0) {
+    throw new UnsupportedFormatError(
+      `Portable PDB TypeDef row ${typeRid} already has TypeDefinitionDocument information`
+    );
+  }
+  if (!add && existing.length === 0) {
+    throw new UnsupportedFormatError(
+      `Portable PDB TypeDef row ${typeRid} has no TypeDefinitionDocument information`
+    );
+  }
+
+  const streams = new Map([...pdb.metadataRoot.streams].map(([name, stream]) =>
+    [name, { ...stream, bytes: Uint8Array.from(stream.bytes) }]
+  ));
+  const blobStream = streams.get("#Blob");
+  if (!blobStream) throw new FormatError("Portable PDB metadata is missing its #Blob heap");
+  const appendedValue = appendBlobHeap(blobStream.bytes, value);
+  blobStream.bytes = appendedValue.heap;
+
+  let kindIndex = existing[0]?.Kind;
+  if (add) {
+    const guidStream = streams.get("#GUID");
+    if (!guidStream) throw new FormatError("Portable PDB metadata is missing its #GUID heap");
+    if (guidStream.bytes.length % 16 !== 0) {
+      throw new FormatError("Portable PDB GUID heap size is not a multiple of 16 bytes");
+    }
+    kindIndex = guidStream.bytes.length / 16 + 1;
+    const expandedGuidStream = new Uint8Array(guidStream.bytes.length + 16);
+    expandedGuidStream.set(guidStream.bytes);
+    expandedGuidStream.set(typeDefinitionDocumentGuidBytes, guidStream.bytes.length);
+    guidStream.bytes = expandedGuidStream;
+  }
+
+  const rows = new Map(pdb.tables.rows);
+  const updatedRows = add
+    ? [
+        ...debugRows.map((row) => ({ ...row })),
+        {
+          table: 55,
+          tableName: "CustomDebugInformation",
+          rid: 0,
+          Parent: {
+            raw: encodeCodedIndex(2, typeRid, "HasCustomDebugInformation"),
+            target: { table: 2, tableName: "TypeDef", rid: typeRid }
+          },
+          Kind: kindIndex,
+          Value: appendedValue.index
+        }
+      ]
+    : debugRows.map((row) =>
+        row.rid === targetRecord.rid
+          ? { ...row, Value: appendedValue.index }
+          : { ...row }
+      );
+  const sortedRows = sortPortablePdbCustomDebugInformation(updatedRows);
+  rows.set(55, sortedRows);
+  const counts = [...pdb.tables.counts];
+  counts[55] = sortedRows.length;
+  return serializeEmbeddedPortablePdb({
+    ...pdb,
+    metadataRoot: { ...pdb.metadataRoot, streams },
+    tables: {
+      ...pdb.tables,
+      valid: sortedRows.length > 0
+        ? pdb.tables.valid | (1n << 55n)
+        : pdb.tables.valid & ~(1n << 55n),
+      counts,
+      rows
+    }
+  });
+}
+
+export function addEmbeddedPortablePdbTypeDefinitionDocuments(
+  pdb,
+  typeRid,
+  documentRids
+) {
+  return editEmbeddedPortablePdbTypeDefinitionDocuments(
+    pdb,
+    typeRid,
+    documentRids,
+    true
+  );
+}
+
+export function replaceEmbeddedPortablePdbTypeDefinitionDocuments(
+  pdb,
+  typeRid,
+  documentRids
+) {
+  return editEmbeddedPortablePdbTypeDefinitionDocuments(
+    pdb,
+    typeRid,
+    documentRids,
+    false
+  );
+}
+
 export function removeEmbeddedPortablePdbDocument(pdb, documentRid) {
   if (!pdb?.metadataRoot?.streams || !(pdb.tables?.rows instanceof Map) ||
       !Array.isArray(pdb.tables.counts) || !Array.isArray(pdb.documents) ||
@@ -1386,6 +1540,31 @@ export function removeEmbeddedPortablePdbDocument(pdb, documentRid) {
         );
       }
       const target = record.Parent.target;
+      if (target?.table === 2 && Array.isArray(record.typeDefinitionDocuments)) {
+        const documentRids = record.typeDefinitionDocuments
+          .filter((rid) => rid !== documentRid)
+          .map((rid) => rid > documentRid ? rid - 1 : rid);
+        const changed = documentRids.length !== record.typeDefinitionDocuments.length ||
+          documentRids.some((rid, index) =>
+            rid !== record.typeDefinitionDocuments[index]
+          );
+        if (!changed) return [{ ...row }];
+        if (documentRids.length === 0) return [];
+        streams ??= new Map([...pdb.metadataRoot.streams].map(([name, stream]) =>
+          [name, { ...stream, bytes: Uint8Array.from(stream.bytes) }]
+        ));
+        const blobStream = streams.get("#Blob");
+        if (!blobStream) {
+          throw new FormatError("Portable PDB metadata is missing its #Blob heap");
+        }
+        const encoded = encodeTypeDefinitionDocumentValue(
+          documentRids,
+          remainingDocumentRows.length
+        );
+        const appended = appendBlobHeap(blobStream.bytes, encoded);
+        blobStream.bytes = appended.heap;
+        return [{ ...row, Value: appended.index }];
+      }
       if (target?.table !== 48) return [{ ...row }];
       if (target.rid === documentRid) return [];
       if (target.rid < documentRid) return [{ ...row }];

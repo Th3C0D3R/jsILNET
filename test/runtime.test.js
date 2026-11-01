@@ -490,44 +490,105 @@ test("TypeDefinitionDocument CDI follows TypeDef insertion and removal", {
     const embeddedPdb = assembly.pe.debugDirectoryEntries.find((entry) =>
       entry.embeddedPortablePdb
     )?.embeddedPortablePdb;
+    const debugEntryIndex = assembly.pe.debugDirectoryEntries.findIndex((entry) =>
+      entry.embeddedPortablePdb
+    );
     const emptyType = assembly.types.find((type) => type.name === "EmptyType");
     assert.ok(embeddedPdb);
+    assert.ok(debugEntryIndex >= 0);
     assert.ok(emptyType);
+    const emptyTypeRid = emptyType.rid;
     const typeDocumentRecord = embeddedPdb.customDebugInformation.find((record) =>
       Array.isArray(record.typeDefinitionDocuments) &&
       record.Parent.target?.table === 2 &&
       record.Parent.target.rid === emptyType.rid
     );
     assert.ok(typeDocumentRecord);
+    const originalDocumentRids = typeDocumentRecord.typeDefinitionDocuments;
     const originalTypeDocumentCount = embeddedPdb.customDebugInformation.filter((record) =>
       Array.isArray(record.typeDefinitionDocuments)
     ).length;
+
+    assembly.addEmbeddedPortablePdbDocument(debugEntryIndex, "generated/type-doc.cs");
+    const addedDocumentPdb = parseAssembly(assembly.serialize()).pe.debugDirectoryEntries.find(
+      (entry) => entry.embeddedPortablePdb
+    ).embeddedPortablePdb;
+    const addedDocumentRid = addedDocumentPdb.documents.length;
+    assert.ok(addedDocumentRid > 0);
+    const beforeInvalidDocumentReference = assembly.serialize();
+    assert.throws(() => assembly.replaceEmbeddedPortablePdbTypeDefinitionDocuments(
+      debugEntryIndex,
+      emptyTypeRid,
+      [addedDocumentRid + 1]
+    ), RangeError);
+    assert.deepEqual(assembly.serialize(), beforeInvalidDocumentReference);
+    assembly.replaceEmbeddedPortablePdbTypeDefinitionDocuments(
+      debugEntryIndex,
+      emptyTypeRid,
+      [...originalDocumentRids, addedDocumentRid]
+    );
+    const replacedDocumentPdb = parseAssembly(assembly.serialize()).pe.debugDirectoryEntries.find(
+      (entry) => entry.embeddedPortablePdb
+    ).embeddedPortablePdb;
+    assert.deepEqual(
+      replacedDocumentPdb.customDebugInformation.find((record) =>
+        record.kind === typeDocumentRecord.kind &&
+        record.Parent.target?.rid === emptyTypeRid
+      )?.typeDefinitionDocuments,
+      [...originalDocumentRids, addedDocumentRid]
+    );
 
     const { token: insertedToken } = assembly.insertTypeDef({
       beforeRid: emptyType.rid,
       name: "InsertedType"
     });
+    const insertedTypeRid = insertedToken & 0x00ffffff;
+    assembly.addEmbeddedPortablePdbTypeDefinitionDocuments(
+      debugEntryIndex,
+      insertedTypeRid,
+      [addedDocumentRid]
+    );
     const insertedPdb = parseAssembly(assembly.serialize()).pe.debugDirectoryEntries.find(
       (entry) => entry.embeddedPortablePdb
     ).embeddedPortablePdb;
     assert.equal(
       insertedPdb.customDebugInformation.find((record) =>
         Array.isArray(record.typeDefinitionDocuments) &&
-        record.Parent.target?.rid === emptyType.rid + 1
+        record.Parent.target?.rid === emptyTypeRid + 1
       )?.Parent.target.rid,
-      emptyType.rid + 1
+      emptyTypeRid + 1
+    );
+    assert.deepEqual(
+      insertedPdb.customDebugInformation.find((record) =>
+        record.kind === typeDocumentRecord.kind &&
+        record.Parent.target?.rid === emptyTypeRid + 1
+      )?.typeDefinitionDocuments,
+      [...originalDocumentRids, addedDocumentRid]
+    );
+    assert.deepEqual(
+      insertedPdb.customDebugInformation.find((record) =>
+        record.kind === typeDocumentRecord.kind &&
+        record.Parent.target?.rid === insertedTypeRid
+      )?.typeDefinitionDocuments,
+      [addedDocumentRid]
     );
 
-    assembly.removeTypeDef(insertedToken & 0x00ffffff);
+    assembly.removeEmbeddedPortablePdbDocument(debugEntryIndex, addedDocumentRid);
     const restoredPdb = parseAssembly(assembly.serialize()).pe.debugDirectoryEntries.find(
       (entry) => entry.embeddedPortablePdb
     ).embeddedPortablePdb;
-    assert.ok(restoredPdb.customDebugInformation.some((record) =>
+    const restoredTypeDocument = restoredPdb.customDebugInformation.find((record) =>
       Array.isArray(record.typeDefinitionDocuments) &&
-      record.Parent.target?.rid === emptyType.rid
-    ));
+      record.Parent.target?.rid === emptyTypeRid + 1
+    );
+    assert.deepEqual(restoredTypeDocument?.typeDefinitionDocuments, originalDocumentRids);
+    assert.equal(restoredPdb.customDebugInformation.some((record) =>
+      record.kind === typeDocumentRecord.kind &&
+      record.Parent.target?.rid === insertedTypeRid
+    ), false);
 
-    assembly.removeTypeDef(emptyType.rid);
+    assembly.removeTypeDef(insertedTypeRid);
+    assembly.removeTypeDef(emptyTypeRid);
     const removedPdb = parseAssembly(assembly.serialize()).pe.debugDirectoryEntries.find(
       (entry) => entry.embeddedPortablePdb
     ).embeddedPortablePdb;
