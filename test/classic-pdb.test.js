@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import {
   parseClassicPdb,
   replaceClassicPdbFileChecksum,
+  insertClassicPdbLineBlock,
+  removeClassicPdbLineBlock,
   replaceClassicPdbLineBlock,
   replaceClassicPdbLineInfo,
   replaceClassicPdbModuleNames,
@@ -927,6 +929,67 @@ test("classic PDB C13 line blocks resize without columns and validate replacemen
     blockIndex: 0,
     lines: []
   }), /non-empty lines array/);
+});
+
+test("classic PDB C13 line blocks can be inserted and removed by checksum reference", () => {
+  const original = makeClassicPdbWithSymbols({ lineInfo: true, twoChecksums: true });
+  const originalPdb = parseClassicPdb(original);
+  const originalModule = originalPdb.dbi.modules[0];
+  const originalBlocks = originalModule.c13.lines[0].blocks;
+  assert.equal(originalBlocks.length, 2);
+
+  const inserted = insertClassicPdbLineBlock(original, {
+    moduleIndex: 0,
+    lineSubsectionIndex: 0,
+    beforeBlockIndex: 1,
+    fileChecksumOffset: 24,
+    lines: originalBlocks[0].lines
+  });
+  const insertedPdb = parseClassicPdb(inserted);
+  const insertedBlocks = insertedPdb.dbi.modules[0].c13.lines[0].blocks;
+  assert.equal(insertedBlocks.length, 3);
+  assert.equal(insertedBlocks[1].fileChecksumOffset, 24);
+  assert.deepEqual(insertedBlocks[1].lines, originalBlocks[0].lines);
+  assert.ok(insertedPdb.dbi.modules[0].c13.fileChecksums.has(
+    insertedBlocks[1].fileChecksumOffset
+  ));
+
+  const removed = removeClassicPdbLineBlock(inserted, {
+    moduleIndex: 0,
+    lineSubsectionIndex: 0,
+    blockIndex: 1
+  });
+  const removedPdb = parseClassicPdb(removed);
+  assert.deepEqual(
+    removedPdb.dbi.modules[0].c13.lines[0].blocks,
+    [originalBlocks[0], originalBlocks[1]]
+  );
+  assert.throws(() => insertClassicPdbLineBlock(original, {
+    moduleIndex: 0,
+    lineSubsectionIndex: 0,
+    beforeBlockIndex: 0,
+    fileChecksumOffset: 8,
+    lines: originalBlocks[0].lines
+  }), /checksum location does not exist/);
+
+  const removedFirst = removeClassicPdbLineBlock(original, {
+    moduleIndex: 0,
+    lineSubsectionIndex: 0,
+    blockIndex: 0
+  });
+  assert.deepEqual(
+    parseClassicPdb(removedFirst).dbi.modules[0].c13.lines[0].blocks,
+    [originalBlocks[1]]
+  );
+  const removedLast = removeClassicPdbLineBlock(removedFirst, {
+    moduleIndex: 0,
+    lineSubsectionIndex: 0,
+    blockIndex: 0
+  });
+  assert.deepEqual(
+    parseClassicPdb(removedLast).dbi.modules[0].c13.lines[0].blocks,
+    []
+  );
 });
 
 test("classic PDB C13 file checksums can be replaced and resized with line references remapped", () => {

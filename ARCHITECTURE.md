@@ -141,7 +141,7 @@ Replacing an EmbeddedSource payload also recomputes its Document hash for recogn
 
 `replaceClassicPdbFileChecksum` supports the C13 none, MD5, SHA-1, and SHA-256 checksum kinds, inferred from digest length unless explicitly supplied. A digest-length change rebuilds the affected C13 module and MSF stream directory, updates DBI module lengths, and remaps line-block references to shifted checksum records; reserved or shared module streams are refused.
 
-`replaceClassicPdbLineBlock` replaces the complete line list for one C13 file block, allowing line-count changes with or without columns. It rebuilds the affected module/MSF streams, updates DBI module lengths, preserves surrounding module data, and reparses the output; reserved/shared streams and unrecognized per-block payloads are refused.
+`insertClassicPdbLineBlock`, `replaceClassicPdbLineBlock`, and `removeClassicPdbLineBlock` edit C13 file blocks. Insertion validates its file-checksum reference; replacement allows line-count changes with or without columns. These edits rebuild the affected module/MSF streams, update DBI module lengths, preserve surrounding module data, and reparse the output; reserved/shared streams and unrecognized per-block payloads are refused.
 
 Unsuffixed external TypeRef names retain unknown generic arity; MemberRef validation does not assume those types are nongeneric.
 

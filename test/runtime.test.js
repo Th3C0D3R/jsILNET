@@ -16,6 +16,8 @@ import {
   insertEmbeddedPortablePdbDocument,
   replaceClassicPdbStringTableName,
   replaceClassicPdbFileChecksum,
+  insertClassicPdbLineBlock,
+  removeClassicPdbLineBlock,
   replaceClassicPdbLineBlock,
   replaceClassicPdbLineInfo,
   replaceClassicPdbSymbolName,
@@ -1775,6 +1777,34 @@ test("classic PDB parser reads a compiler-produced MSF identity", {
         .c13.lines[editableBlock.lineSubsectionIndex]
         .blocks[editableBlock.blockIndex].lines,
       expandedLines
+    );
+    const blocksBeforeInsert = pdb.dbi.modules[editableBlock.moduleIndex]
+      .c13.lines[editableBlock.lineSubsectionIndex].blocks;
+    const insertedLineBlockBytes = insertClassicPdbLineBlock(pdbBytes, {
+      moduleIndex: editableBlock.moduleIndex,
+      lineSubsectionIndex: editableBlock.lineSubsectionIndex,
+      beforeBlockIndex: editableBlock.blockIndex,
+      fileChecksumOffset: editableBlock.block.fileChecksumOffset,
+      lines: editableBlock.block.lines
+    });
+    const insertedLineBlock = parseClassicPdb(insertedLineBlockBytes);
+    assert.equal(
+      insertedLineBlock.dbi.modules[editableBlock.moduleIndex]
+        .c13.lines[editableBlock.lineSubsectionIndex].blocks.length,
+      blocksBeforeInsert.length + 1
+    );
+    const removedLineBlock = parseClassicPdb(removeClassicPdbLineBlock(
+      insertedLineBlockBytes,
+      {
+        moduleIndex: editableBlock.moduleIndex,
+        lineSubsectionIndex: editableBlock.lineSubsectionIndex,
+        blockIndex: editableBlock.blockIndex
+      }
+    ));
+    assert.deepEqual(
+      removedLineBlock.dbi.modules[editableBlock.moduleIndex]
+        .c13.lines[editableBlock.lineSubsectionIndex].blocks,
+      blocksBeforeInsert
     );
     const managedModuleIndex = pdb.dbi.modules.findIndex((module) =>
       module.symbols?.records.some((record) =>

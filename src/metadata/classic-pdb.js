@@ -1356,9 +1356,9 @@ export function replaceClassicPdbLineInfo(
   return output;
 }
 
-export function replaceClassicPdbLineBlock(
+function rewriteClassicPdbLineBlock(
   input,
-  { moduleIndex, lineSubsectionIndex, blockIndex, lines } = {}
+  { moduleIndex, lineSubsectionIndex, blockIndex, lines, fileChecksumOffset, operation }
 ) {
   const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
   for (const [value, label] of [
@@ -1370,31 +1370,52 @@ export function replaceClassicPdbLineBlock(
       throw new RangeError(`Classic PDB ${label} index must be a non-negative integer`);
     }
   }
-  if (!Array.isArray(lines) || lines.length === 0) {
-    throw new TypeError("Classic PDB line-block replacement requires a non-empty lines array");
+  if (!["replace", "insert", "remove"].includes(operation)) {
+    throw new TypeError("Classic PDB line-block operation is invalid");
+  }
+  if (!Array.isArray(lines) ||
+      (operation === "remove" ? lines.length !== 0 : lines.length === 0)) {
+    throw new TypeError(
+      operation === "remove"
+        ? "Classic PDB line-block removal does not accept replacement lines"
+        : "Classic PDB line-block replacement requires a non-empty lines array"
+    );
   }
 
   const pdb = parseClassicPdb(bytes);
   const module = pdb.dbi?.modules[moduleIndex];
   const lineSubsection = module?.c13?.lines[lineSubsectionIndex];
   const block = lineSubsection?.blocks[blockIndex];
-  if (!module || !lineSubsection || !block) {
+  if (!module || !lineSubsection ||
+      (operation !== "insert" && !block) ||
+      (operation === "insert" && blockIndex > lineSubsection.blocks.length)) {
     throw new RangeError("Classic PDB line-block location does not exist");
+  }
+  if (operation === "insert" &&
+      (!Number.isInteger(fileChecksumOffset) || fileChecksumOffset < 0 ||
+       !module.c13.fileChecksums.has(fileChecksumOffset))) {
+    throw new RangeError("Classic PDB line-block checksum location does not exist");
   }
   const hasColumns = (lineSubsection.flags & 1) !== 0;
   const allowedFields = hasColumns
     ? new Set(["offset", "startLine", "endLineDelta", "isStatement", "startColumn", "endColumn"])
     : new Set(["offset", "startLine", "endLineDelta", "isStatement"]);
   const stride = hasColumns ? 12 : 8;
-  const newBlockSize = 12 + lines.length * stride;
+  const newBlockSize = operation === "remove" ? 0 : 12 + lines.length * stride;
   if (newBlockSize > 0xffffffff) {
     throw new RangeError("Classic PDB line block exceeds its 32-bit size limit");
   }
   const rewrittenBlock = new Uint8Array(newBlockSize);
   const rewrittenBlockView = new DataView(rewrittenBlock.buffer);
-  rewrittenBlockView.setUint32(0, block.fileChecksumOffset, true);
-  rewrittenBlockView.setUint32(4, lines.length, true);
-  rewrittenBlockView.setUint32(8, newBlockSize, true);
+  if (operation !== "remove") {
+    rewrittenBlockView.setUint32(
+      0,
+      operation === "insert" ? fileChecksumOffset : block.fileChecksumOffset,
+      true
+    );
+    rewrittenBlockView.setUint32(4, lines.length, true);
+    rewrittenBlockView.setUint32(8, newBlockSize, true);
+  }
   let previousOffset = -1;
   for (const [index, line] of lines.entries()) {
     if (!line || typeof line !== "object" || Array.isArray(line) ||
@@ -1448,8 +1469,11 @@ export function replaceClassicPdbLineBlock(
   for (let index = 0; index < blockIndex; index++) {
     blockOffset += lineView.getUint32(blockOffset + 8, true);
   }
-  const oldBlockSize = lineView.getUint32(blockOffset + 8, true);
-  if (oldBlockSize !== 12 + block.lines.length * stride) {
+  const oldBlockSize = operation === "insert"
+    ? 0
+    : lineView.getUint32(blockOffset + 8, true);
+  if (operation !== "insert" &&
+      oldBlockSize !== 12 + block.lines.length * stride) {
     throw new UnsupportedFormatError(
       "Classic PDB line-block replacement cannot discard unrecognized block data"
     );
@@ -1527,6 +1551,46 @@ export function replaceClassicPdbLineBlock(
   }
   parseClassicPdb(output);
   return output;
+}
+
+export function replaceClassicPdbLineBlock(input, options = {}) {
+  const { moduleIndex, lineSubsectionIndex, blockIndex, lines } = options;
+  return rewriteClassicPdbLineBlock(input, {
+    moduleIndex,
+    lineSubsectionIndex,
+    blockIndex,
+    lines,
+    operation: "replace"
+  });
+}
+
+export function insertClassicPdbLineBlock(input, options = {}) {
+  const {
+    moduleIndex,
+    lineSubsectionIndex,
+    beforeBlockIndex,
+    fileChecksumOffset,
+    lines
+  } = options;
+  return rewriteClassicPdbLineBlock(input, {
+    moduleIndex,
+    lineSubsectionIndex,
+    blockIndex: beforeBlockIndex,
+    fileChecksumOffset,
+    lines,
+    operation: "insert"
+  });
+}
+
+export function removeClassicPdbLineBlock(input, options = {}) {
+  const { moduleIndex, lineSubsectionIndex, blockIndex } = options;
+  return rewriteClassicPdbLineBlock(input, {
+    moduleIndex,
+    lineSubsectionIndex,
+    blockIndex,
+    lines: [],
+    operation: "remove"
+  });
 }
 
 export function replaceClassicPdbFileChecksum(
