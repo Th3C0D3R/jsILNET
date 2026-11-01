@@ -137,7 +137,7 @@ Replacing an EmbeddedSource payload also recomputes its Document hash for recogn
 
 `replaceClassicPdbStringTableName` supports variable-length UTF-8 names by rebuilding MSF streams and remapping C13 checksum references to shifted `/names` offsets.
 
-`replaceClassicPdbFileChecksum` replaces an existing C13 file checksum only when the digest length remains unchanged, preserving module-stream and MSF layout.
+`replaceClassicPdbFileChecksum` supports the C13 none, MD5, SHA-1, and SHA-256 checksum kinds, inferred from digest length unless explicitly supplied. A digest-length change rebuilds the affected C13 module and MSF stream directory, updates DBI module lengths, and remaps line-block references to shifted checksum records; reserved or shared module streams are refused.
 
 Unsuffixed external TypeRef names retain unknown generic arity; MemberRef validation does not assume those types are nongeneric.
 

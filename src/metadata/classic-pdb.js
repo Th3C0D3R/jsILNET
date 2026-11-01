@@ -1257,7 +1257,7 @@ export function replaceClassicPdbLineInfo(
 
 export function replaceClassicPdbFileChecksum(
   input,
-  { moduleIndex, fileChecksumOffset, checksum } = {}
+  { moduleIndex, fileChecksumOffset, checksum, checksumKind } = {}
 ) {
   const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
   if (!Number.isInteger(moduleIndex) || moduleIndex < 0) {
@@ -1276,9 +1276,19 @@ export function replaceClassicPdbFileChecksum(
   if (!module || !originalChecksum) {
     throw new RangeError("Classic PDB file-checksum location does not exist");
   }
-  if (checksum.length !== originalChecksum.checksum.length) {
+  const checksumKinds = new Map([[0, 0], [16, 1], [20, 2], [32, 3]]);
+  const resolvedChecksumKind = checksumKind ?? checksumKinds.get(checksum.length);
+  if (!Number.isInteger(resolvedChecksumKind) || resolvedChecksumKind < 0 ||
+      resolvedChecksumKind > 3) {
     throw new UnsupportedFormatError(
-      "Classic PDB file-checksum replacement must preserve its length"
+      `Classic PDB file-checksum length ${checksum.length} has no supported checksum kind`
+    );
+  }
+  const expectedChecksumSize = new Map([[0, 0], [1, 16], [2, 20], [3, 32]])
+    .get(resolvedChecksumKind);
+  if (checksum.length !== expectedChecksumSize) {
+    throw new RangeError(
+      `Classic PDB checksum kind ${resolvedChecksumKind} requires ${expectedChecksumSize} bytes`
     );
   }
 
@@ -1293,16 +1303,139 @@ export function replaceClassicPdbFileChecksum(
     const subsection = module.c13.subsections[index];
     c13Offset += 8 + ((subsection.data.length + 3) & ~3);
   }
-  const streamOffset = module.symbolBytes + module.c11Bytes +
-    c13Offset + 8 + fileChecksumOffset + 6;
-  const output = replaceClassicPdbStreamBytes(
-    bytes,
-    pdb,
-    module.streamIndex,
-    streamOffset,
-    checksum
-  );
+  let output;
+  if (checksum.length === originalChecksum.checksum.length) {
+    const streamOffset = module.symbolBytes + module.c11Bytes +
+      c13Offset + 8 + fileChecksumOffset;
+    output = replaceClassicPdbStreamBytes(bytes, pdb, module.streamIndex, streamOffset + 4,
+      Uint8Array.of(checksum.length, resolvedChecksumKind));
+    output = replaceClassicPdbStreamBytes(
+      output,
+      pdb,
+      module.streamIndex,
+      streamOffset + 6,
+      checksum
+    );
+  } else {
+    if (module.streamIndex <= 3 || pdb.dbi.modules.some((other, index) =>
+      index !== moduleIndex && other.streamIndex === module.streamIndex
+    )) {
+      throw new UnsupportedFormatError(
+        "Classic PDB file-checksum replacement cannot resize a reserved or shared module stream"
+      );
+    }
+    const checksumOffsets = new Map();
+    const checksumData = [];
+    let checksumDataLength = 0;
+    for (const [offset, record] of module.c13.fileChecksums) {
+      const isTarget = offset === fileChecksumOffset;
+      const digest = isTarget ? checksum : record.checksum;
+      const kind = isTarget ? resolvedChecksumKind : record.checksumKind;
+      const recordLength = (6 + digest.length + 3) & ~3;
+      const recordBytes = new Uint8Array(recordLength);
+      const recordView = new DataView(recordBytes.buffer);
+      recordView.setUint32(0, record.fileNameOffset, true);
+      recordView.setUint8(4, digest.length);
+      recordView.setUint8(5, kind);
+      recordBytes.set(digest, 6);
+      checksumOffsets.set(offset, checksumDataLength);
+      checksumData.push(recordBytes);
+      checksumDataLength += recordLength;
+    }
+    const rewrittenChecksumData = new Uint8Array(checksumDataLength);
+    let checksumDataOffset = 0;
+    for (const recordBytes of checksumData) {
+      rewrittenChecksumData.set(recordBytes, checksumDataOffset);
+      checksumDataOffset += recordBytes.length;
+    }
+
+    const originalStream = pdb.streams[module.streamIndex].bytes;
+    const originalC13Offset = module.symbolBytes + module.c11Bytes;
+    const paddingBySubsection = [];
+    let subsectionOffset = 0;
+    for (const subsection of module.c13.subsections) {
+      const paddingStart = subsectionOffset + 8 + subsection.data.length;
+      const paddedEnd = (paddingStart + 3) & ~3;
+      paddingBySubsection.push(originalStream.slice(
+        originalC13Offset + paddingStart,
+        originalC13Offset + paddedEnd
+      ));
+      subsectionOffset = paddedEnd;
+    }
+    const rewrittenSubsections = module.c13.subsections.map((subsection, index) => {
+      if (subsection.kind === 0xf4) {
+        return { ...subsection, data: rewrittenChecksumData };
+      }
+      if (subsection.kind !== 0xf2) return subsection;
+      const data = Uint8Array.from(subsection.data);
+      const lineView = new DataView(data.buffer, data.byteOffset, data.byteLength);
+      let blockOffset = 12;
+      while (blockOffset < data.length) {
+        const oldOffset = lineView.getUint32(blockOffset, true);
+        const newOffset = checksumOffsets.get(oldOffset);
+        if (newOffset === undefined) {
+          throw new FormatError("Classic PDB line block references a missing file-checksum record");
+        }
+        lineView.setUint32(blockOffset, newOffset, true);
+        blockOffset += lineView.getUint32(blockOffset + 8, true);
+      }
+      return { ...subsection, data };
+    });
+    const rewrittenC13 = serializeCodeViewC13Subsections(
+      rewrittenSubsections,
+      paddingBySubsection
+    );
+    const trailingOffset = originalC13Offset + module.c13Bytes;
+    const trailingBytes = originalStream.subarray(trailingOffset);
+    const newStreamBytes = new Uint8Array(originalC13Offset + rewrittenC13.length + trailingBytes.length);
+    newStreamBytes.set(originalStream.subarray(0, originalC13Offset));
+    newStreamBytes.set(rewrittenC13, originalC13Offset);
+    newStreamBytes.set(trailingBytes, originalC13Offset + rewrittenC13.length);
+
+    const dbiBytes = Uint8Array.from(pdb.streams[3].bytes);
+    new DataView(dbiBytes.buffer).setUint32(
+      module.moduleInfoOffset + 44,
+      rewrittenC13.length,
+      true
+    );
+    output = rebuildClassicPdbStreams(pdb, new Map([
+      [module.streamIndex, newStreamBytes],
+      [3, dbiBytes]
+    ]));
+    const overlay = bytes.subarray(pdb.numBlocks * pdb.blockSize);
+    if (overlay.length > 0) {
+      const withOverlay = new Uint8Array(output.length + overlay.length);
+      withOverlay.set(output);
+      withOverlay.set(overlay, output.length);
+      output = withOverlay;
+    }
+  }
   parseClassicPdb(output);
+  return output;
+}
+
+function serializeCodeViewC13Subsections(subsections, originalPadding) {
+  let byteLength = 0;
+  for (const subsection of subsections) {
+    if (subsection.data.length > 0xffffffff) {
+      throw new UnsupportedFormatError("Classic PDB C13 subsection exceeds its size limit");
+    }
+    byteLength += 8 + ((subsection.data.length + 3) & ~3);
+  }
+  const output = new Uint8Array(byteLength);
+  const view = new DataView(output.buffer);
+  let offset = 0;
+  for (const [index, subsection] of subsections.entries()) {
+    view.setUint32(offset, subsection.kind, true);
+    view.setUint32(offset + 4, subsection.data.length, true);
+    output.set(subsection.data, offset + 8);
+    const paddingLength = ((subsection.data.length + 3) & ~3) - subsection.data.length;
+    const padding = originalPadding[index];
+    if (paddingLength > 0 && padding?.length === paddingLength) {
+      output.set(padding, offset + 8 + subsection.data.length);
+    }
+    offset += 8 + subsection.data.length + paddingLength;
+  }
   return output;
 }
 

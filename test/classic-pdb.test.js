@@ -43,39 +43,53 @@ function makeClassicPdb() {
   return bytes;
 }
 
-function makeC13LineBytes() {
-  const c13 = new Uint8Array(76);
+function makeC13LineBytes({ twoChecksums = false } = {}) {
+  const blockCount = twoChecksums ? 2 : 1;
+  const lineDataLength = 12 + blockCount * 24;
+  const checksumDataLength = blockCount * 24;
+  const checksumSubsectionOffset = 8 + lineDataLength;
+  const c13 = new Uint8Array(checksumSubsectionOffset + 8 + checksumDataLength);
   const view = new DataView(c13.buffer);
   view.setUint32(0, 0xf2, true);
-  view.setUint32(4, 36, true);
+  view.setUint32(4, lineDataLength, true);
   view.setUint32(8, 0x20, true);
   view.setUint16(12, 2, true);
   view.setUint16(14, 1, true);
   view.setUint32(16, 10, true);
-  view.setUint32(20, 0, true);
-  view.setUint32(24, 1, true);
-  view.setUint32(28, 24, true);
-  view.setUint32(32, 4, true);
-  view.setUint32(36, 0x80000005, true);
-  view.setUint16(40, 3, true);
-  view.setUint16(42, 9, true);
-  view.setUint32(44, 0xf4, true);
-  view.setUint32(48, 24, true);
-  view.setUint32(52, 1, true);
-  view.setUint8(56, 16);
-  view.setUint8(57, 1);
+  for (let index = 0; index < blockCount; index++) {
+    const blockOffset = 20 + index * 24;
+    view.setUint32(blockOffset, index * 24, true);
+    view.setUint32(blockOffset + 4, 1, true);
+    view.setUint32(blockOffset + 8, 24, true);
+    view.setUint32(blockOffset + 12, 4 + index, true);
+    view.setUint32(blockOffset + 16, 0x80000005, true);
+    view.setUint16(blockOffset + 20, 3, true);
+    view.setUint16(blockOffset + 22, 9, true);
+  }
+  view.setUint32(checksumSubsectionOffset, 0xf4, true);
+  view.setUint32(checksumSubsectionOffset + 4, checksumDataLength, true);
+  for (let index = 0; index < blockCount; index++) {
+    const checksumOffset = checksumSubsectionOffset + 8 + index * 24;
+    view.setUint32(checksumOffset, 1, true);
+    view.setUint8(checksumOffset + 4, 16);
+    view.setUint8(checksumOffset + 5, 1);
+    for (let byte = 0; byte < 16; byte++) {
+      view.setUint8(checksumOffset + 6 + byte, 0x10 + index + byte);
+    }
+  }
   return c13;
 }
 
 function makeClassicPdbWithSymbols({
   crossBlockName = false,
   withC13 = false,
-  lineInfo = false
+  lineInfo = false,
+  twoChecksums = false
 } = {}) {
   const blockSize = 512;
   const symbolBytes = crossBlockName ? 516 : 24;
   const c13Bytes = lineInfo
-    ? makeC13LineBytes()
+    ? makeC13LineBytes({ twoChecksums })
     : withC13
       ? Uint8Array.from([0x77, 0x77, 0x77, 0x77, 3, 0, 0, 0, 1, 2, 3, 0])
       : new Uint8Array();
@@ -730,7 +744,7 @@ test("classic PDB C13 line records can be edited without resizing module streams
   }), /line column fields are out of range/);
 });
 
-test("classic PDB C13 file checksums can be replaced without resizing module streams", () => {
+test("classic PDB C13 file checksums can be replaced and resized with line references remapped", () => {
   const original = makeClassicPdbWithSymbols({ lineInfo: true });
   const originalPdb = parseClassicPdb(original);
   const originalChecksum = originalPdb.dbi.modules[0].c13.fileChecksums.get(0);
@@ -757,8 +771,40 @@ test("classic PDB C13 file checksums can be replaced without resizing module str
   assert.throws(() => replaceClassicPdbFileChecksum(original, {
     moduleIndex: 0,
     fileChecksumOffset: 0,
-    checksum: new Uint8Array(20)
-  }), /must preserve its length/);
+    checksum: new Uint8Array(17)
+  }), /no supported checksum kind/);
+  assert.throws(() => replaceClassicPdbFileChecksum(original, {
+    moduleIndex: 0,
+    fileChecksumOffset: 0,
+    checksum: new Uint8Array(16),
+    checksumKind: 3
+  }), /requires 32 bytes/);
+
+  const multipleChecksums = makeClassicPdbWithSymbols({
+    lineInfo: true,
+    twoChecksums: true
+  });
+  const multiplePdb = parseClassicPdb(multipleChecksums);
+  const multipleModule = multiplePdb.dbi.modules[0];
+  assert.deepEqual([...multipleModule.c13.fileChecksums.keys()], [0, 24]);
+  assert.equal(multipleModule.c13.lines[0].blocks[1].fileChecksumOffset, 24);
+  const sha256Checksum = Uint8Array.from({ length: 32 }, (_, index) => 0x80 + index);
+  const resized = replaceClassicPdbFileChecksum(multipleChecksums, {
+    moduleIndex: 0,
+    fileChecksumOffset: 0,
+    checksum: sha256Checksum
+  });
+  const resizedPdb = parseClassicPdb(resized);
+  const resizedModule = resizedPdb.dbi.modules[0];
+  assert.deepEqual([...resizedModule.c13.fileChecksums.keys()], [0, 40]);
+  assert.deepEqual(resizedModule.c13.fileChecksums.get(0).checksum, sha256Checksum);
+  assert.equal(resizedModule.c13.fileChecksums.get(0).checksumKind, 3);
+  assert.equal(resizedModule.c13.lines[0].blocks[1].fileChecksumOffset, 40);
+  assert.deepEqual(
+    resizedModule.c13.lines[0].blocks[1].lines[0],
+    multipleModule.c13.lines[0].blocks[1].lines[0]
+  );
+  assert.equal(resizedModule.c13Bytes, multipleModule.c13Bytes + 16);
 });
 
 test("classic PDB string table resolves file names from checksum offsets", () => {
