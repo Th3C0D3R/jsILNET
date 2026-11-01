@@ -1968,9 +1968,9 @@ export function removeClassicPdbSymbol(input, { moduleIndex, recordIndex } = {})
   }
   const record = module.symbols.records[recordIndex];
   if (!record) throw new RangeError(`Classic PDB symbol record ${recordIndex} does not exist`);
-  if (!["public", "data", "constant"].includes(record.decoded?.kind)) {
+  if (!["public", "data", "constant", "threadData"].includes(record.decoded?.kind)) {
     throw new UnsupportedFormatError(
-      "Classic PDB symbol removal supports only standalone public, data, and constant symbols"
+      "Classic PDB symbol removal supports only standalone public, data, constant, and thread-data symbols"
     );
   }
   if (module.symbols.records.some((symbol) =>
@@ -2112,6 +2112,33 @@ export function insertClassicPdbDataSymbol(
     fields,
     name,
     nameLabel: "Classic PDB data-symbol names"
+  });
+}
+
+export function insertClassicPdbThreadDataSymbol(
+  input,
+  { moduleIndex, typeIndex, offset, segment, name } = {}
+) {
+  if (!Number.isInteger(typeIndex) || typeIndex < 0 || typeIndex > 0xffffffff) {
+    throw new RangeError("Classic PDB thread-data symbol type index must be an unsigned 32-bit integer");
+  }
+  if (!Number.isInteger(offset) || offset < 0 || offset > 0xffffffff) {
+    throw new RangeError("Classic PDB thread-data symbol offset must be an unsigned 32-bit integer");
+  }
+  if (!Number.isInteger(segment) || segment < 0 || segment > 0xffff) {
+    throw new RangeError("Classic PDB thread-data symbol segment must be an unsigned 16-bit integer");
+  }
+  const fields = new Uint8Array(10);
+  const view = new DataView(fields.buffer);
+  view.setUint32(0, typeIndex, true);
+  view.setUint32(4, offset, true);
+  view.setUint16(8, segment, true);
+  return insertClassicPdbModuleSymbol(input, {
+    moduleIndex,
+    kind: 0x1112,
+    fields,
+    name,
+    nameLabel: "Classic PDB thread-data symbol names"
   });
 }
 

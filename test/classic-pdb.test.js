@@ -15,7 +15,8 @@ import {
   removeClassicPdbSymbol,
   insertClassicPdbConstantSymbol,
   insertClassicPdbPublicSymbol,
-  insertClassicPdbDataSymbol
+  insertClassicPdbDataSymbol,
+  insertClassicPdbThreadDataSymbol
 } from "../src/index.js";
 import {
   parseCodeViewC13Subsections,
@@ -516,6 +517,64 @@ test("classic PDB local data symbols can be appended before module data", () => 
     segment: 1,
     name: "Invalid"
   }), /type index must be an unsigned 32-bit integer/);
+  assert.deepEqual(original, unchanged);
+});
+
+test("classic PDB local thread-data symbols can be appended and removed", () => {
+  const original = makeClassicPdbWithSymbols({
+    lineInfo: true,
+    trailingModuleBytes: Uint8Array.of(0x31, 0x32, 0x33)
+  });
+  const originalPdb = parseClassicPdb(original);
+  const originalModule = originalPdb.dbi.modules[0];
+  const originalStream = originalPdb.streams[originalModule.streamIndex];
+  const overlay = Uint8Array.of(0x91, 0x82, 0x73);
+  const overlaid = new Uint8Array(original.length + overlay.length);
+  overlaid.set(original);
+  overlaid.set(overlay, original.length);
+
+  const rewritten = insertClassicPdbThreadDataSymbol(overlaid, {
+    moduleIndex: 0,
+    typeIndex: 0x1006,
+    offset: 0x2345,
+    segment: 7,
+    name: "ThreadValue"
+  });
+  const rewrittenPdb = parseClassicPdb(rewritten);
+  const rewrittenModule = rewrittenPdb.dbi.modules[0];
+  const addedSymbol = rewrittenModule.symbols.records.at(-1).decoded;
+  assert.equal(addedSymbol.kind, "threadData");
+  assert.equal(addedSymbol.typeIndex, 0x1006);
+  assert.equal(addedSymbol.offset, 0x2345);
+  assert.equal(addedSymbol.segment, 7);
+  assert.equal(addedSymbol.name, "ThreadValue");
+  assert.deepEqual(
+    rewrittenPdb.streams[rewrittenModule.streamIndex].bytes.subarray(rewrittenModule.symbolBytes),
+    originalStream.bytes.subarray(originalModule.symbolBytes)
+  );
+  assert.deepEqual(rewritten.subarray(-overlay.length), overlay);
+
+  const removed = removeClassicPdbSymbol(rewritten, {
+    moduleIndex: 0,
+    recordIndex: rewrittenModule.symbols.records.length - 1
+  });
+  const removedPdb = parseClassicPdb(removed);
+  const removedModule = removedPdb.dbi.modules[0];
+  assert.equal(removedModule.symbols.records.length, originalModule.symbols.records.length);
+  assert.deepEqual(
+    removedPdb.streams[removedModule.streamIndex].bytes.subarray(removedModule.symbolBytes),
+    originalStream.bytes.subarray(originalModule.symbolBytes)
+  );
+  assert.deepEqual(removed.subarray(-overlay.length), overlay);
+
+  const unchanged = Uint8Array.from(original);
+  assert.throws(() => insertClassicPdbThreadDataSymbol(original, {
+    moduleIndex: 0,
+    typeIndex: 0x1006,
+    offset: 1,
+    segment: 0x10000,
+    name: "Invalid"
+  }), /unsigned 16-bit integer/);
   assert.deepEqual(original, unchanged);
 });
 
