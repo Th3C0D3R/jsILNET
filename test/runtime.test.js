@@ -14,6 +14,7 @@ import {
   parsePE,
   replaceEmbeddedPortablePdbDocumentName,
   replaceClassicPdbStringTableName,
+  replaceClassicPdbLineInfo,
   replaceClassicPdbSymbolName,
   replaceEmbeddedPortablePdbSequencePoints,
   replaceEmbeddedPortablePdbSourceLink,
@@ -295,8 +296,15 @@ test("classic PDB parser reads a compiler-produced MSF identity", {
       "  </PropertyGroup>",
       "</Project>"
     ].join("\n"));
-    await writeFile(join(directory, "Class1.cs"),
-      "public static class ClassicPdb { public static int Answer() => 42; }");
+    await writeFile(join(directory, "Class1.cs"), [
+      "public static class ClassicPdb {",
+      "  public static int Answer()",
+      "  {",
+      "    var value = 40;",
+      "    return value + 2;",
+      "  }",
+      "}"
+    ].join("\n"));
     const build = spawnSync(
       "dotnet",
       ["build", project, "--configuration", "Debug", "--output", output, "--nologo"],
@@ -343,6 +351,41 @@ test("classic PDB parser reads a compiler-produced MSF identity", {
         )
       )
     ));
+    const editableLine = pdb.dbi.modules.flatMap((module, moduleIndex) =>
+      module.c13?.lines.flatMap((line, lineSubsectionIndex) =>
+        line.blocks.flatMap((block, blockIndex) =>
+          block.lines.map((record, lineIndex) => ({
+            moduleIndex,
+            lineSubsectionIndex,
+            blockIndex,
+            lineIndex,
+            record
+          }))
+        )
+      ) ?? []
+    ).find((entry, index, entries) =>
+      index > 0 && entry.record.offset !== entries[0].record.offset
+    );
+    assert.ok(editableLine);
+    const changedLineOffset = editableLine.record.offset === 0
+      ? 1
+      : editableLine.record.offset - 1;
+    const editedPdbBytes = replaceClassicPdbLineInfo(pdbBytes, {
+      moduleIndex: editableLine.moduleIndex,
+      lineSubsectionIndex: editableLine.lineSubsectionIndex,
+      blockIndex: editableLine.blockIndex,
+      lineIndex: editableLine.lineIndex,
+      line: { offset: changedLineOffset }
+    });
+    const editedPdb = parseClassicPdb(editedPdbBytes);
+    assert.equal(
+      editedPdb.dbi.modules[editableLine.moduleIndex]
+        .c13.lines[editableLine.lineSubsectionIndex]
+        .blocks[editableLine.blockIndex]
+        .lines[editableLine.lineIndex].offset,
+      changedLineOffset
+    );
+    assert.equal(editedPdbBytes.length, pdbBytes.length);
     const managedModuleIndex = pdb.dbi.modules.findIndex((module) =>
       module.symbols?.records.some((record) =>
         record.decoded?.kind === "managedProcedure" && record.decoded.name === "Answer"

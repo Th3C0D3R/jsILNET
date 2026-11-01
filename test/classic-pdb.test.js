@@ -139,7 +139,7 @@ function makeClassicPdbWithSymbols({
   symbolView.setUint32(symbolRecordOffset + 4, 1, true);
   symbolView.setUint32(symbolRecordOffset + 8, 0x20, true);
   symbolView.setUint16(symbolRecordOffset + 12, 1, true);
-  symbolStream.set([0x70, 0x75, 0x62, 0, 0xf2, 0xf2], symbolRecordOffset + 14);
+  symbolStream.set([0x70, 0x75, 0x62, 0, 0xf2, 0xf1], symbolRecordOffset + 14);
   bytes.set(symbolStream.subarray(0, blockSize), blockSize * 7);
   if (crossBlockName) bytes.set(symbolStream.subarray(blockSize), blockSize * 8);
   return bytes;
@@ -377,7 +377,7 @@ test("classic PDB symbol decoding exposes public, data, and procedure names", ()
     4, 0, 0, 0,
     18, 0, 0x0e, 0x11,
     1, 0, 0, 0, 0x44, 0x33, 0x22, 0x11, 3, 0,
-    0x70, 0x75, 0x62, 0, 0xf2, 0xf2
+    0x70, 0x75, 0x62, 0, 0xf2, 0xf1
   ]);
   assert.deepEqual(parseCodeViewSymbolRecords(publicRecord).records[0].decoded, {
     kind: "public",
@@ -386,6 +386,9 @@ test("classic PDB symbol decoding exposes public, data, and procedure names", ()
     segment: 3,
     name: "pub"
   });
+  const invalidPublicPadding = publicRecord.slice();
+  invalidPublicPadding[23] = 0xf2;
+  assert.throws(() => parseCodeViewSymbolRecords(invalidPublicPadding), /invalid CodeView padding/);
 
   const data = new Uint8Array(4 + 2 + 2 + 10 + 4);
   const view = new DataView(data.buffer);
@@ -493,6 +496,17 @@ test("classic PDB symbol decoding exposes public, data, and procedure names", ()
     offset: 0x40,
     segment: 3,
     name: "b"
+  });
+  const emptyBlock = block.slice();
+  emptyBlock.fill(0, 18);
+  assert.deepEqual(decodeRecord(0x1103, emptyBlock), {
+    kind: "block",
+    parent: 1,
+    end: 2,
+    codeSize: 0x30,
+    offset: 0x40,
+    segment: 3,
+    name: ""
   });
   const withScope = block.slice();
   withScope.set([0x78, 0], 18);

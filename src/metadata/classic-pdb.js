@@ -248,12 +248,12 @@ function readCodeViewName(bytes, offset, context, allowZeroPadding = false) {
   if (end < 0) throw new FormatError(`Classic PDB ${context} name is not null-terminated`);
   const padding = bytes.subarray(end + 1);
   if (padding.length > 0) {
-    const marker = padding[padding.length - 1];
-    const paddingLength = marker - 0xf0;
+    const paddingLength = padding[0] - 0xf0;
+    const validPadding = paddingLength === padding.length &&
+      padding.every((byte, index) => byte === 0xf0 + padding.length - index);
     const zeroPadding = allowZeroPadding && padding.length <= 3 &&
       padding.every((byte) => byte === 0);
-    if (!zeroPadding &&
-        (paddingLength !== padding.length || padding.some((byte) => byte !== marker))) {
+    if (!zeroPadding && !validPadding) {
       throw new FormatError(`Classic PDB ${context} name has invalid CodeView padding`);
     }
   }
@@ -335,7 +335,7 @@ function decodeCodeViewSymbol(kind, data) {
       codeSize: view.getUint32(8, true),
       offset: view.getUint32(12, true),
       segment: view.getUint16(16, true),
-      name: readCodeViewName(data, 18, "block")
+      name: readCodeViewName(data, 18, "block", true)
     };
   }
   if (kind === 0x1104) {
@@ -1282,7 +1282,9 @@ export function replaceClassicPdbSymbolName(input, { moduleIndex, recordIndex, n
   replacementData.set(replacement, nameOffset);
   replacementData[nameOffset + replacement.length] = 0;
   if (paddingSize > 0) {
-    replacementData.fill(0xf0 + paddingSize, nameOffset + replacement.length + 1);
+    for (let index = 0; index < paddingSize; index++) {
+      replacementData[nameOffset + replacement.length + 1 + index] = 0xf0 + paddingSize - index;
+    }
   }
   const recordSize = 4 + replacementData.length;
   const recordBytes = new Uint8Array(recordSize);
