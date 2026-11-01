@@ -20,6 +20,8 @@ import {
   replaceEmbeddedPortablePdbSequencePoints,
   replaceEmbeddedPortablePdbSourceLink,
   addEmbeddedPortablePdbSourceLink,
+  removeEmbeddedPortablePdbSourceLink,
+  removeEmbeddedPortablePdbSource,
   addEmbeddedPortablePdbSource,
   replaceEmbeddedPortablePdbSource,
   serializeEmbeddedPortablePdb
@@ -2313,6 +2315,15 @@ test("strong-name signed PE32+ assemblies load and execute in .NET", {
         () => addEmbeddedPortablePdbSourceLink(reparsedSourceLink, sourceLinkPdb),
         /already has a module-scoped SourceLink record/
       );
+      const sourceLinkFreePdbBytes = removeEmbeddedPortablePdbSourceLink(reparsedSourceLink);
+      const sourceLinkFreePdb = parseEmbeddedPortablePdbData(
+        sourceLinkFreePdbBytes,
+        0,
+        sourceLinkFreePdbBytes.length
+      );
+      assert.equal(sourceLinkFreePdb.customDebugInformation.some((record) =>
+        record.kind === "cc110556-a091-4d38-9fec-25ab9a351a6a"
+      ), false);
       const sourceLinkAssembly = parseAssembly(assemblyBytes);
       const sourceLinkDebugIndex = sourceLinkAssembly.pe.debugDirectoryEntries.findIndex((entry) =>
         entry.embeddedPortablePdb
@@ -2322,14 +2333,19 @@ test("strong-name signed PE32+ assemblies load and execute in .NET", {
         sourceLinkPdb
       );
       const sourceLinkAssemblyReparsed = parseAssembly(sourceLinkAssembly.serialize());
-      assert.deepEqual(
-        sourceLinkAssemblyReparsed.pe.debugDirectoryEntries
-          .find((entry) => entry.embeddedPortablePdb)
-          .embeddedPortablePdb.customDebugInformation.find((record) =>
-            record.kind === "cc110556-a091-4d38-9fec-25ab9a351a6a"
-          ).sourceLink,
-        sourceLinkPdb
+      const sourceLinkAssemblyEntry = sourceLinkAssemblyReparsed.pe.debugDirectoryEntries
+        .find((entry) => entry.embeddedPortablePdb);
+      assert.deepEqual(sourceLinkAssemblyEntry.embeddedPortablePdb.customDebugInformation.find(
+        (record) => record.kind === "cc110556-a091-4d38-9fec-25ab9a351a6a"
+      ).sourceLink, sourceLinkPdb);
+      sourceLinkAssemblyReparsed.removeEmbeddedPortablePdbSourceLink(
+        sourceLinkAssemblyReparsed.pe.debugDirectoryEntries.indexOf(sourceLinkAssemblyEntry)
       );
+      assert.equal(parseAssembly(sourceLinkAssemblyReparsed.serialize())
+        .pe.debugDirectoryEntries.find((entry) => entry.embeddedPortablePdb)
+        .embeddedPortablePdb.customDebugInformation.some((record) =>
+          record.kind === "cc110556-a091-4d38-9fec-25ab9a351a6a"
+        ), false);
     }
     const embeddedSourceRecord = embeddedPdb.customDebugInformation.find((record) =>
       record.embeddedSource instanceof Uint8Array
@@ -2416,6 +2432,19 @@ test("strong-name signed PE32+ assemblies load and execute in .NET", {
       embeddedSourceRecord.Parent.target.rid,
       changedSource
     ), /already has an EmbeddedSource record/);
+    const sourceRemovedPdbBytes = removeEmbeddedPortablePdbSource(
+      addedSourcePdb,
+      embeddedSourceRecord.Parent.target.rid
+    );
+    const sourceRemovedPdb = parseEmbeddedPortablePdbData(
+      sourceRemovedPdbBytes,
+      0,
+      sourceRemovedPdbBytes.length
+    );
+    assert.equal(sourceRemovedPdb.customDebugInformation.some((record) =>
+      record.kind === embeddedSourceRecord.kind &&
+      record.Parent.target.rid === embeddedSourceRecord.Parent.target.rid
+    ), false);
     const sourceAddedAssembly = parseAssembly(assemblyBytes);
     const sourceAddedDebugIndex = sourceAddedAssembly.pe.debugDirectoryEntries.findIndex((entry) =>
       entry.embeddedPortablePdb
@@ -2430,12 +2459,24 @@ test("strong-name signed PE32+ assemblies load and execute in .NET", {
       embeddedSourceRecord.Parent.target.rid,
       changedSource
     );
-    assert.ok(parseAssembly(sourceAddedReparsed.serialize()).pe.debugDirectoryEntries
+    const sourceAddedFinal = parseAssembly(sourceAddedReparsed.serialize());
+    const sourceAddedFinalEntry = sourceAddedFinal.pe.debugDirectoryEntries.find(
+      (entry) => entry.embeddedPortablePdb
+    );
+    assert.ok(sourceAddedFinalEntry.embeddedPortablePdb.customDebugInformation.some((record) =>
+      record.kind === embeddedSourceRecord.kind &&
+      record.Parent.target.rid === embeddedSourceRecord.Parent.target.rid
+    ));
+    sourceAddedFinal.removeEmbeddedPortablePdbSource(
+      sourceAddedFinal.pe.debugDirectoryEntries.indexOf(sourceAddedFinalEntry),
+      embeddedSourceRecord.Parent.target.rid
+    );
+    assert.equal(parseAssembly(sourceAddedFinal.serialize()).pe.debugDirectoryEntries
       .find((entry) => entry.embeddedPortablePdb)
       .embeddedPortablePdb.customDebugInformation.some((record) =>
         record.kind === embeddedSourceRecord.kind &&
         record.Parent.target.rid === embeddedSourceRecord.Parent.target.rid
-      ));
+      ), false);
     const nilHashRows = new Map(embeddedPdb.tables.rows);
     nilHashRows.set(48, embeddedPdb.tables.rows.get(48).map((row) =>
       row.rid === changedDocument.rid ? { ...row, HashAlgorithm: 0 } : { ...row }

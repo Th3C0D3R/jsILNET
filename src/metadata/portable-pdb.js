@@ -2197,6 +2197,60 @@ export function addEmbeddedPortablePdbSource(pdb, documentRid, source, { compres
   });
 }
 
+export function removeEmbeddedPortablePdbSource(pdb, documentRid) {
+  if (!pdb?.metadataRoot?.streams || !(pdb.tables?.rows instanceof Map) ||
+      !Array.isArray(pdb.tables.counts) || !Array.isArray(pdb.customDebugInformation)) {
+    throw new TypeError("Portable PDB EmbeddedSource editing requires parsed PDB data");
+  }
+  if (!Number.isInteger(documentRid) || documentRid < 1 ||
+      documentRid > pdb.tables.counts[48]) {
+    throw new RangeError(`Invalid Portable PDB Document row ID ${documentRid}`);
+  }
+  const debugInfo = pdb.customDebugInformation.find((row) =>
+    row.kind === embeddedSourceKind &&
+    row.Parent.target?.table === 48 &&
+    row.Parent.target.rid === documentRid
+  );
+  if (!debugInfo) {
+    throw new UnsupportedFormatError(
+      `Portable PDB Document row ${documentRid} has no EmbeddedSource record`
+    );
+  }
+  return removePortablePdbCustomDebugInformation(pdb, debugInfo);
+}
+
+function removePortablePdbCustomDebugInformation(pdb, debugInfo) {
+  const rowsForDebugInformation = pdb.tables.rows.get(55) ?? [];
+  if (rowsForDebugInformation.length !== pdb.tables.counts[55]) {
+    throw new FormatError("Portable PDB CustomDebugInformation row count is inconsistent");
+  }
+  const row = rowsForDebugInformation[debugInfo.rid - 1];
+  if (!row || row.rid !== debugInfo.rid || row.Kind === 0) {
+    throw new FormatError(
+      `Portable PDB CustomDebugInformation row ${debugInfo.rid} is missing`
+    );
+  }
+  const debugRows = rowsForDebugInformation
+    .filter((record) => record.rid !== debugInfo.rid)
+    .map((record, index) => ({ ...record, rid: index + 1 }));
+  const rows = new Map(pdb.tables.rows);
+  if (debugRows.length > 0) rows.set(55, debugRows);
+  else rows.delete(55);
+  const counts = [...pdb.tables.counts];
+  counts[55] = debugRows.length;
+  return serializeEmbeddedPortablePdb({
+    ...pdb,
+    tables: {
+      ...pdb.tables,
+      valid: debugRows.length > 0
+        ? pdb.tables.valid | (1n << 55n)
+        : pdb.tables.valid & ~(1n << 55n),
+      counts,
+      rows
+    }
+  });
+}
+
 function getPortablePdbDocumentHashName(pdb, documentRow) {
   const hashAlgorithmBytes = pdb.heaps.getGuid(documentRow.HashAlgorithm);
   const hashAlgorithm = hashAlgorithmBytes ? formatGuid(hashAlgorithmBytes) : null;
@@ -2352,4 +2406,18 @@ export function replaceEmbeddedPortablePdbSourceLink(pdb, sourceLink) {
     debugInfo,
     encoded
   );
+}
+
+export function removeEmbeddedPortablePdbSourceLink(pdb) {
+  if (!pdb?.metadataRoot?.streams || !(pdb.tables?.rows instanceof Map) ||
+      !Array.isArray(pdb.tables.counts) || !Array.isArray(pdb.customDebugInformation)) {
+    throw new TypeError("Portable PDB SourceLink editing requires parsed PDB data");
+  }
+  const debugInfo = pdb.customDebugInformation.find((row) =>
+    row.kind === sourceLinkKind && row.Parent.target?.table === 0
+  );
+  if (!debugInfo) {
+    throw new UnsupportedFormatError("Portable PDB has no module-scoped SourceLink record");
+  }
+  return removePortablePdbCustomDebugInformation(pdb, debugInfo);
 }
