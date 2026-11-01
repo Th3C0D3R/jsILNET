@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   parseClassicPdb,
+  replaceClassicPdbFileChecksum,
   replaceClassicPdbLineInfo,
   replaceClassicPdbStringTableName,
   replaceClassicPdbSymbolName
@@ -43,7 +44,7 @@ function makeClassicPdb() {
 }
 
 function makeC13LineBytes() {
-  const c13 = new Uint8Array(60);
+  const c13 = new Uint8Array(76);
   const view = new DataView(c13.buffer);
   view.setUint32(0, 0xf2, true);
   view.setUint32(4, 36, true);
@@ -59,8 +60,10 @@ function makeC13LineBytes() {
   view.setUint16(40, 3, true);
   view.setUint16(42, 9, true);
   view.setUint32(44, 0xf4, true);
-  view.setUint32(48, 8, true);
+  view.setUint32(48, 24, true);
   view.setUint32(52, 1, true);
+  view.setUint8(56, 16);
+  view.setUint8(57, 1);
   return c13;
 }
 
@@ -725,6 +728,37 @@ test("classic PDB C13 line records can be edited without resizing module streams
     lineIndex: 0,
     line: { startColumn: 16, endColumn: 15 }
   }), /line column fields are out of range/);
+});
+
+test("classic PDB C13 file checksums can be replaced without resizing module streams", () => {
+  const original = makeClassicPdbWithSymbols({ lineInfo: true });
+  const originalPdb = parseClassicPdb(original);
+  const originalChecksum = originalPdb.dbi.modules[0].c13.fileChecksums.get(0);
+  assert.equal(originalChecksum.checksumKind, 1);
+  assert.equal(originalChecksum.checksum.length, 16);
+
+  const checksum = Uint8Array.from({ length: 16 }, (_, index) => 0xa0 + index);
+  const rewritten = replaceClassicPdbFileChecksum(original, {
+    moduleIndex: 0,
+    fileChecksumOffset: 0,
+    checksum
+  });
+  const rewrittenPdb = parseClassicPdb(rewritten);
+  assert.deepEqual(rewrittenPdb.dbi.modules[0].c13.fileChecksums.get(0).checksum, checksum);
+  assert.deepEqual(
+    rewrittenPdb.dbi.modules[0].c13.lines[0].blocks[0].lines[0],
+    originalPdb.dbi.modules[0].c13.lines[0].blocks[0].lines[0]
+  );
+  assert.equal(rewritten.length, original.length);
+  assert.deepEqual(
+    parseClassicPdb(original).dbi.modules[0].c13.fileChecksums.get(0).checksum,
+    originalChecksum.checksum
+  );
+  assert.throws(() => replaceClassicPdbFileChecksum(original, {
+    moduleIndex: 0,
+    fileChecksumOffset: 0,
+    checksum: new Uint8Array(20)
+  }), /must preserve its length/);
 });
 
 test("classic PDB string table resolves file names from checksum offsets", () => {

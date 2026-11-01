@@ -1255,6 +1255,57 @@ export function replaceClassicPdbLineInfo(
   return output;
 }
 
+export function replaceClassicPdbFileChecksum(
+  input,
+  { moduleIndex, fileChecksumOffset, checksum } = {}
+) {
+  const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
+  if (!Number.isInteger(moduleIndex) || moduleIndex < 0) {
+    throw new RangeError("Classic PDB module index must be a non-negative integer");
+  }
+  if (!Number.isInteger(fileChecksumOffset) || fileChecksumOffset < 0) {
+    throw new RangeError("Classic PDB file-checksum offset must be a non-negative integer");
+  }
+  if (!(checksum instanceof Uint8Array)) {
+    throw new TypeError("Classic PDB file checksum must be a Uint8Array");
+  }
+
+  const pdb = parseClassicPdb(bytes);
+  const module = pdb.dbi?.modules[moduleIndex];
+  const originalChecksum = module?.c13?.fileChecksums.get(fileChecksumOffset);
+  if (!module || !originalChecksum) {
+    throw new RangeError("Classic PDB file-checksum location does not exist");
+  }
+  if (checksum.length !== originalChecksum.checksum.length) {
+    throw new UnsupportedFormatError(
+      "Classic PDB file-checksum replacement must preserve its length"
+    );
+  }
+
+  const checksumSubsectionIndex = module.c13.subsections.findIndex(
+    (subsection) => subsection.kind === 0xf4
+  );
+  if (checksumSubsectionIndex < 0) {
+    throw new FormatError("Classic PDB file-checksum subsection is missing");
+  }
+  let c13Offset = 0;
+  for (let index = 0; index < checksumSubsectionIndex; index++) {
+    const subsection = module.c13.subsections[index];
+    c13Offset += 8 + ((subsection.data.length + 3) & ~3);
+  }
+  const streamOffset = module.symbolBytes + module.c11Bytes +
+    c13Offset + 8 + fileChecksumOffset + 6;
+  const output = replaceClassicPdbStreamBytes(
+    bytes,
+    pdb,
+    module.streamIndex,
+    streamOffset,
+    checksum
+  );
+  parseClassicPdb(output);
+  return output;
+}
+
 export function replaceClassicPdbSymbolName(input, { moduleIndex, recordIndex, name } = {}) {
   const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
   if (!Number.isInteger(moduleIndex) || moduleIndex < 0) {
