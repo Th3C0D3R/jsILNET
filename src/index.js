@@ -1041,7 +1041,9 @@ function getCustomAttributeConstructor(assembly, attribute, resolveEnum) {
     throw new FormatError(`CustomAttribute row ${attribute.rid} does not reference a supported constructor`);
   }
   const signature = parseSignature(method.signature);
-  if (signature.kind !== "method" || !signature.hasThis || signature.generic) {
+  if (signature.kind !== "method" || signature.callingConvention !== 0 ||
+      !signature.hasThis || signature.explicitThis || signature.generic ||
+      signature.sentinelIndex !== null) {
     throw new UnsupportedFormatError(`CustomAttribute row ${attribute.rid} has an unsupported constructor signature`);
   }
   if (signature.returnType.kind !== "primitive" || signature.returnType.elementType !== 0x01) {
