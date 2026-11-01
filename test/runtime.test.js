@@ -655,6 +655,7 @@ test("strong-name signed PE32+ assemblies load and execute in .NET", {
       "public static class RuntimeLibrary",
       "{",
       "    public static int Answer() => 42;",
+      "    public static T Echo<T>(T value) => value;",
       "    public static int WithLocal(int value) { int adjusted = value + 1; return adjusted; }",
       "}",
       "public class Outer",
@@ -1433,6 +1434,7 @@ test("strong-name signed PE32+ assemblies load and execute in .NET", {
       "var type = assembly.GetType(\"RuntimeLibrary\")",
       "    ?? throw new InvalidOperationException(\"RuntimeLibrary was not found\");",
       "Console.WriteLine(type.GetMethod(\"Answer\")!.Invoke(null, null));",
+      "Console.WriteLine(type.GetMethod(\"Echo\")!.MakeGenericMethod(typeof(string)).Invoke(null, new object[] { \"generic\" }));",
       "var methodAddedAssembly = Assembly.LoadFile(Path.GetFullPath(args[1]));",
       "var addedMethod = methodAddedAssembly.GetTypes()",
       "    .SelectMany(type => type.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance | BindingFlags.DeclaredOnly))",
@@ -1472,7 +1474,8 @@ test("strong-name signed PE32+ assemblies load and execute in .NET", {
     );
     assert.equal(runtime.status, 0, runtime.stderr || runtime.stdout || runtime.error?.message);
     const runtimeOutput = runtime.stdout.trim().split(/\r?\n/);
-    assert.equal(runtimeOutput.at(-5), "42");
+    assert.equal(runtimeOutput.at(-6), "42");
+    assert.equal(runtimeOutput.at(-5), "generic");
     assert.equal(runtimeOutput.at(-4), "method-added");
     assert.equal(runtimeOutput.at(-3), "method-shifted");
     assert.equal(runtimeOutput.at(-2), "local-sig-inserted:42");
