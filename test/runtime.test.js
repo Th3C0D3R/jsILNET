@@ -863,6 +863,49 @@ test("strong-name signed PE32+ assemblies load and execute in .NET", {
     assert.ok(genericAttributeType);
     assert.ok(genericAttribute);
     assert.deepEqual(assembly.parseCustomAttribute(genericAttribute.rid).fixedArguments, [42]);
+    const genericMutationAssembly = parseAssembly(assemblyBytes);
+    const genericMutationOwner = genericMutationAssembly.types.find((type) =>
+      type.name === "GenericDataTarget"
+    );
+    assert.ok(genericMutationOwner);
+    const genericMutationPdbIndex = genericMutationAssembly.pe.debugDirectoryEntries.findIndex(
+      (entry) => entry.embeddedPortablePdb
+    );
+    const genericMutationPdb =
+      genericMutationAssembly.pe.debugDirectoryEntries[genericMutationPdbIndex]
+        .embeddedPortablePdb;
+    stripPortablePdbMethodCustomDebugInformation(genericMutationPdb);
+    genericMutationAssembly.replaceEmbeddedPortablePdb(
+      genericMutationPdbIndex,
+      serializeEmbeddedPortablePdb(genericMutationPdb)
+    );
+    const genericMutationToken = genericMutationAssembly.addMethod({
+      owner: { table: "TypeDef", rid: genericMutationOwner.rid },
+      name: "EchoAddedGeneric",
+      flags: 0x0096,
+      signature: Uint8Array.of(0x10, 0x01, 0x01, 0x1e, 0x00, 0x1e, 0x00),
+      body: Uint8Array.of(0x0a, 0x02, 0x2a)
+    });
+    const genericMutationRid = genericMutationToken & 0x00ffffff;
+    genericMutationAssembly.addGenericParam({
+      owner: { table: "MethodDef", rid: genericMutationRid },
+      name: "T",
+      number: 0
+    });
+    const genericMutationPath = join(libraryDirectory, "RuntimeLibrary.GenericAdded.dll");
+    const genericMutationBytes = genericMutationAssembly.serialize();
+    const reparsedGenericMutation = parseAssembly(genericMutationBytes);
+    assert.equal(
+      reparsedGenericMutation.methods[genericMutationRid - 1].genericParams[0].name,
+      "T"
+    );
+    assert.equal(
+      reparsedGenericMutation.pe.debugDirectoryEntries.find((entry) =>
+        entry.embeddedPortablePdb
+      ).embeddedPortablePdb.rowCounts.get(6),
+      reparsedGenericMutation.methods.length
+    );
+    await writeFile(genericMutationPath, genericMutationBytes);
     const invalidGenericAttributeAssembly = parseAssembly(assemblyBytes);
     const invalidGenericAttributeType = invalidGenericAttributeAssembly.types.find((type) =>
       type.name === "GenericDataAttribute`1"
@@ -1575,6 +1618,9 @@ test("strong-name signed PE32+ assemblies load and execute in .NET", {
       "    ?? throw new InvalidOperationException(\"RuntimeLibrary was not found\");",
       "Console.WriteLine(type.GetMethod(\"Answer\")!.Invoke(null, null));",
       "Console.WriteLine(type.GetMethod(\"Echo\")!.MakeGenericMethod(typeof(string)).Invoke(null, new object[] { \"generic\" }));",
+      "var mutatedGenericAssembly = Assembly.LoadFile(Path.GetFullPath(args[5]));",
+      "var addedGenericMethod = mutatedGenericAssembly.GetType(\"GenericDataTarget\")!.GetMethod(\"EchoAddedGeneric\")!;",
+      "Console.WriteLine(addedGenericMethod.MakeGenericMethod(typeof(string)).Invoke(null, new object[] { \"mutated\" }));",
       "var methodAddedAssembly = Assembly.LoadFile(Path.GetFullPath(args[1]));",
       "var addedMethod = methodAddedAssembly.GetTypes()",
       "    .SelectMany(type => type.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance | BindingFlags.DeclaredOnly))",
@@ -1608,14 +1654,16 @@ test("strong-name signed PE32+ assemblies load and execute in .NET", {
         methodAddPath,
         shiftedMethodPath,
         insertedLocalSignaturePath,
-        restoredLocalSignaturePath
+        restoredLocalSignaturePath,
+        genericMutationPath
       ],
       { encoding: "utf8", timeout: 120_000 }
     );
     assert.equal(runtime.status, 0, runtime.stderr || runtime.stdout || runtime.error?.message);
     const runtimeOutput = runtime.stdout.trim().split(/\r?\n/);
-    assert.equal(runtimeOutput.at(-6), "42");
-    assert.equal(runtimeOutput.at(-5), "generic");
+    assert.equal(runtimeOutput.at(-7), "42");
+    assert.equal(runtimeOutput.at(-6), "generic");
+    assert.equal(runtimeOutput.at(-5), "mutated");
     assert.equal(runtimeOutput.at(-4), "method-added");
     assert.equal(runtimeOutput.at(-3), "method-shifted");
     assert.equal(runtimeOutput.at(-2), "local-sig-inserted:42");
