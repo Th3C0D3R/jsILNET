@@ -1779,6 +1779,15 @@ function serializeCodeViewC13Subsections(subsections, originalPadding) {
   return output;
 }
 
+function appendClassicPdbOverlay(bytes, pdb, output) {
+  const overlay = bytes.subarray(pdb.numBlocks * pdb.blockSize);
+  if (overlay.length === 0) return output;
+  const outputWithOverlay = new Uint8Array(output.length + overlay.length);
+  outputWithOverlay.set(output);
+  outputWithOverlay.set(overlay, output.length);
+  return outputWithOverlay;
+}
+
 function rebuildClassicPdbC13Module(bytes, pdb, moduleIndex, subsections) {
   const module = pdb.dbi?.modules[moduleIndex];
   const originalStream = module && pdb.streams[module.streamIndex]?.bytes;
@@ -1836,12 +1845,87 @@ function rebuildClassicPdbC13Module(bytes, pdb, moduleIndex, subsections) {
     [module.streamIndex, rewrittenModuleStream],
     [3, rewrittenDbi]
   ]));
-  const overlay = bytes.subarray(pdb.numBlocks * pdb.blockSize);
-  if (overlay.length > 0) {
-    const withOverlay = new Uint8Array(output.length + overlay.length);
-    withOverlay.set(output);
-    withOverlay.set(overlay, output.length);
-    output = withOverlay;
+  output = appendClassicPdbOverlay(bytes, pdb, output);
+  parseClassicPdb(output);
+  return output;
+}
+
+export function removeClassicPdbSymbol(input, { moduleIndex, recordIndex } = {}) {
+  const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
+  if (!Number.isInteger(moduleIndex) || moduleIndex < 0) {
+    throw new RangeError("Classic PDB module index must be a non-negative integer");
+  }
+  if (!Number.isInteger(recordIndex) || recordIndex < 0) {
+    throw new RangeError("Classic PDB symbol record index must be a non-negative integer");
+  }
+  const pdb = parseClassicPdb(bytes);
+  const module = pdb.dbi?.modules[moduleIndex];
+  if (!module?.symbols) {
+    throw new RangeError(`Classic PDB module ${moduleIndex} has no symbol records`);
+  }
+  const record = module.symbols.records[recordIndex];
+  if (!record) throw new RangeError(`Classic PDB symbol record ${recordIndex} does not exist`);
+  if (!["public", "data", "constant"].includes(record.decoded?.kind)) {
+    throw new UnsupportedFormatError(
+      "Classic PDB symbol removal supports only standalone public, data, and constant symbols"
+    );
+  }
+  if (module.symbols.records.some((symbol) =>
+    codeViewScopeSymbolKinds.has(symbol.kind) || symbol.decoded === undefined
+  )) {
+    throw new UnsupportedFormatError(
+      "Classic PDB symbol removal cannot rewrite modules with scoped or unknown symbols"
+    );
+  }
+  if (module.streamIndex <= 3 || pdb.dbi.modules.some((other, index) =>
+    index !== moduleIndex && other.streamIndex === module.streamIndex
+  )) {
+    throw new UnsupportedFormatError(
+      "Classic PDB symbol removal requires a dedicated module stream"
+    );
+  }
+  const stream = pdb.streams[module.streamIndex];
+  const recordSize = 4 + record.data.length;
+  const newSymbolBytes = module.symbolBytes - recordSize;
+  const newStreamSize = stream.size - recordSize;
+  if (newSymbolBytes < 4 || newSymbolBytes > 0xffffffff ||
+      newStreamSize < newSymbolBytes || newStreamSize > 0xffffffff) {
+    throw new UnsupportedFormatError("Classic PDB symbol removal exceeds supported stream-size limits");
+  }
+  const streamBytes = new Uint8Array(newStreamSize);
+  streamBytes.set(stream.bytes.subarray(0, record.offset));
+  streamBytes.set(
+    stream.bytes.subarray(record.offset + recordSize),
+    record.offset
+  );
+  const dbiBytes = Uint8Array.from(pdb.streams[3].bytes);
+  const updatedSymbolBytes = new Uint8Array(4);
+  new DataView(updatedSymbolBytes.buffer).setUint32(0, newSymbolBytes, true);
+  dbiBytes.set(updatedSymbolBytes, module.moduleInfoOffset + 36);
+  let output;
+  if (Math.ceil(newStreamSize / pdb.blockSize) !== stream.blockIndices.length) {
+    output = rebuildClassicPdbStreams(pdb, new Map([
+      [module.streamIndex, streamBytes],
+      [3, dbiBytes]
+    ]));
+    output = appendClassicPdbOverlay(bytes, pdb, output);
+  } else {
+    output = writeClassicPdbStream(bytes, pdb, module.streamIndex, streamBytes);
+    output = replaceClassicPdbStreamBytes(
+      output,
+      pdb,
+      3,
+      module.moduleInfoOffset + 36,
+      updatedSymbolBytes
+    );
+    const updatedStreamSize = new Uint8Array(4);
+    new DataView(updatedStreamSize.buffer).setUint32(0, newStreamSize, true);
+    output = replaceClassicPdbDirectoryBytes(
+      output,
+      pdb,
+      4 + 4 * module.streamIndex,
+      updatedStreamSize
+    );
   }
   parseClassicPdb(output);
   return output;
@@ -1890,7 +1974,7 @@ export function replaceClassicPdbSymbolName(input, { moduleIndex, recordIndex, n
   const newSymbolBytes = module.symbolBytes + sizeDelta;
   const newStreamSize = stream.size + sizeDelta;
   if (sizeDelta !== 0 && module.symbols.records.some((symbol) =>
-    codeViewScopeSymbolKinds.has(symbol.kind) || symbol.decoded === null
+    codeViewScopeSymbolKinds.has(symbol.kind) || symbol.decoded === undefined
   )) {
     throw new UnsupportedFormatError(
       "Classic PDB symbol replacement cannot resize modules with scoped or unknown symbols"
@@ -1926,10 +2010,11 @@ export function replaceClassicPdbSymbolName(input, { moduleIndex, recordIndex, n
       newSymbolBytes,
       true
     );
-    const output = rebuildClassicPdbStreams(pdb, new Map([
+    let output = rebuildClassicPdbStreams(pdb, new Map([
       [module.streamIndex, streamBytes],
       [3, dbiBytes]
     ]));
+    output = appendClassicPdbOverlay(bytes, pdb, output);
     parseClassicPdb(output);
     return output;
   }

@@ -11,7 +11,8 @@ import {
   replaceClassicPdbLineInfo,
   replaceClassicPdbModuleNames,
   replaceClassicPdbStringTableName,
-  replaceClassicPdbSymbolName
+  replaceClassicPdbSymbolName,
+  removeClassicPdbSymbol
 } from "../src/index.js";
 import {
   parseCodeViewC13Subsections,
@@ -91,6 +92,7 @@ function makeC13LineBytes({ twoChecksums = false, hasColumns = true } = {}) {
 
 function makeClassicPdbWithSymbols({
   crossBlockName = false,
+  knownPrefix = false,
   withC13 = false,
   lineInfo = false,
   twoChecksums = false,
@@ -162,8 +164,15 @@ function makeClassicPdbWithSymbols({
   symbolStream.set(trailingModuleBytes, symbolBytes + c13Bytes.length);
   if (crossBlockName) {
     symbolView.setUint16(4, 490, true);
-    symbolView.setUint16(6, 0x7777, true);
-    symbolStream.fill(0xaa, 8, symbolRecordOffset);
+    symbolView.setUint16(6, knownPrefix ? 0x110e : 0x7777, true);
+    if (knownPrefix) {
+      symbolView.setUint32(8, 1, true);
+      symbolView.setUint32(12, 0x20, true);
+      symbolView.setUint16(16, 1, true);
+      symbolStream.fill(0x61, 18, 495);
+    } else {
+      symbolStream.fill(0xaa, 8, symbolRecordOffset);
+    }
   }
   symbolView.setUint16(symbolRecordOffset, 18, true);
   symbolView.setUint16(symbolRecordOffset + 2, 0x110e, true);
@@ -340,6 +349,70 @@ test("classic PDB symbol names resize across MSF block allocations", () => {
   const acrossBlocksPdb = parseClassicPdb(acrossBlocks);
   assert.equal(acrossBlocksPdb.dbi.modules[0].symbols.records[0].decoded.name, "x".repeat(500));
   assert.ok(acrossBlocksPdb.streams[4].blockIndices.length > 1);
+});
+
+test("classic PDB standalone symbols can be removed while preserving module data", () => {
+  const original = makeClassicPdbWithSymbols({
+    lineInfo: true,
+    trailingModuleBytes: Uint8Array.of(0xaa, 0xbb, 0xcc)
+  });
+  const originalPdb = parseClassicPdb(original);
+  const originalModule = originalPdb.dbi.modules[0];
+  const originalStream = originalPdb.streams[originalModule.streamIndex];
+  const overlay = Uint8Array.of(0xde, 0xad, 0xbe, 0xef);
+  const overlaid = new Uint8Array(original.length + overlay.length);
+  overlaid.set(original);
+  overlaid.set(overlay, original.length);
+
+  const rewritten = removeClassicPdbSymbol(overlaid, {
+    moduleIndex: 0,
+    recordIndex: 0
+  });
+  const rewrittenPdb = parseClassicPdb(rewritten);
+  const rewrittenModule = rewrittenPdb.dbi.modules[0];
+  const rewrittenStream = rewrittenPdb.streams[rewrittenModule.streamIndex];
+  assert.equal(rewrittenModule.symbolBytes, 4);
+  assert.deepEqual(rewrittenModule.symbols.records, []);
+  assert.equal(rewrittenModule.c13Bytes, originalModule.c13Bytes);
+  assert.deepEqual(
+    rewrittenStream.bytes.subarray(rewrittenModule.symbolBytes),
+    originalStream.bytes.subarray(originalModule.symbolBytes)
+  );
+  assert.deepEqual(rewritten.subarray(-overlay.length), overlay);
+
+  const unknownSymbols = makeClassicPdbWithSymbols({ crossBlockName: true });
+  const unknownSymbolsBefore = Uint8Array.from(unknownSymbols);
+  assert.throws(() => removeClassicPdbSymbol(unknownSymbols, {
+    moduleIndex: 0,
+    recordIndex: 1
+  }), /scoped or unknown symbols/);
+  assert.throws(() => replaceClassicPdbSymbolName(unknownSymbols, {
+    moduleIndex: 0,
+    recordIndex: 1,
+    name: "a-long-name"
+  }), /scoped or unknown symbols/);
+  assert.deepEqual(unknownSymbols, unknownSymbolsBefore);
+
+  const multiBlockSymbols = makeClassicPdbWithSymbols({
+    crossBlockName: true,
+    knownPrefix: true
+  });
+  const multiBlockPdb = parseClassicPdb(multiBlockSymbols);
+  assert.equal(multiBlockPdb.dbi.modules[0].symbols.records.length, 2);
+  assert.equal(multiBlockPdb.dbi.modules[0].symbols.records[0].decoded.name.length, 477);
+  const multiBlockOverlay = Uint8Array.of(0x91, 0x82, 0x73);
+  const overlaidMultiBlock = new Uint8Array(multiBlockSymbols.length + multiBlockOverlay.length);
+  overlaidMultiBlock.set(multiBlockSymbols);
+  overlaidMultiBlock.set(multiBlockOverlay, multiBlockSymbols.length);
+  const removedMultiBlockSymbol = removeClassicPdbSymbol(overlaidMultiBlock, {
+    moduleIndex: 0,
+    recordIndex: 1
+  });
+  const removedMultiBlockPdb = parseClassicPdb(removedMultiBlockSymbol);
+  assert.equal(removedMultiBlockPdb.streams[4].blockIndices.length, 1);
+  assert.equal(removedMultiBlockPdb.dbi.modules[0].symbolBytes, 496);
+  assert.equal(removedMultiBlockPdb.dbi.modules[0].symbols.records.length, 1);
+  assert.deepEqual(removedMultiBlockSymbol.subarray(-multiBlockOverlay.length), multiBlockOverlay);
 });
 
 test("classic PDB symbol resizing preserves trailing C13 module data", () => {
