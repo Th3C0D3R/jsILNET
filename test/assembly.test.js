@@ -1880,6 +1880,40 @@ test("TypeSpec generic contexts validate local arity and MemberRef variables", (
   assert.deepEqual(assembly.typeSpecs[typeSpecRid - 1]?.signature, typeSpecSignature);
 });
 
+test("ModuleRef MemberRefs validate generic variables without a declaring type", () => {
+  const assembly = parseAssembly(fixture);
+  const moduleRefToken = assembly.addModuleRef({ name: "NativeLibrary" });
+  const moduleRefRid = moduleRefToken & 0x00ffffff;
+  const validGenericMember = assembly.addMemberRef({
+    parent: { table: "ModuleRef", rid: moduleRefRid },
+    name: "GenericNativeMethod",
+    signature: Uint8Array.from([0x10, 0x01, 0x00, 0x1e, 0x00])
+  });
+  const validRid = validGenericMember & 0x00ffffff;
+  const serialized = Uint8Array.from(assembly.serialize());
+  const parsed = parseAssembly(serialized);
+  assert.equal(parsed.memberRefs[validRid - 1].name, "GenericNativeMethod");
+  const signatureIndex = parsed.tables.row(10, validRid).Signature;
+  const blobHeapOffset = parsed.metadataRoot.streams.get("#Blob").offset;
+  serialized[blobHeapOffset + signatureIndex + 5] = 1;
+  assert.throws(() => parseAssembly(serialized),
+    /Method generic variable !!1 exceeds its method's arity/);
+
+  const originalCount = assembly.memberRefs.length;
+  assert.throws(() => assembly.addMemberRef({
+    parent: { table: "ModuleRef", rid: moduleRefRid },
+    name: "InvalidTypeVariable",
+    signature: Uint8Array.from([0x06, 0x13, 0x00])
+  }), /Type generic variable !0 exceeds its declaring type's arity/);
+  assert.equal(assembly.memberRefs.length, originalCount);
+  assert.throws(() => assembly.addMemberRef({
+    parent: { table: "ModuleRef", rid: moduleRefRid },
+    name: "InvalidMethodVariable",
+    signature: Uint8Array.from([0x00, 0x00, 0x1e, 0x00])
+  }), /Method generic variable !!0 exceeds its method's arity/);
+  assert.equal(assembly.memberRefs.length, originalCount);
+});
+
 test("TypeSpec generic instances validate generic TypeRef arity", () => {
   const assembly = parseAssembly(withoutDebugDirectory());
   assembly.tables.sorted &= ~(1n << 1n);

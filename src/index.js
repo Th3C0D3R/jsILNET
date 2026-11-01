@@ -537,6 +537,8 @@ function validateMemberRefGenericContext(
     if (!typeRef) throw new FormatError(`MemberRef parent references a missing TypeRef row ${parent.rid}`);
     const typeArity = getTypeRefGenericArity(assembly, parent.rid, typeRefOverride);
     validateGenericVariableReferences(signature, typeArity, assembly, typeSpecOverride);
+  } else if (parentTable === 26) {
+    validateGenericVariableReferences(signature, 0, assembly, typeSpecOverride);
   } else if (parentTable === 27) {
     const typeSpec = typeSpecOverride?.rid === parent.rid
       ? typeSpecOverride
