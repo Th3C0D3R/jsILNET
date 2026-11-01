@@ -1261,6 +1261,38 @@ function validateLocalCustomAttributeNamedArguments(
   }
 }
 
+function getLocalPermissionSetAttributeType(assembly, typeName) {
+  let bracketDepth = 0;
+  let nameEnd = typeName.length;
+  for (let index = 0; index < typeName.length; index++) {
+    if (typeName[index] === "[") bracketDepth++;
+    else if (typeName[index] === "]") bracketDepth--;
+    else if (typeName[index] === "," && bracketDepth === 0) {
+      nameEnd = index;
+      break;
+    }
+  }
+  const fullName = typeName.slice(0, nameEnd).trim();
+  return assembly.types.find((type) =>
+    getManagedTypeName(assembly, { table: 2, rid: type.rid }) === fullName
+  ) ?? null;
+}
+
+function validateLocalPermissionSetNamedArguments(assembly, permissionSet, resolveEnum) {
+  if (permissionSet.format !== "binary") return;
+  for (const attribute of permissionSet.attributes) {
+    const ownerType = getLocalPermissionSetAttributeType(assembly, attribute.typeName);
+    if (!ownerType) continue;
+    validateLocalCustomAttributeNamedArguments(
+      assembly,
+      ownerType,
+      ownerType.genericParams.length > 0,
+      attribute.namedArguments,
+      resolveEnum
+    );
+  }
+}
+
 function getCustomAttributeConstructor(assembly, attribute, resolveEnum) {
   const constructor = attribute.constructor;
   let method;
@@ -1962,14 +1994,16 @@ export class Assembly {
       throw new RangeError(`Invalid DeclSecurity row ID ${rid}`);
     }
     const enumResolver = getCustomAttributeEnumResolver(this, resolveEnum);
+    const permissionSet = parsePermissionSetBlob(
+      this.heaps.getBlob(row.PermissionSet),
+      enumResolver
+    );
+    validateLocalPermissionSetNamedArguments(this, permissionSet, enumResolver);
     return {
       rid,
       action: row.Action,
       parent: row.Parent.target,
-      permissionSet: parsePermissionSetBlob(
-        this.heaps.getBlob(row.PermissionSet),
-        enumResolver
-      )
+      permissionSet
     };
   }
 
@@ -4575,15 +4609,15 @@ export class Assembly {
     return this.#removeTokenRow(25, rid, "MethodImpl");
   }
 
-  addDeclSecurity({ parent, action, permissionSet }) {
-    return this.#writeDeclSecurity({ parent, action, permissionSet }, false).rid;
+  addDeclSecurity({ parent, action, permissionSet, resolveEnum }) {
+    return this.#writeDeclSecurity({ parent, action, permissionSet, resolveEnum }, false).rid;
   }
 
-  insertDeclSecurity({ parent, action, permissionSet }) {
-    return this.#writeDeclSecurity({ parent, action, permissionSet }, true);
+  insertDeclSecurity({ parent, action, permissionSet, resolveEnum }) {
+    return this.#writeDeclSecurity({ parent, action, permissionSet, resolveEnum }, true);
   }
 
-  #writeDeclSecurity({ parent, action, permissionSet }, insertSorted) {
+  #writeDeclSecurity({ parent, action, permissionSet, resolveEnum }, insertSorted) {
     this.#ensureEditable();
     const parentTable = metadataTableId(parent?.table);
     if (![2, 6, 32].includes(parentTable) || !Number.isInteger(parent.rid) ||
@@ -4598,6 +4632,10 @@ export class Assembly {
       : encodePermissionSetBlob(permissionSet);
     if (permissionSetBytes.length === 0) {
       throw new TypeError("PermissionSet must be non-empty");
+    }
+    const enumResolver = getCustomAttributeEnumResolver(this, resolveEnum);
+    if (!(permissionSet instanceof Uint8Array)) {
+      validateLocalPermissionSetNamedArguments(this, permissionSet, enumResolver);
     }
     const rows = this.tables.rows.get(14) ?? [];
     if (rows.length !== this.tables.counts[14] || rows.length >= 0xffffffff) {
@@ -4675,7 +4713,7 @@ export class Assembly {
     return { rid, tokenMap };
   }
 
-  replaceDeclSecurity(rid, { action, permissionSet } = {}) {
+  replaceDeclSecurity(rid, { action, permissionSet, resolveEnum } = {}) {
     this.#ensureEditable();
     const row = this.tables.row(14, rid);
     if (!Number.isInteger(rid) || rid < 1 || !row) {
@@ -4693,6 +4731,10 @@ export class Assembly {
     if (nextPermissionSet !== null &&
         nextPermissionSet.length === 0) {
       throw new TypeError("PermissionSet must be non-empty");
+    }
+    if (permissionSet !== undefined && !(permissionSet instanceof Uint8Array)) {
+      const enumResolver = getCustomAttributeEnumResolver(this, resolveEnum);
+      validateLocalPermissionSetNamedArguments(this, permissionSet, enumResolver);
     }
     if (nextAction === row.Action && nextPermissionSet === null) return this;
     if (this.tables.rows.get(14).some((other) =>

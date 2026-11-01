@@ -715,7 +715,8 @@ test("rewritten custom-attribute named arguments load in .NET", {
     assert.equal(build.status, 0, build.stderr || build.stdout || build.error?.message);
 
     const assemblyPath = join(libraryDirectory, "NamedAttributes.dll");
-    const assembly = parseAssembly(Uint8Array.from(await readFile(assemblyPath)));
+    const assemblyBytes = Uint8Array.from(await readFile(assemblyPath));
+    const assembly = parseAssembly(assemblyBytes);
     const namedTarget = assembly.types.find((type) => type.name === "NamedDataTarget");
     const attribute = assembly.customAttributes.find((record) =>
       record.parent?.table === 2 &&
@@ -728,6 +729,54 @@ test("rewritten custom-attribute named arguments load in .NET", {
       value.namedArguments.map(({ name, value: argumentValue }) => [name, argumentValue]),
       [["Count", 5], ["Label", "original"]]
     );
+    const securityAssembly = parseAssembly(assemblyBytes);
+    const permissionSet = {
+      format: "binary",
+      attributes: [{
+        typeName: "NamedDataAttribute, NamedAttributes",
+        namedArguments: [{
+          kind: "property",
+          name: "Count",
+          type: { kind: "primitive", elementType: 0x08 },
+          value: 9
+        }]
+      }]
+    };
+    const securityRid = securityAssembly.addDeclSecurity({
+      parent: { table: "Assembly", rid: 1 },
+      action: 2,
+      permissionSet
+    });
+    assert.deepEqual(
+      securityAssembly.parseDeclSecurity(securityRid).permissionSet,
+      permissionSet
+    );
+    const invalidPermissionSet = {
+      ...permissionSet,
+      attributes: permissionSet.attributes.map((attribute) => ({
+        ...attribute,
+        namedArguments: attribute.namedArguments.map((argument) => ({
+          ...argument,
+          name: "Missing"
+        }))
+      }))
+    };
+    const beforeInvalidSecurity = securityAssembly.serialize();
+    assert.throws(
+      () => securityAssembly.replaceDeclSecurity(securityRid, {
+        permissionSet: invalidPermissionSet
+      }),
+      /named property Missing does not exist/
+    );
+    assert.throws(
+      () => securityAssembly.addDeclSecurity({
+        parent: { table: "Assembly", rid: 1 },
+        action: 3,
+        permissionSet: invalidPermissionSet
+      }),
+      /named property Missing does not exist/
+    );
+    assert.deepEqual(securityAssembly.serialize(), beforeInvalidSecurity);
     const beforeInvalidAttributes = assembly.serialize();
     const missingNamedMember = {
       ...value,
