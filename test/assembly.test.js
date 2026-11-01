@@ -1019,6 +1019,21 @@ test("PE parser rejects out-of-file and overlapping section ranges", () => {
   assert.throws(() => parsePE(overflowingVirtual), /virtual range overflows/);
 });
 
+test("PE parser rejects sections overlapping headers and undersized images", () => {
+  const parsed = parsePE(fixture);
+  const headerOverlap = Uint8Array.from(fixture);
+  new DataView(headerOverlap.buffer).setUint32(parsed.sectionOffset + 12, 0, true);
+  assert.throws(() => parsePE(headerOverlap), /virtual range overlaps the PE headers/);
+
+  const undersizedImage = Uint8Array.from(fixture);
+  new DataView(undersizedImage.buffer).setUint32(
+    parsed.optionalHeaderOffset + 56,
+    parsed.sectionAlignment,
+    true
+  );
+  assert.throws(() => parsePE(undersizedImage), /SizeOfImage does not cover/);
+});
+
 test("PE parser rejects invalid section and file alignments", () => {
   const parsed = parsePE(fixture);
   const nonPowerOfTwo = Uint8Array.from(fixture);

@@ -293,16 +293,22 @@ export function parsePE(input) {
 
   const rawRanges = [];
   const virtualRanges = [];
+  const firstSectionAddress = Math.ceil(sizeOfHeaders / sectionAlignment) * sectionAlignment;
+  let virtualImageEnd = sizeOfHeaders;
   for (const section of sections) {
     if (section.virtualAddress % sectionAlignment !== 0) {
       throw new FormatError(`Section ${section.name} virtual address is not section-aligned`);
     }
     const virtualSize = Math.max(section.virtualSize, section.rawSize);
     if (virtualSize > 0) {
+      if (section.virtualAddress < firstSectionAddress) {
+        throw new FormatError(`Section ${section.name} virtual range overlaps the PE headers`);
+      }
       const end = section.virtualAddress + virtualSize;
       if (end > 0x100000000) {
         throw new FormatError(`Section ${section.name} virtual range overflows the RVA space`);
       }
+      virtualImageEnd = Math.max(virtualImageEnd, end);
       virtualRanges.push({ start: section.virtualAddress, end, name: section.name });
     }
     if (section.rawSize > 0) {
@@ -315,6 +321,13 @@ export function parsePE(input) {
       }
       rawRanges.push({ start: section.rawPointer, end, name: section.name });
     }
+  }
+  const minimumImageSize = Math.ceil(virtualImageEnd / sectionAlignment) * sectionAlignment;
+  if (sizeOfImage < minimumImageSize) {
+    throw new FormatError("PE SizeOfImage does not cover the aligned headers and section ranges", {
+      offset: optionalOffset + 56,
+      context: "PE optional header"
+    });
   }
   for (const [ranges, label] of [[rawRanges, "raw"], [virtualRanges, "virtual"]]) {
     ranges.sort((left, right) => left.start - right.start || left.end - right.end);

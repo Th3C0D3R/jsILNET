@@ -335,6 +335,26 @@ test("metadata heap readers reject malformed unreferenced entries", () => {
   ])), /Invalid UTF-16LE user-string encoding/);
 });
 
+test("length-prefixed heap references must point to entry boundaries", () => {
+  const strings = new MetadataHeaps(new Map([
+    ["#Strings", { bytes: Uint8Array.from([0, 0x61, 0x62, 0]) }]
+  ]));
+  assert.equal(strings.getString(1), "ab");
+  assert.equal(strings.getString(2), "b");
+
+  const blobs = new MetadataHeaps(new Map([
+    ["#Blob", { bytes: Uint8Array.from([0, 3, 0xaa, 0xbb, 0xcc]) }]
+  ]));
+  assert.deepEqual([...blobs.getBlob(1)], [0xaa, 0xbb, 0xcc]);
+  assert.throws(() => blobs.getBlob(2), /not a #Blob entry boundary/);
+
+  const userStrings = new MetadataHeaps(new Map([
+    ["#US", { bytes: Uint8Array.from([0, 3, 0x41, 0, 1]) }]
+  ]));
+  assert.equal(userStrings.getUserString(1), "A");
+  assert.throws(() => userStrings.getUserString(2), /not a #US entry boundary/);
+});
+
 test("metadata roots reject malformed version and stream directory data", () => {
   const valid = makeMetadataRoot();
   assert.equal(parseMetadataRoot(valid.bytes, 0, valid.bytes.length).streams.has("#~"), true);
@@ -345,6 +365,17 @@ test("metadata roots reject malformed version and stream directory data", () => 
   const overlapsHeader = makeMetadataRoot({ streamOffset: 32, streamSize: 0 });
   assert.throws(() => parseMetadataRoot(overlapsHeader.bytes, 0, overlapsHeader.bytes.length),
     /overlaps the stream directory/);
+
+  const overlappingStreams = makeMetadataRoot({ streamOffset: 56, streamSize: 8 });
+  const overlappingStreamsView = new DataView(overlappingStreams.bytes.buffer);
+  overlappingStreamsView.setUint16(22, 2, true);
+  overlappingStreamsView.setUint32(36, 60, true);
+  overlappingStreamsView.setUint32(40, 4, true);
+  overlappingStreams.bytes.set(Uint8Array.from([0x23, 0x42, 0x6c, 0x6f, 0x62]), 44);
+  assert.throws(
+    () => parseMetadataRoot(overlappingStreams.bytes, 0, overlappingStreams.bytes.length),
+    /Metadata streams #~ and #Blob overlap/
+  );
 
   const nonAsciiName = makeMetadataRoot({ streamName: Uint8Array.from([0x23, 0xff]) });
   assert.throws(() => parseMetadataRoot(nonAsciiName.bytes, 0, nonAsciiName.bytes.length), /non-ASCII/);
@@ -362,6 +393,16 @@ test("metadata roots reject malformed version and stream directory data", () => 
   const nonzeroReserved = makeMetadataRoot({ reserved: 1 });
   assert.throws(() => parseMetadataRoot(nonzeroReserved.bytes, 0, nonzeroReserved.bytes.length),
     /reserved field must be zero/);
+
+  const nonzeroFlags = makeMetadataRoot();
+  new DataView(nonzeroFlags.bytes.buffer).setUint16(20, 1, true);
+  assert.throws(() => parseMetadataRoot(nonzeroFlags.bytes, 0, nonzeroFlags.bytes.length),
+    /flags must be zero/);
+
+  const nonzeroNamePadding = makeMetadataRoot();
+  nonzeroNamePadding.bytes[nonzeroNamePadding.headerSize - 1] = 0x41;
+  assert.throws(() => parseMetadataRoot(nonzeroNamePadding.bytes, 0, nonzeroNamePadding.bytes.length),
+    /stream name padding must be zero/);
 });
 
 test("embedded Portable PDB data validates and exposes its metadata streams", () => {

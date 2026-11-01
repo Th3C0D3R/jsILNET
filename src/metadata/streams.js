@@ -19,7 +19,13 @@ function validateStringsHeap(bytes) {
   }
 }
 
-function validateLengthPrefixedHeap(bytes, name, validatePayload = () => {}, allowTrailingZeroPadding = false) {
+function validateLengthPrefixedHeap(
+  bytes,
+  name,
+  validatePayload = () => {},
+  allowTrailingZeroPadding = false,
+  entryOffsets = new Set([0])
+) {
   const reader = new BinaryReader(bytes, { start: 1, baseOffset: 1, context: name });
   while (reader.remaining > 0) {
     if (allowTrailingZeroPadding &&
@@ -27,6 +33,7 @@ function validateLengthPrefixedHeap(bytes, name, validatePayload = () => {}, all
       break;
     }
     const entryOffset = reader.absoluteOffset;
+    entryOffsets.add(entryOffset);
     const prefixOffset = reader.position;
     const size = readCompressedUInt(reader);
     const prefixSize = reader.position - prefixOffset;
@@ -78,6 +85,12 @@ export function parseMetadataRoot(input, offset, size) {
   }
   reader.align(4);
   const flags = reader.u2();
+  if (flags !== 0) {
+    throw new FormatError("Metadata root flags must be zero", {
+      offset: reader.absoluteOffset - 2,
+      context: "metadata root"
+    });
+  }
   const streamCount = reader.u2();
   const streams = new Map();
   for (let i = 0; i < streamCount; i++) {
@@ -101,7 +114,14 @@ export function parseMetadataRoot(input, offset, size) {
         context: "metadata root"
       });
     }
+    const nameEnd = reader.position;
     reader.align(4);
+    if (reader.bytes.subarray(nameEnd, reader.position).some((byte) => byte !== 0)) {
+      throw new FormatError("Metadata stream name padding must be zero", {
+        offset: offset + nameEnd,
+        context: "metadata root"
+      });
+    }
     if (nameBytes.length === 0) {
       throw new FormatError("Metadata stream name must not be empty", {
         offset: reader.absoluteOffset,
@@ -159,6 +179,8 @@ export class MetadataHeaps {
     this.guids = streams.get("#GUID")?.bytes.slice();
     this.blobs = streams.get("#Blob")?.bytes.slice();
     this.userStringDataEnd = this.userStrings?.length ?? 0;
+    this.blobEntryOffsets = null;
+    this.userStringEntryOffsets = null;
     for (const [name, bytes] of [
       ["#Strings", this.strings],
       ["#US", this.userStrings],
@@ -172,8 +194,12 @@ export class MetadataHeaps {
       throw new FormatError("#GUID heap size is not a multiple of 16 bytes", { context: "#GUID" });
     }
     if (this.strings) validateStringsHeap(this.strings);
-    if (this.blobs) validateLengthPrefixedHeap(this.blobs, "#Blob");
+    if (this.blobs) {
+      this.blobEntryOffsets = new Set([0]);
+      validateLengthPrefixedHeap(this.blobs, "#Blob", () => {}, false, this.blobEntryOffsets);
+    }
     if (this.userStrings) {
+      this.userStringEntryOffsets = new Set([0]);
       this.userStringDataEnd = validateLengthPrefixedHeap(this.userStrings, "#US", (payload, offset) => {
         const textLength = payload.length - 1;
         if (payload.length < 1 || (textLength & 1) !== 0 || payload[textLength] > 1) {
@@ -182,7 +208,7 @@ export class MetadataHeaps {
             context: "#US"
           });
         }
-      }, true);
+      }, true, this.userStringEntryOffsets);
     }
   }
 
@@ -210,6 +236,11 @@ export class MetadataHeaps {
   getBlob(index) {
     if (index === 0) return new Uint8Array();
     const bytes = this.#heap(this.blobs, "#Blob", index);
+    if (!this.blobEntryOffsets?.has(index)) {
+      throw new FormatError(`Index ${index} is not a #Blob entry boundary`, {
+        context: "#Blob"
+      });
+    }
     const reader = new BinaryReader(bytes, { start: index, baseOffset: index, context: "#Blob" });
     const size = readCompressedUInt(reader);
     return reader.take(size).slice();
@@ -227,6 +258,11 @@ export class MetadataHeaps {
     const offset = tokenOrOffset > 0xffffff ? tokenOrOffset & 0x00ffffff : tokenOrOffset;
     if (offset === 0) return "";
     const bytes = this.#heap(this.userStrings, "#US", offset);
+    if (!this.userStringEntryOffsets?.has(offset) || offset >= this.userStringDataEnd) {
+      throw new FormatError(`Index ${offset} is not a #US entry boundary`, {
+        context: "#US"
+      });
+    }
     const reader = new BinaryReader(bytes, { start: offset, baseOffset: offset, context: "#US" });
     const size = readCompressedUInt(reader);
     if (size < 1) throw new FormatError("#US entry is missing its special-character byte", { context: "#US" });

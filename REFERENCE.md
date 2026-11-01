@@ -6,6 +6,7 @@ This document records detailed feature coverage, exported APIs, behavioral limit
 
 - Parse PE32/PE32+ headers, sections, RVA mappings, and the CLI header.
 - Validate PE section/file alignment relationships and reject out-of-file, overlapping, or overflowing section ranges.
+- Reject PE sections that overlap the aligned headers or exceed `SizeOfImage`; metadata-root flags and stream-name alignment padding must be zero. `#Blob` and `#US` indexes must address entry boundaries, while `#Strings` indexes may use valid suffix sharing.
 - Validate ordering for ECMA-defined sorted metadata tables and reject duplicate keys in metadata tables with unique keys.
 - Parse and bounds-check debug-directory entries, adjusting their raw pointers if section-header growth shifts file data.
 - Replace RSDS/NB10 CodeView PDB paths in place when the encoded path length is unchanged.
