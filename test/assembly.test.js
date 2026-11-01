@@ -2269,10 +2269,15 @@ test("TypeSpec-parented MemberRefs validate generic context at direct and Method
   const invalidMemberRefToken = assembly.addMemberRef({
     parent: { table: "TypeSpec", rid: invalidTypeSpecToken & 0x00ffffff },
     name: "InvalidGenericParent",
+    signature: Uint8Array.from([0x00, 0x00, 0x01])
+  });
+  const invalidGenericMemberRefToken = assembly.addMemberRef({
+    parent: { table: "TypeSpec", rid: invalidTypeSpecToken & 0x00ffffff },
+    name: "InvalidGenericMethodParent",
     signature: Uint8Array.from([0x10, 0x01, 0x00, 0x01])
   });
   const invalidMethodSpecToken = assembly.addMethodSpec({
-    method: { table: "MemberRef", rid: invalidMemberRefToken & 0x00ffffff },
+    method: { table: "MemberRef", rid: invalidGenericMemberRefToken & 0x00ffffff },
     instantiation: Uint8Array.from([0x0a, 0x01, 0x08])
   });
   const originalCallToken = callSite.instruction.operand.value;
@@ -2294,7 +2299,7 @@ test("TypeSpec-parented MemberRefs validate generic context at direct and Method
   const validMemberRefToken = assembly.addMemberRef({
     parent: { table: "TypeSpec", rid: validTypeSpecToken & 0x00ffffff },
     name: "ValidGenericParent",
-    signature: Uint8Array.from([0x10, 0x01, 0x00, 0x01])
+    signature: Uint8Array.from([0x00, 0x00, 0x01])
   });
   assembly.setInstructionOperand(
     callSite.method.rid,
@@ -3315,6 +3320,155 @@ test("generic method signatures can be replaced before adding their parameter ro
   assert.ok(reparsed.methods[8].genericParams.includes(reparsed.genericParams.at(-1)));
 });
 
+test("MethodDef signature replacement preserves MethodSpec arity atomically", () => {
+  const assembly = parseAssembly(withoutDebugDirectory());
+  const owner = assembly.types.at(-1);
+  const methodToken = assembly.addMethod({
+    owner: { table: "TypeDef", rid: owner.rid },
+    name: "GenericMethodSpecTarget",
+    flags: 0x0096,
+    signature: Uint8Array.of(0x10, 0x01, 0x00, 0x01),
+    body: Uint8Array.of(0x06, 0x2a)
+  });
+  const methodRid = methodToken & 0x00ffffff;
+  assembly.addGenericParam({
+    owner: { table: "MethodDef", rid: methodRid },
+    name: "T"
+  });
+  assembly.addMethodSpec({
+    method: { table: "MethodDef", rid: methodRid },
+    instantiation: Uint8Array.of(0x0a, 0x01, 0x08)
+  });
+  const before = assembly.serialize();
+  const originalSignature = assembly.methods[methodRid - 1].signature.slice();
+
+  assert.throws(() => assembly.replaceMethodSignature(
+    methodRid,
+    Uint8Array.of(0x10, 0x02, 0x00, 0x01)
+  ), /incompatible with MethodSpec row/);
+  assert.deepEqual(assembly.methods[methodRid - 1].signature, originalSignature);
+  assert.deepEqual(assembly.serialize(), before);
+});
+
+test("MethodDef signature replacement rejects newly generic direct callers atomically", () => {
+  const assembly = parseAssembly(withoutDebugDirectory());
+  const owner = assembly.types.at(-1);
+  const targetToken = assembly.addMethod({
+    owner: { table: "TypeDef", rid: owner.rid },
+    name: "BecomesGeneric",
+    flags: 0x0096,
+    signature: Uint8Array.of(0x00, 0x00, 0x01),
+    body: Uint8Array.of(0x06, 0x2a)
+  });
+  const targetRid = targetToken & 0x00ffffff;
+  const caller = assembly.methods.find((method) =>
+    assembly.getInstructions(method.rid).some((instruction) => instruction.opcode.name === "call")
+  );
+  const call = assembly.getInstructions(caller.rid)
+    .find((instruction) => instruction.opcode.name === "call");
+  assembly.setInstructionOperand(caller.rid, call.offset, targetToken);
+  const before = assembly.serialize();
+  const originalSignature = assembly.methods[targetRid - 1].signature.slice();
+
+  assert.throws(() => assembly.replaceMethodSignature(
+    targetRid,
+    Uint8Array.of(0x10, 0x01, 0x00, 0x01)
+  ), /generic method must reference a MethodSpec row/);
+  assert.deepEqual(assembly.methods[targetRid - 1].signature, originalSignature);
+  assert.deepEqual(assembly.serialize(), before);
+});
+
+test("TypeDef generic arity changes reject incompatible TypeSpecs atomically", () => {
+  const assembly = parseAssembly(withoutDebugDirectory());
+  const genericType = assembly.types.find((type) => type.name === "Sample`1");
+  assert.ok(genericType);
+  assembly.addTypeSpec({
+    signature: Uint8Array.from([
+      0x15,
+      0x12,
+      ...appendCompressedUInt(encodeCodedIndex(2, genericType.rid, "TypeDefOrRef")),
+      0x01,
+      0x08
+    ])
+  });
+  const before = assembly.serialize();
+  const genericParamCount = assembly.genericParams.length;
+
+  assert.throws(() => assembly.addGenericParam({
+    owner: { table: "TypeDef", rid: genericType.rid },
+    name: "TAdditional"
+  }), /1 arguments for TypeDef arity 2/);
+  assert.equal(assembly.genericParams.length, genericParamCount);
+  assert.deepEqual(assembly.serialize(), before);
+});
+
+test("generic method CIL references require MethodSpec tokens", () => {
+  const assembly = parseAssembly(withoutDebugDirectory());
+  const owner = assembly.types.at(-1);
+  const genericMethodToken = assembly.addMethod({
+    owner: { table: "TypeDef", rid: owner.rid },
+    name: "GenericCallTarget",
+    flags: 0x0096,
+    signature: Uint8Array.of(0x10, 0x01, 0x00, 0x01),
+    body: Uint8Array.of(0x06, 0x2a)
+  });
+  const genericMethodRid = genericMethodToken & 0x00ffffff;
+  assembly.addGenericParam({
+    owner: { table: "MethodDef", rid: genericMethodRid },
+    name: "T"
+  });
+  const caller = assembly.methods.find((method) =>
+    assembly.getInstructions(method.rid).some((instruction) => instruction.opcode.name === "call")
+  );
+  const call = assembly.getInstructions(caller.rid)
+    .find((instruction) => instruction.opcode.name === "call");
+  const originalToken = call.operand.value;
+
+  assert.throws(() => assembly.setInstructionOperand(
+    caller.rid, call.offset, genericMethodToken
+  ), /generic method must reference a MethodSpec row/);
+  assert.equal(call.operand.value, originalToken);
+  assert.throws(() => assembly.insertInstruction(
+    caller.rid, assembly.getMethodBody(caller.rid).codeSize, "call", genericMethodToken
+  ), /generic method must reference a MethodSpec row/);
+
+  const genericTypeRef = assembly.typeRefs.find((type) => type.name === "IDisposable");
+  const genericMemberRefToken = assembly.addMemberRef({
+    parent: { table: "TypeRef", rid: genericTypeRef.rid },
+    name: "ExternalGenericCall",
+    signature: Uint8Array.of(0x10, 0x01, 0x01, 0x01, 0x1e, 0x00)
+  });
+  assert.throws(() => assembly.setInstructionOperand(
+    caller.rid, call.offset, genericMemberRefToken
+  ), /generic method must reference a MethodSpec row/);
+  assert.equal(call.operand.value, originalToken);
+
+  const methodSpecToken = assembly.addMethodSpec({
+    method: { table: "MethodDef", rid: genericMethodRid },
+    instantiation: Uint8Array.of(0x0a, 0x01, 0x08)
+  });
+  assembly.setInstructionOperand(caller.rid, call.offset, methodSpecToken);
+  const reparsed = parseAssembly(assembly.serialize());
+  assert.equal(reparsed.getInstructions(caller.rid)
+    .find((instruction) => instruction.offset === call.offset).operand.value, methodSpecToken);
+
+  const illegalBody = Uint8Array.of(
+    0x1a, 0x28,
+    genericMethodToken & 0xff,
+    (genericMethodToken >>> 8) & 0xff,
+    (genericMethodToken >>> 16) & 0xff,
+    (genericMethodToken >>> 24) & 0xff,
+    0x2a
+  );
+  assert.throws(() => assembly.addMethod({
+    owner: { table: "TypeDef", rid: owner.rid },
+    name: "IllegalGenericCallBody",
+    flags: 0x0096,
+    signature: Uint8Array.of(0x00, 0x00, 0x01),
+    body: illegalBody
+  }), /generic method must reference a MethodSpec row/);
+});
+
 test("GenericParam removal reduces method arity and remaps surviving tokens", () => {
   const assembly = parseAssembly(withoutDebugDirectory());
   const signature = Uint8Array.from([0x10, 0x01, 0x00, 0x01]);
@@ -3995,7 +4149,7 @@ test("non-trailing MethodDef removal remaps later metadata and CIL tokens", () =
   const call = assembly.getMethodBody(caller.rid).instructions.find((instruction) =>
     ["call", "callvirt"].includes(instruction.opcode.name)
   );
-  assembly.setInstructionOperand(caller.rid, call.offset, shiftedToken);
+  assembly.setInstructionOperand(caller.rid, call.offset, methodSpecToken);
 
   const tokenMap = assembly.removeMethod(firstToken & 0x00ffffff);
   assert.equal(tokenMap.get(shiftedToken), firstToken);
@@ -4012,7 +4166,7 @@ test("non-trailing MethodDef removal remaps later metadata and CIL tokens", () =
   assert.equal(reparsed.memberRefs.at(-1).parent.rid, shiftedRid - 1);
   const reparsedCall = reparsed.getMethodBody(caller.rid).instructions.find((instruction) =>
     ["call", "callvirt"].includes(instruction.opcode.name) &&
-    instruction.operand.value === (shiftedToken - 1)
+    instruction.operand.value === methodSpecToken
   );
   assert.ok(reparsedCall);
 });
@@ -7410,7 +7564,7 @@ test("sorted MemberRef insertion remaps table, IL, and returned tokens", () => {
     method,
     instruction: assembly.getInstructions(method.rid).find((item) => item.opcode.name === "call")
   })).find((entry) => entry.instruction);
-  assembly.setInstructionOperand(callSite.method.rid, callSite.instruction.offset, originalToken);
+  assembly.setInstructionOperand(callSite.method.rid, callSite.instruction.offset, methodSpecToken);
 
   const insertion = assembly.insertMemberRefSorted({
     parent: { table: firstParent.tableName, rid: firstParent.rid },
@@ -7439,7 +7593,7 @@ test("sorted MemberRef insertion remaps table, IL, and returned tokens", () => {
   assert.equal(reparsed.methodSpecs.at(-1).method.rid, shiftedMember.rid);
   const rewrittenCall = reparsed.getInstructions(callSite.method.rid)
     .find((instruction) => instruction.offset === callSite.instruction.offset);
-  assert.equal(rewrittenCall.operand.value, originalToken + 1);
+  assert.equal(rewrittenCall.operand.value, methodSpecToken);
   assert.equal(reparsed.memberRefs.find((reference) => reference.rid === (insertion.token & 0x00ffffff)).name, "EarlierSorted");
 });
 

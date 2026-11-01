@@ -109,7 +109,7 @@ ExportedType rows can be appended with existing File, AssemblyRef, or parent Exp
 ManifestResource metadata supports identity/flags replacement, linked implementation retargeting, and beforeRid insertion while preserving embedded data and refusing embedded/linked conversions. Insertion remaps ManifestResource tokens in metadata, IL, and ENC records; embedded insertions rebuild the resource directory with existing edited payloads preserved.
 
 StandAloneSig method/local signatures can be appended or inserted before an existing row, replaced in place without changing kind, and removed with reference checking/remapping of metadata, CIL, ENC, and fat method-header local-signature tokens.
-Lazy method-body parsing validates local-variable and `calli` signatures against the caller's type and method generic arities, along with MethodSpec instantiations.
+Lazy method-body parsing validates local-variable and `calli` signatures against the caller's type and method generic arities, along with MethodSpec instantiations. Direct generic MethodDef/MemberRef tokens are rejected in method-token CIL instructions; generic calls must use MethodSpec. Signature replacement and TypeDef GenericParam addition preflight dependent MethodSpec, caller, and TypeSpec arity constraints before mutation.
 
 Module name and generation can be replaced while preserving the MVID.
 ModuleRef rows can be inserted before existing rows with ModuleRef token and TypeRef scope remapping.

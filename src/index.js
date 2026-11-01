@@ -759,6 +759,60 @@ function getMethodGenericArities(assembly, methodRid) {
   };
 }
 
+function validateGenericMethodTokenUse(assembly, instruction, token, methodOverride = null) {
+  if (!methodTokenOpcodes.has(instruction.opcode.name)) return;
+  const table = token >>> 24;
+  const rid = token & 0x00ffffff;
+  if (table === 43) return;
+  if (table !== 6 && table !== 10) {
+    throw new FormatError(`${instruction.opcode.name} must reference a MethodDef, MemberRef, or MethodSpec row`);
+  }
+  let signatureBytes;
+  if (table === 6) {
+    if (methodOverride?.rid === rid) {
+      if (methodOverride.generic) {
+        throw new FormatError(
+          `${instruction.opcode.name} of a generic method must reference a MethodSpec row`
+        );
+      }
+      return;
+    }
+    signatureBytes = assembly.methods[rid - 1]?.signature;
+  } else if (table === 10) {
+    signatureBytes = assembly.memberRefs[rid - 1]?.signature;
+  } else {
+    return;
+  }
+  if (!signatureBytes) {
+    throw new FormatError(`${instruction.opcode.name} references missing method row ${rid}`);
+  }
+  const signature = parseSignature(signatureBytes, { counts: assembly.tables.counts });
+  if (signature.kind === "method" && signature.generic) {
+    throw new FormatError(
+      `${instruction.opcode.name} of a generic method must reference a MethodSpec row`
+    );
+  }
+}
+
+function validateInstructionGenericContext(assembly, methodRid, instruction, token) {
+  validateGenericMethodTokenUse(assembly, instruction, token);
+  const table = token >>> 24;
+  const rid = token & 0x00ffffff;
+  if (table === 43) {
+    const methodSpec = assembly.methodSpecs[rid - 1];
+    if (!methodSpec) throw new FormatError(`CIL references missing MethodSpec row ${rid}`);
+    validateMethodSpecUseAtCallSite(assembly, methodRid, methodSpec);
+  } else if (table === 27) {
+    validateTypeSpecUseAtCallSite(assembly, methodRid, rid);
+  } else if (table === 10) {
+    const memberRef = assembly.memberRefs[rid - 1];
+    if (!memberRef) throw new FormatError(`CIL references missing MemberRef row ${rid}`);
+    validateMemberRefUseAtCallSite(assembly, methodRid, memberRef);
+  } else if (instruction.opcode.name === "calli" && table === 17) {
+    validateStandAloneSigCallSite(assembly, methodRid, rid);
+  }
+}
+
 function validateStandAloneSigCallSite(
   assembly,
   methodRid,
@@ -847,6 +901,7 @@ function validateGenericUsesInBody(
   for (const instruction of body.instructions) {
     const token = instruction.operand?.kind === "token" ? instruction.operand.value : 0;
     const currentRid = token & 0x00ffffff;
+    validateGenericMethodTokenUse(assembly, instruction, token);
     if (instruction.opcode.name === "calli") {
       if ((token >>> 24) !== 0x11 || currentRid === 0) {
         throw new FormatError("calli operand must identify a StandAloneSig method signature");
@@ -974,6 +1029,10 @@ function validateNewMethodBody(assembly, bodyBytes, ownerType, methodRid, method
         methodSpec.parsedInstantiation, typeArity, assembly, null, methodArity
       );
     }
+    validateGenericMethodTokenUse(assembly, instruction, token, {
+      rid: methodRid,
+      generic: methodArity > 0
+    });
   }
   for (const section of body.sections) {
     for (const clause of section.clauses) {
@@ -2874,6 +2933,34 @@ export class Assembly {
       throw new FormatError("Replacement method signature is incompatible with its GenericParam rows");
     }
 
+    const method = this.methods[rid - 1];
+    const previousSignature = method.signature;
+    const previousParsedSignature = method.parsedSignature;
+    const cachedBodies = new Set(this._bodyCache.keys());
+    method.signature = signature.slice();
+    method.parsedSignature = parsed;
+    try {
+      for (const methodSpec of this.methodSpecs) {
+        if (methodSpec.method?.table !== 6 || methodSpec.method.rid !== rid) continue;
+        if (!parsed.generic ||
+            methodSpec.parsedInstantiation.arguments.length !== parsed.genericParameterCount) {
+          throw new FormatError(
+            `Replacement method signature is incompatible with MethodSpec row ${methodSpec.rid}`
+          );
+        }
+      }
+      validateTypeSpecUseSites(this, null);
+    } catch (error) {
+      method.signature = previousSignature;
+      method.parsedSignature = previousParsedSignature;
+      for (const bodyRid of this._bodyCache.keys()) {
+        if (!cachedBodies.has(bodyRid)) this._bodyCache.delete(bodyRid);
+      }
+      throw error;
+    }
+    method.signature = previousSignature;
+    method.parsedSignature = previousParsedSignature;
+
     const heapStreams = new Map(
       [...(this._heapStreams ?? new Map([...this.metadataRoot.streams].map(([streamName, stream]) =>
         [streamName, stream.bytes]
@@ -2881,7 +2968,6 @@ export class Assembly {
     );
     const blob = appendBlobHeap(heapStreams.get("#Blob") ?? new Uint8Array(), signature);
     heapStreams.set("#Blob", blob.heap);
-    const method = this.methods[rid - 1];
     method.row.Signature = blob.index;
     method.signature = signature.slice();
     method.parsedSignature = parsed;
@@ -8359,19 +8445,7 @@ export class Assembly {
       if (rid === 0 || rid > (this.tables.counts[table] ?? 0)) {
         throw new RangeError(`${instruction.opcode.name} references missing ${metadataTableNames[table]} row ${rid}`);
       }
-      if (table === 43) {
-        const methodSpec = this.methodSpecs[rid - 1];
-        if (!methodSpec) throw new FormatError(`CIL references missing MethodSpec row ${rid}`);
-        validateMethodSpecUseAtCallSite(this, methodRid, methodSpec);
-      } else if (table === 27) {
-        validateTypeSpecUseAtCallSite(this, methodRid, rid);
-      } else if (table === 10) {
-        const memberRef = this.memberRefs[rid - 1];
-        if (!memberRef) throw new FormatError(`CIL references missing MemberRef row ${rid}`);
-        validateMemberRefUseAtCallSite(this, methodRid, memberRef);
-      } else if (instruction.opcode.name === "calli" && table === 17) {
-        validateStandAloneSigCallSite(this, methodRid, rid);
-      }
+      validateInstructionGenericContext(this, methodRid, instruction, value);
     }
 
     if (instruction.operand.kind === "branch" && instruction.operand.targetOffset === value) return this;
@@ -8413,6 +8487,21 @@ export class Assembly {
       throw new FormatError("Opcode edit must preserve the opcode and operand widths");
     }
     if (opcode.code === instruction.opcode.code) return this;
+    if (instruction.operand?.kind === "token") {
+      if (opcode.name !== "ldstr") {
+        const table = instruction.operand.value >>> 24;
+        const rid = instruction.operand.value & 0x00ffffff;
+        if (!allowedTokenTables(opcode.name).includes(table)) {
+          throw new FormatError(`Metadata table ${table} is not valid for ${opcode.name}`);
+        }
+        if (rid === 0 || rid > (this.tables.counts[table] ?? 0)) {
+          throw new RangeError(`${opcode.name} references missing ${metadataTableNames[table]} row ${rid}`);
+        }
+        validateInstructionGenericContext(
+          this, methodRid, { ...instruction, opcode }, instruction.operand.value
+        );
+      }
+    }
     if (this._structuralBodies.has(methodRid) || this._addedMethodBodies.has(methodRid)) {
       const state = this.#createStructuralState(methodRid);
       const editableInstruction = state.instructions.find((candidate) => candidate.offset === instructionOffset);
@@ -8434,6 +8523,18 @@ export class Assembly {
     if (!opcode) throw new RangeError(`Unknown CIL opcode ${opcodeNameOrCode}`);
     const state = this.#createStructuralState(methodRid);
     const instruction = insertStructuralInstruction(state, beforeOffset, opcode, operand);
+    if (instruction.operand?.kind === "token" && opcode.name !== "ldstr") {
+      const token = instruction.operand.value;
+      const table = token >>> 24;
+      const rid = token & 0x00ffffff;
+      if (!allowedTokenTables(opcode.name).includes(table)) {
+        throw new FormatError(`Metadata table ${table} is not valid for ${opcode.name}`);
+      }
+      if (rid === 0 || rid > (this.tables.counts[table] ?? 0)) {
+        throw new RangeError(`${opcode.name} references missing ${metadataTableNames[table]} row ${rid}`);
+      }
+      validateInstructionGenericContext(this, methodRid, instruction, token);
+    }
     this.#commitStructuralState(methodRid, state);
     return instruction;
   }
@@ -12536,6 +12637,23 @@ export class Assembly {
       owner: { table: ownerTable, tableName: metadataTableNames[ownerTable], rid: owner.rid },
       name
     };
+    if (ownerTable === 2) {
+      const cachedBodies = new Set(this._bodyCache.keys());
+      this.genericParams.push(parameter);
+      try {
+        for (const typeSpec of this.typeSpecs) {
+          validateTypeSpecDefinitions(this, typeSpec.parsedSignature);
+        }
+        validateTypeSpecUseSites(this, null);
+      } catch (error) {
+        this.genericParams.pop();
+        for (const bodyRid of this._bodyCache.keys()) {
+          if (!cachedBodies.has(bodyRid)) this._bodyCache.delete(bodyRid);
+        }
+        throw error;
+      }
+      this.genericParams.pop();
+    }
     const attributeRows = this.customAttributes.map((attribute) => {
       const row = this.tables.row(12, attribute.rid);
       if (!row) throw new FormatError(`CustomAttribute row ${attribute.rid} has no metadata row`);
