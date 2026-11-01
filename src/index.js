@@ -151,6 +151,25 @@ function getManagedTypeDefinitionReference(assembly, reference, visited = new Se
   return result;
 }
 
+function validateLocalTypeInheritance(assembly) {
+  const states = new Uint8Array(assembly.types.length + 1);
+  for (const type of assembly.types) {
+    if (states[type.rid] === 2) continue;
+    const path = [];
+    let current = type;
+    while (current && states[current.rid] === 0) {
+      states[current.rid] = 1;
+      path.push(current.rid);
+      const base = getManagedTypeDefinitionReference(assembly, current.extends);
+      current = base?.table === 2 ? assembly.types[base.rid - 1] : null;
+    }
+    if (current && states[current.rid] === 1) {
+      throw new FormatError("TypeDef inheritance contains a cycle");
+    }
+    for (const rid of path) states[rid] = 2;
+  }
+}
+
 function getManagedTypeDefinitionName(assembly, type, visited = new Set()) {
   if (!type) return null;
   if (visited.has(type.rid)) {
@@ -1419,6 +1438,7 @@ export class Assembly {
     if (this.types[0]?.name !== "<Module>" || this.types[0]?.namespace !== "") {
       throw new FormatError("The first TypeDef row must be the special <Module> type with an empty namespace");
     }
+    validateLocalTypeInheritance(this);
     const fieldRvas = new Map(this.tables.get("FieldRVA").map((row) => [row.Field.rid, row.RVA]));
     for (const parameter of this.genericParams) {
       if ((parameter.flags & 0x03) === 0 || parameter.owner.table !== 2) continue;

@@ -154,6 +154,8 @@ Portable PDB token remapping has a narrow exception to the preceding limitation:
 
 Custom-attribute constructor validation resolves local generic TypeSpec parents back to their TypeDef before checking that the type derives from `System.Attribute`.
 
+Assembly parsing rejects cycles in locally defined TypeDef inheritance chains, including generic TypeSpec base types.
+
 PE32 and PE32+ CLI assemblies are covered, including PE32+ structural metadata rewriting and output reparsing. The parser requires one Module row, at most one Assembly row, and the special `<Module>` TypeDef first; it also rejects invalid metadata-root stream directories, table-header reserved values, malformed heap entries (including unreferenced entries), and malformed sentinels. Unknown metadata streams are retained byte-for-byte on no-op round trips; operations that remap metadata tokens refuse unknown streams. Supported Field, MethodDef, Param, Property, and Event ownership edits handle `#-` pointer tables only when each table is a bijection to its target table. The implementation otherwise assumes well-formed assemblies from standard compilers; broader malformed/obfuscated-input hardening remains incomplete. Unsupported table/stream layouts and invalid bounds or references encountered during parsing produce explicit errors.
 
 The `#-` reader resolves TypeDef field/method/event/property ownership and MethodDef parameter lists through their pointer tables. Supported ownership edits require one-to-one pointer-to-target mappings; non-bijective layouts are explicitly rejected.

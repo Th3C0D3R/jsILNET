@@ -129,6 +129,8 @@ Portable PDB token remapping has a narrow exception to the generic debug-data re
 
 Custom-attribute constructor validation resolves local generic TypeSpec parents back to their TypeDef before checking `System.Attribute` inheritance.
 
+Assembly parsing also rejects cycles in locally defined TypeDef inheritance chains, including generic TypeSpec base types.
+
 Replacing an EmbeddedSource payload also recomputes its Document hash for recognized SHA-1/SHA-2 GUIDs; unsupported or nil document hash algorithms are rejected.
 
 `replaceClassicPdbStringTableName` supports variable-length UTF-8 names by rebuilding MSF streams and remapping C13 checksum references to shifted `/names` offsets.

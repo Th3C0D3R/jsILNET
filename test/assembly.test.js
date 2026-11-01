@@ -1793,6 +1793,22 @@ test("TypeSpec rows can be inserted before existing rows with signature and meta
   assert.equal(invalidAssembly.modified, false);
 });
 
+test("TypeDef inheritance cycles are rejected during serialization", () => {
+  const assembly = parseAssembly(fixture);
+  const [first, second] = assembly.types.filter((type) => type.rid > 1);
+  assert.ok(first && second);
+  assembly.tables.row(2, first.rid).Extends = {
+    raw: encodeCodedIndex(2, second.rid, "TypeDefOrRef"),
+    target: { table: 2, tableName: "TypeDef", rid: second.rid }
+  };
+  assembly.tables.row(2, second.rid).Extends = {
+    raw: encodeCodedIndex(2, first.rid, "TypeDefOrRef"),
+    target: { table: 2, tableName: "TypeDef", rid: first.rid }
+  };
+  assembly.addTypeRef({ name: "CycleTrigger" });
+  assert.throws(() => assembly.serialize(), /TypeDef inheritance contains a cycle/);
+});
+
 test("TypeSpec generic contexts validate local arity and MemberRef variables", () => {
   const assembly = parseAssembly(fixture);
   const genericType = assembly.types.find((type) => type.name === "Sample`1");
