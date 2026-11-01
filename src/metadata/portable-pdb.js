@@ -15,6 +15,10 @@ const maxEmbeddedSourceSize = 0x10000000;
 const maxEmbeddedPortablePdbSize = 0x10000000;
 const embeddedSourceKind = "0e8a571b-6926-466e-b4ad-8ab04611f5fe";
 const sourceLinkKind = "cc110556-a091-4d38-9fec-25ab9a351a6a";
+const sourceLinkGuidBytes = Uint8Array.from([
+  0x56, 0x05, 0x11, 0xcc, 0x91, 0xa0, 0x38, 0x4d,
+  0x9f, 0xec, 0x25, 0xab, 0x9a, 0x35, 0x1a, 0x6a
+]);
 
 export function validatePortablePdbAssemblyReferences(pdb, assemblyRowCounts) {
   if (!pdb || !(pdb.rowCounts instanceof Map) || !Array.isArray(assemblyRowCounts)) {
@@ -1319,22 +1323,12 @@ function replacePortablePdbCustomDebugInformationValue(
   });
 }
 
-export function replaceEmbeddedPortablePdbSourceLink(pdb, sourceLink) {
-  if (!pdb?.metadataRoot?.streams || !(pdb.tables?.rows instanceof Map) ||
-      !Array.isArray(pdb.tables.counts) || !Array.isArray(pdb.customDebugInformation)) {
-    throw new TypeError("Portable PDB SourceLink editing requires parsed PDB data");
-  }
+function encodeSourceLinkValue(sourceLink) {
   if (sourceLink === null || Array.isArray(sourceLink) || typeof sourceLink !== "object" ||
       sourceLink.documents === null || Array.isArray(sourceLink.documents) ||
       typeof sourceLink.documents !== "object" ||
       Object.values(sourceLink.documents).some((mapping) => typeof mapping !== "string")) {
     throw new TypeError("SourceLink requires a documents object with string mappings");
-  }
-  const debugInfo = pdb.customDebugInformation.find((row) =>
-    row.kind === sourceLinkKind && row.Parent.target?.table === 0
-  );
-  if (!debugInfo) {
-    throw new UnsupportedFormatError("Portable PDB has no module-scoped SourceLink record");
   }
   const json = JSON.stringify(sourceLink);
   if (typeof json !== "string") {
@@ -1344,5 +1338,85 @@ export function replaceEmbeddedPortablePdbSourceLink(pdb, sourceLink) {
   if (decodeUtf8(encoded, "Portable PDB SourceLink") !== json) {
     throw new TypeError("SourceLink JSON must contain valid Unicode text");
   }
-  return replacePortablePdbCustomDebugInformationValue(pdb, debugInfo, encoded);
+  return encoded;
+}
+
+export function addEmbeddedPortablePdbSourceLink(pdb, sourceLink) {
+  if (!pdb?.metadataRoot?.streams || !(pdb.tables?.rows instanceof Map) ||
+      !Array.isArray(pdb.tables.counts) || !Array.isArray(pdb.customDebugInformation)) {
+    throw new TypeError("Portable PDB SourceLink editing requires parsed PDB data");
+  }
+  if (pdb.customDebugInformation.some((row) =>
+    row.kind === sourceLinkKind && row.Parent.target?.table === 0
+  )) {
+    throw new UnsupportedFormatError("Portable PDB already has a module-scoped SourceLink record");
+  }
+  const value = encodeSourceLinkValue(sourceLink);
+  const streams = new Map([...pdb.metadataRoot.streams].map(([streamName, stream]) =>
+    [streamName, { ...stream, bytes: Uint8Array.from(stream.bytes) }]
+  ));
+  const guidStream = streams.get("#GUID");
+  const blobStream = streams.get("#Blob");
+  if (!guidStream || !blobStream) {
+    throw new FormatError("Portable PDB metadata is missing its GUID or Blob heap");
+  }
+  if (guidStream.bytes.length % 16 !== 0) {
+    throw new FormatError("Portable PDB GUID heap size is not a multiple of 16 bytes");
+  }
+  const kindIndex = guidStream.bytes.length / 16 + 1;
+  const expandedGuidStream = new Uint8Array(guidStream.bytes.length + 16);
+  expandedGuidStream.set(guidStream.bytes);
+  expandedGuidStream.set(sourceLinkGuidBytes, guidStream.bytes.length);
+  guidStream.bytes = expandedGuidStream;
+  const appendedValue = appendBlobHeap(blobStream.bytes, value);
+  blobStream.bytes = appendedValue.heap;
+
+  const parent = {
+    raw: encodeCodedIndex(0, 1, "HasCustomDebugInformation"),
+    target: { table: 0, tableName: "Module", rid: 1 }
+  };
+  const rows = new Map(pdb.tables.rows);
+  const debugRows = [...(pdb.tables.rows.get(55) ?? []), {
+    table: 55,
+    tableName: "CustomDebugInformation",
+    rid: 0,
+    Parent: parent,
+    Kind: kindIndex,
+    Value: appendedValue.index
+  }].sort((left, right) => left.Parent.raw - right.Parent.raw)
+    .map((row, index) => ({ ...row, rid: index + 1 }));
+  rows.set(55, debugRows);
+  const counts = [...pdb.tables.counts];
+  counts[55] = debugRows.length;
+  return serializeEmbeddedPortablePdb({
+    ...pdb,
+    metadataRoot: { ...pdb.metadataRoot, streams },
+    tables: {
+      ...pdb.tables,
+      valid: debugRows.length > 0
+        ? pdb.tables.valid | (1n << 55n)
+        : pdb.tables.valid & ~(1n << 55n),
+      counts,
+      rows
+    }
+  });
+}
+
+export function replaceEmbeddedPortablePdbSourceLink(pdb, sourceLink) {
+  if (!pdb?.metadataRoot?.streams || !(pdb.tables?.rows instanceof Map) ||
+      !Array.isArray(pdb.tables.counts) || !Array.isArray(pdb.customDebugInformation)) {
+    throw new TypeError("Portable PDB SourceLink editing requires parsed PDB data");
+  }
+  const encoded = encodeSourceLinkValue(sourceLink);
+  const debugInfo = pdb.customDebugInformation.find((row) =>
+    row.kind === sourceLinkKind && row.Parent.target?.table === 0
+  );
+  if (!debugInfo) {
+    throw new UnsupportedFormatError("Portable PDB has no module-scoped SourceLink record");
+  }
+  return replacePortablePdbCustomDebugInformationValue(
+    pdb,
+    debugInfo,
+    encoded
+  );
 }

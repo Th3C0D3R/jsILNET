@@ -37,6 +37,7 @@ import {
   remapEmbeddedPortablePdbLocalSignatures as remapPortablePdbLocalSignatures,
   removeEmbeddedPortablePdbMethod as removePortablePdbMethod,
   refreshEmbeddedPortablePdbId,
+  addEmbeddedPortablePdbSourceLink as addPortablePdbSourceLink,
   replaceEmbeddedPortablePdbMethodOffsets as replacePortablePdbMethodOffsets,
   replaceEmbeddedPortablePdbDocumentName as replacePortablePdbDocumentName,
   replaceEmbeddedPortablePdbSequencePoints as replacePortablePdbSequencePoints,
@@ -1183,6 +1184,7 @@ export {
   replaceEmbeddedPortablePdbDocumentName,
   replaceEmbeddedPortablePdbSequencePoints,
   replaceEmbeddedPortablePdbSource,
+  addEmbeddedPortablePdbSourceLink,
   replaceEmbeddedPortablePdbSourceLink,
   serializeEmbeddedPortablePdb
 } from "./metadata/portable-pdb.js";
@@ -3124,6 +3126,23 @@ export class Assembly {
       throw new UnsupportedFormatError("Debug-directory entry is not an embedded Portable PDB");
     }
     const data = replacePortablePdbSourceLink(
+      this.#getPortablePdbForEdit(debugEntryIndex, entry),
+      sourceLink
+    );
+    return this.replaceEmbeddedPortablePdb(debugEntryIndex, data);
+  }
+
+  addEmbeddedPortablePdbSourceLink(debugEntryIndex, sourceLink) {
+    this.#ensureEditable();
+    if (!Number.isInteger(debugEntryIndex) || debugEntryIndex < 0 ||
+        debugEntryIndex >= this.pe.debugDirectoryEntries.length) {
+      throw new RangeError(`Invalid debug-directory entry index ${debugEntryIndex}`);
+    }
+    const entry = this.pe.debugDirectoryEntries[debugEntryIndex];
+    if (entry.type !== 17 || !entry.embeddedPortablePdb) {
+      throw new UnsupportedFormatError("Debug-directory entry is not an embedded Portable PDB");
+    }
+    const data = addPortablePdbSourceLink(
       this.#getPortablePdbForEdit(debugEntryIndex, entry),
       sourceLink
     );

@@ -131,6 +131,8 @@ Custom-attribute constructor validation resolves local generic TypeSpec parents 
 
 Assembly parsing also rejects cycles in locally defined TypeDef inheritance chains, including generic TypeSpec base types.
 
+`addEmbeddedPortablePdbSourceLink` appends a module-scoped SourceLink custom-debug record when absent, preserving the existing replace API's requirement that a record already exist.
+
 Replacing an EmbeddedSource payload also recomputes its Document hash for recognized SHA-1/SHA-2 GUIDs; unsupported or nil document hash algorithms are rejected.
 
 `replaceClassicPdbStringTableName` supports variable-length UTF-8 names by rebuilding MSF streams and remapping C13 checksum references to shifted `/names` offsets.
