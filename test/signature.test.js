@@ -58,6 +58,24 @@ test("signature parser rejects invalid type references and trailing bytes", () =
   assert.throws(() => parseSignature(Uint8Array.from([0x00, 0x00, 0x01, 0x41])), /SENTINEL is invalid/);
 });
 
+test("vararg sentinels must precede at least one optional parameter", () => {
+  assert.throws(
+    () => parseSignature(Uint8Array.from([0x05, 0x00, 0x01, 0x41])),
+    /SENTINEL must precede an optional method parameter/
+  );
+  assert.throws(() => encodeSignature({
+    kind: "method",
+    callingConvention: 5,
+    generic: false,
+    genericParameterCount: 0,
+    hasThis: false,
+    explicitThis: false,
+    returnType: { kind: "primitive", elementType: 0x01 },
+    parameters: [],
+    sentinelIndex: 0
+  }), /SENTINEL must precede an optional parameter/);
+});
+
 test("signature parser bounds adversarially deep nested types", () => {
   const nested = Uint8Array.from([...Array(101).fill(0x1d), 0x08]);
   assert.throws(() => parseTypeSignature(nested), /Signature type nesting limit exceeded/);

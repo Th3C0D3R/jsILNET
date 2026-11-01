@@ -134,8 +134,7 @@ function readMethodSignature(reader, depth, header = reader.u1(), counts) {
     if (sentinelIndex !== null || (callingConvention !== 5 && callingConvention !== 11)) {
       fail(reader, "SENTINEL is invalid for this method signature");
     }
-    reader.u1();
-    sentinelIndex = parameterCount;
+    fail(reader, "SENTINEL must precede an optional method parameter");
   }
   return {
     kind: "method",
@@ -205,6 +204,13 @@ function writeMethodSignature(output, signature, depth = 0) {
   if (generic && (!Number.isInteger(signature.genericParameterCount) ||
       signature.genericParameterCount <= 0)) {
     throw new RangeError("Generic method signatures require at least one type parameter");
+  }
+  if (signature.sentinelIndex !== undefined && signature.sentinelIndex !== null &&
+      ((signature.callingConvention !== 5 && signature.callingConvention !== 11) ||
+       !Number.isInteger(signature.sentinelIndex) ||
+       signature.sentinelIndex < 0 ||
+       signature.sentinelIndex >= signature.parameters.length)) {
+    throw new RangeError("SENTINEL must precede an optional parameter in a vararg signature");
   }
   output.push(
     signature.callingConvention |
