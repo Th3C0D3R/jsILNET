@@ -26,7 +26,9 @@ const dynamicLocalVariablesKind = "83c563c4-b4f3-47d5-b824-ba5441477ea8";
 const compilationMetadataReferencesKind = "7e4d4708-096e-4c5c-aeda-cb10ba6a740d";
 const compilationOptionsKind = "b5feec05-8cd0-4a83-96da-466284bb4bd8";
 const typeDefinitionDocumentKind = "932e74bc-dba9-4478-8d46-0f32a7bab3d3";
+const asyncMethodSteppingInformationKind = "54fd2ac5-e925-401a-9c2a-f94f171072f8";
 const stateMachineHoistedLocalScopesKind = "6da9a61e-f8c7-4874-be62-68bc5630df71";
+const editAndContinueStateMachineStateMapKind = "8b78cd68-2ede-420b-980b-e15884b8aaa3";
 const editAndContinueLocalSlotMapKind = "755f52a8-91c5-45be-b4b8-209571e552bd";
 const editAndContinueLambdaAndClosureMapKind = "a643004c-0240-496f-a783-30d64f4979de";
 const embeddedSourceGuidBytes = Uint8Array.from([
@@ -154,7 +156,12 @@ export function validatePortablePdbCodeViewIdentity(pdb, codeView, timeDateStamp
   }
 }
 
-export function decodePortablePdbCustomDebugInformation(row, heaps, documentCount = 0xffffffff) {
+export function decodePortablePdbCustomDebugInformation(
+  row,
+  heaps,
+  documentCount = 0xffffffff,
+  methodCount = 0xffffffff
+) {
   const kindBytes = heaps.getGuid(row.Kind);
   if (!kindBytes) throw new FormatError("Portable PDB custom debug information has a nil Kind");
   const kind = formatGuid(kindBytes);
@@ -308,6 +315,48 @@ export function decodePortablePdbCustomDebugInformation(row, heaps, documentCoun
     }
     return { kind, typeDefinitionDocuments: documents };
   }
+  if (kind === asyncMethodSteppingInformationKind) {
+    if (row.Parent.target?.table !== 6) {
+      throw new FormatError(
+        "AsyncMethodSteppingInformation custom debug information must belong to a MethodDef"
+      );
+    }
+    if (value.length < 4) {
+      throw new FormatError("Portable PDB AsyncMethodSteppingInformation data is truncated");
+    }
+    const catchHandlerValue = new DataView(value.buffer, value.byteOffset, 4)
+      .getUint32(0, true);
+    if (catchHandlerValue > 0x80000000) {
+      throw new FormatError("Portable PDB AsyncMethodSteppingInformation has an invalid catch offset");
+    }
+    const reader = new BinaryReader(value, {
+      start: 4,
+      context: "Portable PDB AsyncMethodSteppingInformation"
+    });
+    const steps = [];
+    while (reader.remaining > 0) {
+      if (reader.remaining < 8) {
+        throw new FormatError("Portable PDB AsyncMethodSteppingInformation step is truncated");
+      }
+      const yieldOffset = reader.u4();
+      const resumeOffset = reader.u4();
+      const methodRid = readCompressedUInt(reader);
+      if (yieldOffset >= 0x80000000 || resumeOffset >= 0x80000000 ||
+          methodRid === 0 || methodRid > methodCount) {
+        throw new FormatError(
+          "Portable PDB AsyncMethodSteppingInformation contains an invalid offset or MethodDef"
+        );
+      }
+      steps.push({ yieldOffset, resumeOffset, methodRid });
+    }
+    return {
+      kind,
+      asyncMethodSteppingInformation: {
+        catchHandlerOffset: catchHandlerValue === 0 ? -1 : catchHandlerValue - 1,
+        steps
+      }
+    };
+  }
   if (kind === stateMachineHoistedLocalScopesKind) {
     if (row.Parent.target?.table !== 6) {
       throw new FormatError(
@@ -332,6 +381,50 @@ export function decodePortablePdbCustomDebugInformation(row, heaps, documentCoun
     }
     return { kind, stateMachineHoistedLocalScopes: scopes };
   }
+  if (kind === editAndContinueStateMachineStateMapKind) {
+    if (row.Parent.target?.table !== 6) {
+      throw new FormatError(
+        "EditAndContinueStateMachineStateMap custom debug information must belong to a MethodDef"
+      );
+    }
+    const reader = new BinaryReader(value, {
+      context: "Portable PDB EditAndContinueStateMachineStateMap"
+    });
+    const stateCount = reader.remaining === 0 ? 0 : readCompressedUInt(reader);
+    if (stateCount === 0) {
+      if (reader.remaining !== 0) {
+        throw new FormatError(
+          "Portable PDB EditAndContinueStateMachineStateMap has trailing data"
+        );
+      }
+      return { kind, editAndContinueStateMachineStateMap: [] };
+    }
+    if (stateCount > Math.floor(reader.remaining / 2)) {
+      throw new FormatError(
+        "Portable PDB EditAndContinueStateMachineStateMap state list is truncated"
+      );
+    }
+    const syntaxOffsetBaseline = -readCompressedUInt(reader);
+    const states = [];
+    let previousSyntaxOffset = -1;
+    for (let index = 0; index < stateCount; index++) {
+      const stateNumber = readCompressedInt(reader);
+      const syntaxOffset = readCompressedUInt(reader) + syntaxOffsetBaseline;
+      if (syntaxOffset < previousSyntaxOffset) {
+        throw new FormatError(
+          "Portable PDB EditAndContinueStateMachineStateMap offsets are unsorted"
+        );
+      }
+      states.push({ stateNumber, syntaxOffset });
+      previousSyntaxOffset = syntaxOffset;
+    }
+    if (reader.remaining !== 0) {
+      throw new FormatError(
+        "Portable PDB EditAndContinueStateMachineStateMap has trailing data"
+      );
+    }
+    return { kind, editAndContinueStateMachineStateMap: states };
+  }
   if (kind === editAndContinueLocalSlotMapKind) {
     if (row.Parent.target?.table !== 6) {
       throw new FormatError(
@@ -342,24 +435,23 @@ export function decodePortablePdbCustomDebugInformation(row, heaps, documentCoun
       context: "Portable PDB EditAndContinueLocalSlotMap"
     });
     let syntaxOffsetBaseline = -1;
-    if (reader.remaining > 0 && value[0] === 0xff) {
-      reader.u1();
-      syntaxOffsetBaseline = -readCompressedUInt(reader);
-    }
     const slots = [];
     while (reader.remaining > 0) {
       const header = reader.u1();
-      const kind = header & 0x7f;
-      if (kind === 0x7f) {
+      if (header === 0xff) {
+        syntaxOffsetBaseline = -readCompressedUInt(reader);
+        continue;
+      }
+      if (header === 0) {
+        slots.push({ kind: null, syntaxOffset: null, ordinal: null });
+        continue;
+      }
+      if ((header & 0x40) !== 0 || (header & 0x3f) === 0) {
         throw new FormatError("Portable PDB EditAndContinueLocalSlotMap has an invalid slot kind");
       }
-      const syntaxOffset = readCompressedUInt(reader);
-      const ordinal = (header & 0x80) !== 0 ? readCompressedUInt(reader) : null;
-      if (syntaxOffset + syntaxOffsetBaseline < 0) {
-        throw new FormatError(
-          "Portable PDB EditAndContinueLocalSlotMap has an invalid syntax offset"
-        );
-      }
+      const kind = (header & 0x3f) - 1;
+      const syntaxOffset = readCompressedUInt(reader) + syntaxOffsetBaseline;
+      const ordinal = (header & 0x80) !== 0 ? readCompressedUInt(reader) : 0;
       slots.push({ kind, syntaxOffset, ordinal });
     }
     return { kind, editAndContinueLocalSlotMap: { syntaxOffsetBaseline, slots } };
@@ -412,6 +504,8 @@ function canRemapMethodScopedCustomDebugInformation(pdb) {
       .filter((record) =>
         record.Parent.target?.table === 6 &&
         (Array.isArray(record.stateMachineHoistedLocalScopes) ||
+         Array.isArray(record.editAndContinueStateMachineStateMap) ||
+         record.asyncMethodSteppingInformation ||
          record.editAndContinueLocalSlotMap ||
          record.editAndContinueLambdaAndClosureMap)
       )
@@ -420,6 +514,70 @@ function canRemapMethodScopedCustomDebugInformation(pdb) {
   return (pdb.tables.rows.get(55) ?? []).every((record) =>
     record.Parent.target?.table !== 6 || recognizedRecords.has(record.rid)
   );
+}
+
+function encodeAsyncMethodSteppingInformation(information) {
+  const { catchHandlerOffset, steps } = information;
+  if (!Number.isInteger(catchHandlerOffset) || catchHandlerOffset < -1 ||
+      catchHandlerOffset >= 0x80000000 || !Array.isArray(steps) ||
+      steps.some((step) =>
+        !Number.isInteger(step.yieldOffset) || !Number.isInteger(step.resumeOffset) ||
+        step.yieldOffset < 0 || step.resumeOffset < 0 ||
+        step.yieldOffset >= 0x80000000 || step.resumeOffset >= 0x80000000 ||
+        !Number.isInteger(step.methodRid) || step.methodRid < 1 ||
+        step.methodRid >= 0x20000000
+      )) {
+    throw new FormatError("Portable PDB async stepping data is invalid");
+  }
+  const bytes = new Uint8Array(4 + steps.reduce((length, step) =>
+    length + 8 + appendCompressedUInt(step.methodRid).length, 0
+  ));
+  const view = new DataView(bytes.buffer);
+  view.setUint32(0, catchHandlerOffset + 1, true);
+  let offset = 4;
+  for (const step of steps) {
+    view.setUint32(offset, step.yieldOffset, true);
+    view.setUint32(offset + 4, step.resumeOffset, true);
+    offset += 8;
+    const methodRid = appendCompressedUInt(step.methodRid);
+    bytes.set(methodRid, offset);
+    offset += methodRid.length;
+  }
+  return bytes;
+}
+
+function remapAsyncMethodReferences(pdb, records, remapMethodRid) {
+  const recordsByRid = new Map(
+    pdb.customDebugInformation
+      .filter((record) => record.asyncMethodSteppingInformation)
+      .map((record) => [record.rid, record.asyncMethodSteppingInformation])
+  );
+  let streams = null;
+  const updatedRecords = records.map((record) => {
+    const information = recordsByRid.get(record.rid);
+    if (!information) return { ...record };
+    const steps = information.steps.map((step) => ({
+      ...step,
+      methodRid: remapMethodRid(step.methodRid)
+    }));
+    if (steps.every((step, index) =>
+      step.methodRid === information.steps[index].methodRid
+    )) {
+      return { ...record };
+    }
+    streams ??= new Map([...pdb.metadataRoot.streams].map(([name, stream]) =>
+      [name, { ...stream, bytes: Uint8Array.from(stream.bytes) }]
+    ));
+    const blobStream = streams.get("#Blob");
+    if (!blobStream) throw new FormatError("Portable PDB metadata is missing its #Blob heap");
+    const appended = appendBlobHeap(
+      blobStream.bytes,
+      encodeAsyncMethodSteppingInformation({ ...information, steps })
+    );
+    blobStream.bytes = appended.heap;
+    return { ...record, Value: appended.index };
+  });
+  return { records: updatedRecords, streams };
 }
 
 function sortPortablePdbCustomDebugInformation(records) {
@@ -833,7 +991,12 @@ export function parsePortablePdbTables(tables, heaps, typeSystemCounts) {
   }
   const customDebugInformation = tables.get(55).map((row) => ({
     ...row,
-    ...decodePortablePdbCustomDebugInformation(row, heaps, documents.length)
+    ...decodePortablePdbCustomDebugInformation(
+      row,
+      heaps,
+      documents.length,
+      typeSystemCounts[6]
+    )
   }));
   return { documents, methodDebugInformation, stateMachineMethods, customDebugInformation };
 }
@@ -992,7 +1155,13 @@ export function replaceEmbeddedPortablePdbSequencePoints(pdb, methodRid, sequenc
 export function replaceEmbeddedPortablePdbMethodOffsets(
   pdb,
   methodRid,
-  { sequencePoints = null, localSignatureRid = 0, scopes = [] } = {}
+  {
+    sequencePoints = null,
+    localSignatureRid = 0,
+    scopes = [],
+    stateMachineHoistedLocalScopes = [],
+    asyncMethodSteppingInformation = []
+  } = {}
 ) {
   if (!pdb?.metadataRoot?.streams || !(pdb.tables?.rows instanceof Map) ||
       !Array.isArray(pdb.tables.counts) || !(pdb.rowCounts instanceof Map)) {
@@ -1002,8 +1171,9 @@ export function replaceEmbeddedPortablePdbMethodOffsets(
       methodRid > (pdb.rowCounts.get(6) ?? 0)) {
     throw new RangeError(`Invalid Portable PDB MethodDef row ID ${methodRid}`);
   }
-  if (!Array.isArray(scopes)) {
-    throw new TypeError("Portable PDB local-scope edits must be an array");
+  if (!Array.isArray(scopes) || !Array.isArray(stateMachineHoistedLocalScopes) ||
+      !Array.isArray(asyncMethodSteppingInformation)) {
+    throw new TypeError("Portable PDB offset edits must be arrays");
   }
   const scopeRows = pdb.tables.rows.get(50) ?? [];
   const scopeUpdates = new Map(scopes.map((scope) => [scope.rid, scope]));
@@ -1015,7 +1185,68 @@ export function replaceEmbeddedPortablePdbMethodOffsets(
   )) {
     throw new FormatError("Portable PDB local-scope edits contain invalid rows or ranges");
   }
+  const customDebugRows = pdb.tables.rows.get(55) ?? [];
+  const hoistedScopeUpdates = new Map(
+    stateMachineHoistedLocalScopes.map((update) => [update.rid, update])
+  );
+  const asyncSteppingUpdates = new Map(
+    asyncMethodSteppingInformation.map((update) => [update.rid, update])
+  );
+  if (hoistedScopeUpdates.size !== stateMachineHoistedLocalScopes.length ||
+      stateMachineHoistedLocalScopes.some((update) =>
+        !Number.isInteger(update.rid) || !Array.isArray(update.scopes) ||
+        !pdb.customDebugInformation.some((record) =>
+          record.rid === update.rid &&
+          record.Parent.target?.table === 6 &&
+          record.Parent.target.rid === methodRid &&
+          Array.isArray(record.stateMachineHoistedLocalScopes)
+        ) ||
+        !customDebugRows.some((record) => record.rid === update.rid) ||
+        update.scopes.some((scope) =>
+          !Number.isInteger(scope.startOffset) || !Number.isInteger(scope.length) ||
+          scope.startOffset < 0 || scope.startOffset >= 0x80000000 ||
+          scope.length <= 0 || scope.length >= 0x80000000 ||
+          scope.startOffset + scope.length > 0x80000000
+        )
+      )) {
+    throw new FormatError(
+      "Portable PDB state-machine hoisted-local scope edits contain invalid records or ranges"
+    );
+  }
+  if (asyncSteppingUpdates.size !== asyncMethodSteppingInformation.length ||
+      asyncMethodSteppingInformation.some((update) =>
+        !Number.isInteger(update.rid) || !Array.isArray(update.steps) ||
+        !pdb.customDebugInformation.some((record) =>
+          record.rid === update.rid &&
+          record.Parent.target?.table === 6 &&
+          record.Parent.target.rid === methodRid &&
+          record.asyncMethodSteppingInformation
+        ) ||
+        !customDebugRows.some((record) => record.rid === update.rid) ||
+        update.steps.some((step) =>
+          !Number.isInteger(step.yieldOffset) || !Number.isInteger(step.resumeOffset) ||
+          step.yieldOffset < 0 || step.resumeOffset < 0 ||
+          step.yieldOffset >= 0x80000000 || step.resumeOffset >= 0x80000000 ||
+          !Number.isInteger(step.methodRid) || step.methodRid < 1 ||
+          step.methodRid > (pdb.rowCounts.get(6) ?? 0)
+        )
+      )) {
+    throw new FormatError(
+      "Portable PDB async stepping edits contain invalid records or offsets"
+    );
+  }
   const rows = new Map(pdb.tables.rows);
+  let streams = null;
+  const appendBlob = (value) => {
+    streams ??= new Map([...pdb.metadataRoot.streams].map(([name, stream]) =>
+      [name, { ...stream, bytes: Uint8Array.from(stream.bytes) }]
+    ));
+    const blobStream = streams.get("#Blob");
+    if (!blobStream) throw new FormatError("Portable PDB metadata is missing its #Blob heap");
+    const appended = appendBlobHeap(blobStream.bytes, value);
+    blobStream.bytes = appended.heap;
+    return appended.index;
+  };
   const methodRows = pdb.tables.rows.get(49) ?? [];
   if (sequencePoints !== null) {
     const row = methodRows[methodRid - 1];
@@ -1032,41 +1263,46 @@ export function replaceEmbeddedPortablePdbMethodOffsets(
       documentCount: pdb.tables.counts[48],
       localSignatureCount: pdb.rowCounts.get(17) ?? 0
     });
-    const streams = new Map([...pdb.metadataRoot.streams].map(([name, stream]) =>
-      [name, { ...stream, bytes: Uint8Array.from(stream.bytes) }]
-    ));
-    const blobStream = streams.get("#Blob");
-    if (!blobStream) throw new FormatError("Portable PDB metadata is missing its #Blob heap");
-    const appended = appendBlobHeap(blobStream.bytes, encoded);
-    blobStream.bytes = appended.heap;
+    const sequencePointsIndex = appendBlob(encoded);
     rows.set(49, methodRows.map((methodRow) =>
       methodRow.rid === methodRid
-        ? { ...methodRow, SequencePoints: appended.index }
+        ? { ...methodRow, SequencePoints: sequencePointsIndex }
         : { ...methodRow }
     ));
-    if (scopes.length > 0) {
-      rows.set(50, scopeRows.map((scopeRow) => {
-        const update = scopeUpdates.get(scopeRow.rid);
-        return update
-          ? { ...scopeRow, StartOffset: update.startOffset, Length: update.length }
-          : { ...scopeRow };
-      }));
-    }
-    return serializeEmbeddedPortablePdb({
-      ...pdb,
-      metadataRoot: { ...pdb.metadataRoot, streams },
-      tables: { ...pdb.tables, rows }
-    });
   }
-  if (scopes.length === 0) return serializeEmbeddedPortablePdb(pdb);
-  rows.set(50, scopeRows.map((scopeRow) => {
-    const update = scopeUpdates.get(scopeRow.rid);
-    return update
-      ? { ...scopeRow, StartOffset: update.startOffset, Length: update.length }
-      : { ...scopeRow };
-  }));
+  if (scopes.length > 0) {
+    rows.set(50, scopeRows.map((scopeRow) => {
+      const update = scopeUpdates.get(scopeRow.rid);
+      return update
+        ? { ...scopeRow, StartOffset: update.startOffset, Length: update.length }
+        : { ...scopeRow };
+    }));
+  }
+  if (stateMachineHoistedLocalScopes.length > 0 ||
+      asyncMethodSteppingInformation.length > 0) {
+    rows.set(55, customDebugRows.map((record) => {
+      const update = hoistedScopeUpdates.get(record.rid);
+      if (update) {
+        const value = new Uint8Array(update.scopes.length * 8);
+        const view = new DataView(value.buffer);
+        update.scopes.forEach((scope, index) => {
+          view.setUint32(index * 8, scope.startOffset, true);
+          view.setUint32(index * 8 + 4, scope.length, true);
+        });
+        return { ...record, Value: appendBlob(value) };
+      }
+      const asyncUpdate = asyncSteppingUpdates.get(record.rid);
+      return asyncUpdate
+        ? {
+            ...record,
+            Value: appendBlob(encodeAsyncMethodSteppingInformation(asyncUpdate))
+          }
+        : { ...record };
+    }));
+  }
   return serializeEmbeddedPortablePdb({
     ...pdb,
+    ...(streams ? { metadataRoot: { ...pdb.metadataRoot, streams } } : {}),
     tables: { ...pdb.tables, rows }
   });
 }
@@ -1150,8 +1386,13 @@ export function insertEmbeddedPortablePdbMethod(pdb, methodRid, oldCounts, newCo
       "Portable PDB method remapping cannot update method-scoped CustomDebugInformation"
     );
   }
+  const asyncRemapped = remapAsyncMethodReferences(
+    pdb,
+    customDebugRows,
+    (rid) => rid >= methodRid ? rid + 1 : rid
+  );
   const remappedCustomDebugRows = sortPortablePdbCustomDebugInformation(
-    customDebugRows.map((record) => {
+    asyncRemapped.records.map((record) => {
       const target = record.Parent.target;
       if (target?.table !== 6 || target.rid < methodRid) return { ...record };
       const rid = target.rid + 1;
@@ -1190,7 +1431,7 @@ export function insertEmbeddedPortablePdbMethod(pdb, methodRid, oldCounts, newCo
     countOffset += 4;
   }
 
-  const streams = new Map([...pdb.metadataRoot.streams].map(([name, stream]) =>
+  const streams = new Map([...(asyncRemapped.streams ?? pdb.metadataRoot.streams)].map(([name, stream]) =>
     [name, { ...stream, bytes: Uint8Array.from(stream.bytes) }]
   ));
   const pdbMetadataStream = streams.get("#Pdb");
@@ -1416,12 +1657,23 @@ export function removeEmbeddedPortablePdbMethod(pdb, methodRid, oldCounts, newCo
       "Portable PDB method remapping cannot update method-scoped CustomDebugInformation"
     );
   }
+  const survivingCustomDebugRows = customDebugRows.filter((record) =>
+    record.Parent.target?.table !== 6 || record.Parent.target.rid !== methodRid
+  );
+  const asyncRemapped = remapAsyncMethodReferences(
+    pdb,
+    survivingCustomDebugRows,
+    (rid) => {
+      if (rid === methodRid) {
+        throw new UnsupportedFormatError(
+          "Portable PDB method removal cannot discard a method referenced by async stepping information"
+        );
+      }
+      return rid > methodRid ? rid - 1 : rid;
+    }
+  );
   const remappedCustomDebugRows = sortPortablePdbCustomDebugInformation(
-    customDebugRows
-      .filter((record) =>
-        record.Parent.target?.table !== 6 || record.Parent.target.rid !== methodRid
-      )
-      .map((record) => {
+    asyncRemapped.records.map((record) => {
         const target = record.Parent.target;
         const rid = target?.table === 6 && target.rid > methodRid
           ? target.rid - 1
@@ -1470,7 +1722,7 @@ export function removeEmbeddedPortablePdbMethod(pdb, methodRid, oldCounts, newCo
     countOffset += 4;
   }
 
-  const streams = new Map([...pdb.metadataRoot.streams].map(([name, stream]) =>
+  const streams = new Map([...(asyncRemapped.streams ?? pdb.metadataRoot.streams)].map(([name, stream]) =>
     [name, { ...stream, bytes: Uint8Array.from(stream.bytes) }]
   ));
   const pdbMetadataStream = streams.get("#Pdb");

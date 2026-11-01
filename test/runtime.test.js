@@ -217,22 +217,22 @@ test("Portable PDB compilation CDI decoders validate strings and record bounds",
     decodeLocalSlotMap(Uint8Array.of(0x81, 1, 1)).editAndContinueLocalSlotMap,
     {
       syntaxOffsetBaseline: -1,
-      slots: [{ kind: 1, syntaxOffset: 1, ordinal: 1 }]
+      slots: [{ kind: 0, syntaxOffset: 0, ordinal: 1 }]
     }
   );
   assert.deepEqual(
     decodeLocalSlotMap(Uint8Array.of(0xff, 2, 0x81, 2, 1)).editAndContinueLocalSlotMap,
     {
       syntaxOffsetBaseline: -2,
-      slots: [{ kind: 1, syntaxOffset: 2, ordinal: 1 }]
+      slots: [{ kind: 0, syntaxOffset: 0, ordinal: 1 }]
     }
+  );
+  assert.deepEqual(
+    decodeLocalSlotMap(Uint8Array.of(0)).editAndContinueLocalSlotMap.slots,
+    [{ kind: null, syntaxOffset: null, ordinal: null }]
   );
   assert.throws(() => decodeLocalSlotMap(Uint8Array.of(0x7f, 0)), /invalid slot kind/);
   assert.throws(() => decodeLocalSlotMap(Uint8Array.of(0x81, 1)), /exceeds the available/);
-  assert.throws(
-    () => decodeLocalSlotMap(Uint8Array.of(0x81, 0, 0)),
-    /invalid syntax offset/
-  );
   assert.throws(() => decodeLocalSlotMap(Uint8Array.of(0), 52), /must belong to a MethodDef/);
 
   const lambdaMapGuid = Uint8Array.from([
@@ -269,6 +269,40 @@ test("Portable PDB compilation CDI decoders validate strings and record bounds",
   assert.throws(() => decodeLambdaMap(Uint8Array.of(1, 0, 0), 0), /must belong to a MethodDef/);
 });
 
+test("Portable PDB async stepping decoder validates offsets and MethodDef references", () => {
+  const asyncSteppingGuid = Uint8Array.from([
+    0xc5, 0x2a, 0xfd, 0x54, 0x25, 0xe9, 0x1a, 0x40,
+    0x9c, 0x2a, 0xf9, 0x4f, 0x17, 0x10, 0x72, 0xf8
+  ]);
+  const decode = (value, methodCount = 2, parentTable = 6) =>
+    decodePortablePdbCustomDebugInformation(
+      { Kind: 1, Value: 1, Parent: { target: { table: parentTable } } },
+      {
+        getGuid: () => asyncSteppingGuid,
+        getBlob: () => value
+      },
+      0xffffffff,
+      methodCount
+    );
+  const valid = Uint8Array.of(0, 0, 0, 0, 4, 0, 0, 0, 9, 0, 0, 0, 2);
+  assert.deepEqual(decode(valid).asyncMethodSteppingInformation, {
+    catchHandlerOffset: -1,
+    steps: [{ yieldOffset: 4, resumeOffset: 9, methodRid: 2 }]
+  });
+  assert.throws(() => decode(valid, 2, 0), /must belong to a MethodDef/);
+  assert.throws(
+    () => decode(Uint8Array.of(1, 0, 0, 0, 4, 0, 0)),
+    /step is truncated/
+  );
+  assert.throws(
+    () => decode(Uint8Array.of(1, 0, 0, 0, 4, 0, 0, 0, 9, 0, 0, 0, 3)),
+    /invalid offset or MethodDef/
+  );
+  const invalidCatchOffset = Uint8Array.of(1, 0, 0, 0);
+  new DataView(invalidCatchOffset.buffer).setUint32(0, 0x80000001, true);
+  assert.throws(() => decode(invalidCatchOffset), /invalid catch offset/);
+});
+
 test("MethodDef insertion and removal remap recognized method-scoped CDI", {
   skip: dotnetAvailable ? false : ".NET SDK/runtime is unavailable"
 }, async () => {
@@ -288,7 +322,9 @@ test("MethodDef insertion and removal remap recognized method-scoped CDI", {
       join(directory, "Fixture.cs"),
       "public abstract class PdbInsertedMethodOwner {} " +
       "public class PdbMethodCdiFixture { " +
-      "public static int Compute(int argument) { int copy = argument; return copy; } }"
+      "public static int Compute(int argument) { int copy = argument; return copy; } " +
+      "public static async System.Threading.Tasks.Task<int> AsyncCompute() { " +
+      "await System.Threading.Tasks.Task.Yield(); return 42; } }"
     );
     const build = spawnSync(
       "dotnet",
@@ -308,10 +344,15 @@ test("MethodDef insertion and removal remap recognized method-scoped CDI", {
     const localSlotRecord = initialPdb?.customDebugInformation.find((record) =>
       record.editAndContinueLocalSlotMap && record.Parent.target?.rid === methodRid
     );
+    const asyncSteppingRecord = initialPdb?.customDebugInformation.find((record) =>
+      record.asyncMethodSteppingInformation
+    );
     assert.ok(method);
     assert.ok(owner);
     assert.ok(localSlotRecord);
+    assert.ok(asyncSteppingRecord);
     const originalSlotMap = localSlotRecord.editAndContinueLocalSlotMap;
+    const originalAsyncStepping = asyncSteppingRecord.asyncMethodSteppingInformation;
 
     const inserted = assembly.insertMethod({
       owner: { table: "TypeDef", rid: owner.rid },
@@ -330,6 +371,22 @@ test("MethodDef insertion and removal remap recognized method-scoped CDI", {
     assert.ok(shiftedSlotRecord);
     assert.equal(shiftedSlotRecord.Parent.target?.rid, methodRid + 1);
     assert.deepEqual(shiftedSlotRecord?.editAndContinueLocalSlotMap, originalSlotMap);
+    const insertedRid = inserted.token & 0x00ffffff;
+    const shiftedAsyncRecord = insertedPdb?.customDebugInformation.find((record) =>
+      record.kind === asyncSteppingRecord.kind &&
+      record.Parent.target?.rid === (
+        asyncSteppingRecord.Parent.target.rid >= insertedRid
+          ? asyncSteppingRecord.Parent.target.rid + 1
+          : asyncSteppingRecord.Parent.target.rid
+      )
+    );
+    assert.deepEqual(
+      shiftedAsyncRecord?.asyncMethodSteppingInformation.steps,
+      originalAsyncStepping.steps.map((step) => ({
+        ...step,
+        methodRid: step.methodRid >= insertedRid ? step.methodRid + 1 : step.methodRid
+      }))
+    );
 
     const cdiRemovalAssembly = parseAssembly(assembly.serialize());
     const cdiRemovalDebugIndex = cdiRemovalAssembly.pe.debugDirectoryEntries.findIndex((entry) =>
@@ -340,7 +397,9 @@ test("MethodDef insertion and removal remap recognized method-scoped CDI", {
     const methodScopedRecord = cdiRemovalPdb.customDebugInformation.find((record) =>
       record.editAndContinueLocalSlotMap
     );
-    const insertedRid = inserted.token & 0x00ffffff;
+    const expectedLocalSlotCount = cdiRemovalPdb.customDebugInformation.filter((record) =>
+      record.editAndContinueLocalSlotMap
+    ).length - 1;
     const insertedParent = {
       raw: encodeCodedIndex(6, insertedRid, "HasCustomDebugInformation"),
       target: { table: 6, tableName: "MethodDef", rid: insertedRid }
@@ -365,9 +424,12 @@ test("MethodDef insertion and removal remap recognized method-scoped CDI", {
     const cdiRemovedPdb = parseAssembly(cdiRemovalAssembly.serialize())
       .pe.debugDirectoryEntries.find((entry) => entry.embeddedPortablePdb)
       .embeddedPortablePdb;
-    assert.equal(cdiRemovedPdb.customDebugInformation.some((record) =>
-      record.editAndContinueLocalSlotMap
-    ), false);
+    assert.equal(
+      cdiRemovedPdb.customDebugInformation.filter((record) =>
+        record.editAndContinueLocalSlotMap
+      ).length,
+      expectedLocalSlotCount
+    );
 
     assembly.removeMethod(inserted.token & 0x00ffffff);
     const removedAssembly = parseAssembly(assembly.serialize());
@@ -379,6 +441,101 @@ test("MethodDef insertion and removal remap recognized method-scoped CDI", {
     );
     assert.equal(restoredSlotRecord?.Parent.target?.rid, methodRid);
     assert.deepEqual(restoredSlotRecord?.editAndContinueLocalSlotMap, originalSlotMap);
+    const restoredAsyncRecord = removedPdb?.customDebugInformation.find((record) =>
+      record.kind === asyncSteppingRecord.kind &&
+      record.Parent.target?.rid === asyncSteppingRecord.Parent.target.rid
+    );
+    assert.deepEqual(
+      restoredAsyncRecord?.asyncMethodSteppingInformation,
+      originalAsyncStepping
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("IL edits rebase state-machine hoisted-local scopes", {
+  skip: dotnetAvailable ? false : ".NET SDK/runtime is unavailable"
+}, async () => {
+  const directory = await mkdtemp(join(tmpdir(), "jsilnet-pdb-hoisted-scopes-"));
+  try {
+    const project = join(directory, "PdbHoistedScopes.csproj");
+    const output = join(directory, "out");
+    await writeFile(project, [
+      "<Project Sdk=\"Microsoft.NET.Sdk\">",
+      "  <PropertyGroup>",
+      `    <TargetFramework>${targetFramework}</TargetFramework>`,
+      "    <DebugType>embedded</DebugType>",
+      "  </PropertyGroup>",
+      "</Project>"
+    ].join("\n"));
+    await writeFile(
+      join(directory, "Fixture.cs"),
+      "using System.Threading.Tasks; " +
+      "public class PdbHoistedScopesFixture { " +
+      "public async Task<int> ComputeAsync() { int value = 5; " +
+      "await Task.Yield(); return value; } }"
+    );
+    const build = spawnSync(
+      "dotnet",
+      ["build", project, "--configuration", "Debug", "--output", output, "--nologo"],
+      { encoding: "utf8", timeout: 120_000 }
+    );
+    assert.equal(build.status, 0, build.stderr || build.stdout || build.error?.message);
+
+    const assembly = parseAssembly(
+      Uint8Array.from(await readFile(join(output, "PdbHoistedScopes.dll")))
+    );
+    const pdb = assembly.pe.debugDirectoryEntries.find((entry) =>
+      entry.embeddedPortablePdb
+    )?.embeddedPortablePdb;
+    const hoistedScopesRecord = pdb?.customDebugInformation.find((record) =>
+      Array.isArray(record.stateMachineHoistedLocalScopes) &&
+      record.stateMachineHoistedLocalScopes.length > 0
+    );
+    assert.ok(hoistedScopesRecord);
+    const methodRid = hoistedScopesRecord.Parent.target?.rid;
+    const asyncSteppingRecord = pdb.customDebugInformation.find((record) =>
+      record.Parent.target?.table === 6 &&
+      record.Parent.target.rid === methodRid &&
+      record.asyncMethodSteppingInformation
+    );
+    assert.ok(asyncSteppingRecord);
+    const method = assembly.methods.find((item) => item.rid === methodRid);
+    assert.ok(method);
+    const originalScopes = hoistedScopesRecord.stateMachineHoistedLocalScopes;
+    const originalAsyncStepping = asyncSteppingRecord.asyncMethodSteppingInformation;
+
+    assembly.insertInstruction(method.rid, 0, "nop");
+    const rewritten = parseAssembly(assembly.serialize());
+    const rewrittenPdb = rewritten.pe.debugDirectoryEntries.find((entry) =>
+      entry.embeddedPortablePdb
+    )?.embeddedPortablePdb;
+    const rewrittenRecord = rewrittenPdb?.customDebugInformation.find((record) =>
+      record.kind === hoistedScopesRecord.kind &&
+      record.Parent.target?.rid === methodRid
+    );
+    assert.deepEqual(
+      rewrittenRecord?.stateMachineHoistedLocalScopes,
+      originalScopes.map((scope) => ({
+        startOffset: scope.startOffset + 1,
+        length: scope.length
+      }))
+    );
+    const rewrittenAsyncStepping = rewrittenPdb?.customDebugInformation.find((record) =>
+      record.kind === asyncSteppingRecord.kind &&
+      record.Parent.target?.rid === methodRid
+    )?.asyncMethodSteppingInformation;
+    assert.deepEqual(rewrittenAsyncStepping, {
+      catchHandlerOffset: originalAsyncStepping.catchHandlerOffset < 0
+        ? originalAsyncStepping.catchHandlerOffset
+        : originalAsyncStepping.catchHandlerOffset + 1,
+      steps: originalAsyncStepping.steps.map((step) => ({
+        ...step,
+        yieldOffset: step.yieldOffset + 1,
+        resumeOffset: step.resumeOffset + 1
+      }))
+    });
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

@@ -1984,11 +1984,18 @@ export class Assembly {
       const debugEntryIndex = embeddedPdbIndices[0];
       const entry = this.pe.debugDirectoryEntries[debugEntryIndex];
       const pdb = this.#getPortablePdbForEdit(debugEntryIndex, entry);
-      if (pdb.customDebugInformation.some((record) =>
+      const methodCustomDebugInformation = pdb.customDebugInformation.filter((record) =>
         record.Parent.target?.table === 6 && record.Parent.target.rid === methodRid
+      );
+      if (methodCustomDebugInformation.some((record) =>
+        !Array.isArray(record.stateMachineHoistedLocalScopes) &&
+        !Array.isArray(record.editAndContinueStateMachineStateMap) &&
+        !record.asyncMethodSteppingInformation &&
+        !record.editAndContinueLocalSlotMap &&
+        !record.editAndContinueLambdaAndClosureMap
       )) {
         throw new UnsupportedFormatError(
-          "Instruction-offset changes cannot rewrite method-scoped custom debug information"
+          "Instruction-offset changes cannot rewrite opaque method-scoped custom debug information"
         );
       }
       const methodInfo = pdb.methodDebugInformation[methodRid - 1];
@@ -2002,6 +2009,19 @@ export class Assembly {
             rid: scope.rid,
             startOffset: scope.StartOffset,
             endOffset: scope.StartOffset + scope.Length
+          })),
+        stateMachineHoistedLocalScopes: methodCustomDebugInformation
+          .filter((record) => Array.isArray(record.stateMachineHoistedLocalScopes))
+          .map((record) => ({
+            rid: record.rid,
+            scopes: record.stateMachineHoistedLocalScopes.map((scope) => ({ ...scope }))
+          })),
+        asyncMethodSteppingInformation: methodCustomDebugInformation
+          .filter((record) => record.asyncMethodSteppingInformation)
+          .map((record) => ({
+            rid: record.rid,
+            catchHandlerOffset: record.asyncMethodSteppingInformation.catchHandlerOffset,
+            steps: record.asyncMethodSteppingInformation.steps.map((step) => ({ ...step }))
           }))
       };
       const offsets = new Map();
@@ -2035,6 +2055,34 @@ export class Assembly {
           length: endOffset - startOffset
         };
       });
+      const stateMachineHoistedLocalScopes = baseline.stateMachineHoistedLocalScopes.map(
+        (record) => ({
+          rid: record.rid,
+          scopes: record.scopes.map((scope) => {
+            const startOffset = remapOffset(
+              scope.startOffset,
+              "state-machine hoisted-local scope start"
+            );
+            const endOffset = remapOffset(
+              scope.startOffset + scope.length,
+              "state-machine hoisted-local scope end"
+            );
+            return { startOffset, length: endOffset - startOffset };
+          })
+        })
+      );
+      const asyncMethodSteppingInformation =
+        baseline.asyncMethodSteppingInformation.map((record) => ({
+          rid: record.rid,
+          catchHandlerOffset: record.catchHandlerOffset < 0
+            ? record.catchHandlerOffset
+            : remapOffset(record.catchHandlerOffset, "async catch-handler offset"),
+          steps: record.steps.map((step) => ({
+            ...step,
+            yieldOffset: remapOffset(step.yieldOffset, "async yield offset"),
+            resumeOffset: remapOffset(step.resumeOffset, "async resume offset")
+          }))
+        }));
       if (points.some((point, index) =>
         index > 0 && point.offset <= points[index - 1].offset
       )) {
@@ -2042,7 +2090,17 @@ export class Assembly {
       }
       if (points.some((point) => point.offset >= state.body.codeSize) ||
           scopes.some((scope) => scope.length < 0 ||
-            scope.startOffset + scope.length > state.body.codeSize)) {
+            scope.startOffset + scope.length > state.body.codeSize) ||
+          stateMachineHoistedLocalScopes.some((record) => record.scopes.some((scope) =>
+            scope.length <= 0 || scope.startOffset + scope.length > state.body.codeSize
+          )) ||
+          asyncMethodSteppingInformation.some((record) =>
+            record.catchHandlerOffset >= state.body.codeSize ||
+            record.steps.some((step) =>
+              step.yieldOffset >= state.body.codeSize ||
+              step.resumeOffset >= state.body.codeSize
+            )
+          )) {
         throw new FormatError("Portable PDB offsets exceed the rewritten method body");
       }
       if (points.some((point, index) =>
@@ -2051,6 +2109,22 @@ export class Assembly {
         scope.startOffset !== baseline.scopes[index]?.startOffset ||
         scope.length !== baseline.scopes[index]?.endOffset -
           baseline.scopes[index]?.startOffset
+      ) || stateMachineHoistedLocalScopes.some((record, index) =>
+        record.scopes.some((scope, scopeIndex) =>
+          scope.startOffset !== baseline.stateMachineHoistedLocalScopes[index]
+            ?.scopes[scopeIndex]?.startOffset ||
+          scope.length !== baseline.stateMachineHoistedLocalScopes[index]
+            ?.scopes[scopeIndex]?.length
+        )
+      ) || asyncMethodSteppingInformation.some((record, index) =>
+        record.catchHandlerOffset !== baseline.asyncMethodSteppingInformation[index]
+          ?.catchHandlerOffset ||
+        record.steps.some((step, stepIndex) =>
+          step.yieldOffset !== baseline.asyncMethodSteppingInformation[index]
+            ?.steps[stepIndex]?.yieldOffset ||
+          step.resumeOffset !== baseline.asyncMethodSteppingInformation[index]
+            ?.steps[stepIndex]?.resumeOffset
+        )
       )) {
         const updatedPdb = replacePortablePdbMethodOffsets(
           pdb,
@@ -2058,7 +2132,9 @@ export class Assembly {
           {
             sequencePoints: baseline.points.length > 0 ? points : null,
             localSignatureRid: baseline.localSignatureRid,
-            scopes
+            scopes,
+            stateMachineHoistedLocalScopes,
+            asyncMethodSteppingInformation
           }
         );
         this.replaceEmbeddedPortablePdb(debugEntryIndex, updatedPdb);
