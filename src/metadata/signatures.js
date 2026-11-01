@@ -68,6 +68,7 @@ function readType(reader, depth, { allowVoid = false, allowPinned = false, count
   } else if (elementType === 0x14) {
     const arrayType = readType(reader, depth + 1, { counts });
     const rank = readCompressedUInt(reader);
+    if (rank === 0) fail(reader, "Array signature rank must be greater than zero");
     const sizeCount = readCount(reader, "Array size count");
     if (sizeCount > rank) fail(reader, "Array size count exceeds its rank");
     const sizes = Array.from({ length: sizeCount }, () => readCompressedUInt(reader));
@@ -112,6 +113,9 @@ function readMethodSignature(reader, depth, header = reader.u1(), counts) {
   const explicitThis = (header & 0x40) !== 0;
   if (explicitThis && !hasThis) fail(reader, "EXPLICITTHIS requires HASTHIS");
   const genericParameterCount = generic ? readCompressedUInt(reader) : 0;
+  if (generic && genericParameterCount === 0) {
+    fail(reader, "Generic method signature must declare at least one type parameter");
+  }
   const parameterCount = readCount(reader, "Method parameter count");
   const returnType = readType(reader, depth + 1, { allowVoid: true, counts });
   const parameters = [];
@@ -174,6 +178,9 @@ function writeType(output, type, depth = 0) {
   } else if (type.kind === "typeParameter" || type.kind === "methodParameter") {
     output.push(type.kind === "typeParameter" ? 0x13 : 0x1e, ...appendCompressedUInt(type.index));
   } else if (type.kind === "array") {
+    if (!Number.isInteger(type.rank) || type.rank <= 0) {
+      throw new RangeError("Array signature rank must be a positive integer");
+    }
     output.push(0x14);
     writeType(output, type.type, depth + 1);
     output.push(...appendCompressedUInt(type.rank), ...appendCompressedUInt(type.sizes.length));
@@ -195,6 +202,10 @@ function writeType(output, type, depth = 0) {
 function writeMethodSignature(output, signature, depth = 0) {
   if (depth > maxNestingDepth) throw new RangeError("Signature nesting limit exceeded");
   const generic = signature.generic ?? signature.genericParameterCount > 0;
+  if (generic && (!Number.isInteger(signature.genericParameterCount) ||
+      signature.genericParameterCount <= 0)) {
+    throw new RangeError("Generic method signatures require at least one type parameter");
+  }
   output.push(
     signature.callingConvention |
     (generic ? 0x10 : 0) |

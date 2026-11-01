@@ -25,6 +25,39 @@ import { parseMethodBody } from "../src/il/body.js";
 
 const fixture = readFileSync(new URL("./fixtures/Fixture.dll", import.meta.url));
 
+test("signature parsing rejects zero-arity generic methods and zero-rank arrays", () => {
+  assert.throws(
+    () => parseSignature(Uint8Array.of(0x10, 0, 0, 0x01)),
+    /Generic method signature must declare at least one type parameter/
+  );
+  assert.equal(parseSignature(Uint8Array.of(0x10, 1, 0, 0x01)).genericParameterCount, 1);
+  assert.throws(() => encodeSignature({
+    kind: "method",
+    generic: true,
+    genericParameterCount: 0,
+    callingConvention: 0,
+    hasThis: false,
+    explicitThis: false,
+    returnType: { kind: "primitive", elementType: 0x01 },
+    parameters: []
+  }), /Generic method signatures require at least one type parameter/);
+  assert.throws(
+    () => parseSignature(Uint8Array.of(0x06, 0x14, 0x08, 0, 0, 0)),
+    /Array signature rank must be greater than zero/
+  );
+  assert.equal(parseSignature(Uint8Array.of(0x06, 0x14, 0x08, 1, 0, 0)).type.rank, 1);
+  assert.throws(() => encodeSignature({
+    kind: "field",
+    type: {
+      kind: "array",
+      type: { kind: "primitive", elementType: 0x08 },
+      rank: 0,
+      sizes: [],
+      lowerBounds: []
+    }
+  }), /Array signature rank must be a positive integer/);
+});
+
 function withoutDebugDirectory(input = fixture) {
   const bytes = Uint8Array.from(input);
   const pe = parsePE(bytes);
