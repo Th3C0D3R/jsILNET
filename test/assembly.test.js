@@ -2366,6 +2366,152 @@ test("new method bodies validate TypeSpec-parented MemberRefs in the new owner c
     /TypeSpec generic variable !1 exceeds its declaring type's arity/);
 });
 
+test("TypeSpec tokens in CIL and catch clauses use the caller generic context", () => {
+  const assembly = parseAssembly(withoutDebugDirectory());
+  const owner = assembly.types.find((type) => type.name === "Sample`1");
+  assert.ok(owner);
+  const validTypeSpecToken = assembly.addTypeSpec({
+    signature: Uint8Array.of(0x13, 0x00)
+  });
+  const invalidTypeSpecToken = assembly.addTypeSpec({
+    signature: Uint8Array.of(0x13, 0x01)
+  });
+  const boxBody = (token) => Uint8Array.of(
+    0x22, 0x14, 0x8c,
+    token & 0xff,
+    (token >>> 8) & 0xff,
+    (token >>> 16) & 0xff,
+    (token >>> 24) & 0xff,
+    0x26, 0x2a
+  );
+  const catchBody = (token) => {
+    const body = new Uint8Array(44);
+    const view = new DataView(body.buffer);
+    view.setUint16(0, 0x300b, true);
+    view.setUint16(2, 8, true);
+    view.setUint32(4, 2, true);
+    body.set([0x00, 0x2a], 12);
+    body.set([0x41, 28], 16);
+    view.setUint32(28, 1, true);
+    view.setUint32(32, 1, true);
+    view.setUint32(36, 1, true);
+    view.setUint32(40, token, true);
+    return body;
+  };
+  const addMethod = (name, body) => assembly.addMethod({
+    owner: { table: "TypeDef", rid: owner.rid },
+    name,
+    flags: 0x0096,
+    signature: Uint8Array.of(0x00, 0x00, 0x01),
+    body
+  });
+
+  assert.throws(() => addMethod("InvalidTypeOperand", boxBody(invalidTypeSpecToken)),
+    /TypeSpec generic variable !1 exceeds its declaring type's arity/);
+  assert.throws(() => addMethod("InvalidCatchType", catchBody(invalidTypeSpecToken)),
+    /TypeSpec generic variable !1 exceeds its declaring type's arity/);
+
+  const methodToken = addMethod("TypeOperand", boxBody(validTypeSpecToken));
+  const methodRid = methodToken & 0x00ffffff;
+  const boxInstruction = assembly.getInstructions(methodRid)
+    .find((instruction) => instruction.opcode.name === "box");
+  assert.ok(boxInstruction);
+  assert.throws(() => assembly.setInstructionOperand(
+    methodRid, boxInstruction.offset, invalidTypeSpecToken
+  ), /TypeSpec generic variable !1 exceeds its declaring type's arity/);
+  const validOutput = assembly.serialize();
+  assert.throws(() => assembly.replaceTypeSpecSignature(
+    validTypeSpecToken & 0x00ffffff,
+    Uint8Array.of(0x13, 0x01)
+  ), /TypeSpec generic variable !1 exceeds its declaring type's arity/);
+  assert.deepEqual(assembly.serialize(), validOutput);
+
+  const catchMethodToken = addMethod("CatchTypeOperand", catchBody(validTypeSpecToken));
+  const catchMethodRid = catchMethodToken & 0x00ffffff;
+  const bytes = Uint8Array.from(assembly.serialize());
+  const parsed = parseAssembly(bytes);
+  const parsedCatchBody = parsed.getMethodBody(catchMethodRid);
+  const exceptionSection = parsedCatchBody.sections[0];
+  const catchTokenOffset = exceptionSection.offset + 4 +
+    (exceptionSection.fat ? 20 : 8);
+  new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+    .setUint32(catchTokenOffset, invalidTypeSpecToken, true);
+  assert.throws(
+    () => parseAssembly(bytes).getMethodBody(catchMethodRid),
+    /TypeSpec generic variable !1 exceeds its declaring type's arity/
+  );
+});
+
+test("TypeSpec replacement revalidates local and calli signature contexts", () => {
+  const localAssembly = parseAssembly(withoutDebugDirectory());
+  const localOwner = localAssembly.types.find((type) => type.name === "Sample`1");
+  assert.ok(localOwner);
+  const localTypeSpecToken = localAssembly.addTypeSpec({
+    signature: Uint8Array.of(0x13, 0x00)
+  });
+  const localTypeSpecRid = localTypeSpecToken & 0x00ffffff;
+  const localSignatureToken = localAssembly.addStandAloneSig({
+    signature: Uint8Array.from([
+      0x07, 0x01, 0x12,
+      ...appendCompressedUInt(encodeCodedIndex(27, localTypeSpecRid, "TypeDefOrRef"))
+    ])
+  });
+  const localBody = Uint8Array.of(
+    0x03, 0x30, 0x08, 0, 1, 0, 0, 0,
+    localSignatureToken & 0xff,
+    (localSignatureToken >>> 8) & 0xff,
+    (localSignatureToken >>> 16) & 0xff,
+    (localSignatureToken >>> 24) & 0xff,
+    0x2a
+  );
+  localAssembly.addMethod({
+    owner: { table: "TypeDef", rid: localOwner.rid },
+    name: "LocalTypeSpec",
+    flags: 0x0096,
+    signature: Uint8Array.of(0x00, 0x00, 0x01),
+    body: localBody
+  });
+  const localOutput = localAssembly.serialize();
+  assert.throws(() => localAssembly.replaceTypeSpecSignature(
+    localTypeSpecRid, Uint8Array.of(0x13, 0x01)
+  ), /TypeSpec generic variable !1 exceeds its declaring type's arity/);
+  assert.deepEqual(localAssembly.serialize(), localOutput);
+
+  const calliAssembly = parseAssembly(withoutDebugDirectory());
+  const calliOwner = calliAssembly.types.find((type) => type.name === "Sample`1");
+  assert.ok(calliOwner);
+  const calliTypeSpecToken = calliAssembly.addTypeSpec({
+    signature: Uint8Array.of(0x13, 0x00)
+  });
+  const calliTypeSpecRid = calliTypeSpecToken & 0x00ffffff;
+  const calliSignatureToken = calliAssembly.addStandAloneSig({
+    signature: Uint8Array.from([
+      0x00, 0x00, 0x12,
+      ...appendCompressedUInt(encodeCodedIndex(27, calliTypeSpecRid, "TypeDefOrRef"))
+    ])
+  });
+  const calliBody = Uint8Array.of(
+    0x22, 0x14, 0x29,
+    calliSignatureToken & 0xff,
+    (calliSignatureToken >>> 8) & 0xff,
+    (calliSignatureToken >>> 16) & 0xff,
+    (calliSignatureToken >>> 24) & 0xff,
+    0x26, 0x2a
+  );
+  calliAssembly.addMethod({
+    owner: { table: "TypeDef", rid: calliOwner.rid },
+    name: "CalliTypeSpec",
+    flags: 0x0096,
+    signature: Uint8Array.of(0x00, 0x00, 0x01),
+    body: calliBody
+  });
+  const calliOutput = calliAssembly.serialize();
+  assert.throws(() => calliAssembly.replaceTypeSpecSignature(
+    calliTypeSpecRid, Uint8Array.of(0x13, 0x01)
+  ), /TypeSpec generic variable !1 exceeds its declaring type's arity/);
+  assert.deepEqual(calliAssembly.serialize(), calliOutput);
+});
+
 test("TypeSpec removal rejects live references and remaps signatures and CIL tokens", () => {
   const referencedAssembly = parseAssembly(withoutDebugDirectory());
   const referencedTypeSpec = referencedAssembly.addTypeSpec({ signature: Uint8Array.from([0x08]) });
