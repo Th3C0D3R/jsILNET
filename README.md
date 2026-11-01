@@ -55,6 +55,7 @@ Edits are validated against the supported input profile; unsupported or unsafe r
 
 ## Documentation
 
+- [Runnable example](example/README.md)
 - [Current capabilities](REFERENCE.md#current-capabilities)
 - [API surface](REFERENCE.md#api-surface)
 - [Architecture and implementation status](ARCHITECTURE.md)

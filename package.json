@@ -7,7 +7,8 @@
     "node": ">=20"
   },
   "files": [
-    "src"
+    "src",
+    "example"
   ],
   "exports": {
     ".": "./src/index.js"
