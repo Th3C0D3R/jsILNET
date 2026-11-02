@@ -53,6 +53,16 @@ await writeFile("output.dll", assembly.toBuffer());
 
 Edits are validated against the supported input profile; unsupported or unsafe rewrites fail explicitly. See the [Current capabilities](REFERENCE.md#current-capabilities) and [API surface](REFERENCE.md#api-surface) references for supported features, APIs, and limitations.
 
+
+## Live Demo
+A [Live-Demo](https://jsilnet-live-demo.vercel.app/) is available. 
+
+Restricted to a 3 MiB .NET DLL or EXE with a `ldc-i4.s` instruction.
+
+The Example Project inside `example/` produces such DLL.
+
+Source and documentation of this Demo-App is inside `live-demo/`
+
 ## Documentation
 
 - [Runnable example](example/README.md)
