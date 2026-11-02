@@ -2,19 +2,41 @@
   "name": "jsilnet",
   "version": "0.1.0",
   "description": "Dependency-free Node.js ECMA-335 / CLI assembly reader and writer",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Th3C0D3R/jsILNET.git"
+  },
+  "homepage": "https://github.com/Th3C0D3R/jsILNET#readme",
+  "bugs": {
+    "url": "https://github.com/Th3C0D3R/jsILNET/issues"
+  },
+  "keywords": [
+    "dotnet",
+    "ecma-335",
+    "cil",
+    "cli",
+    "pe",
+    "assembly",
+    "il",
+    "metadata",
+    "nodejs"
+  ],
   "type": "module",
   "engines": {
     "node": ">=20"
   },
   "files": [
     "src",
-    "example"
+    "example",
+    "REFERENCE.md"
   ],
   "exports": {
     ".": "./src/index.js"
   },
   "scripts": {
     "test": "node --test",
-    "check": "node --check src/index.js"
+    "check": "node --check src/index.js",
+    "prepublishOnly": "npm test && npm run check"
   }
 }
