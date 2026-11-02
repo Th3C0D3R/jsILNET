@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Inspect and safely patch a .NET assembly with jsILNET.">
+    <title>jsILNET Live Demo</title>
+    <link rel="stylesheet" href="/styles.css">
+    <script type="module" src="/app.js"></script>
+  </head>
+  <body>
+    <main class="shell">
+      <header class="hero">
+        <p class="eyebrow">Node.js assembly tooling</p>
+        <h1>jsILNET Live Demo</h1>
+        <p>Inspect a .NET assembly, then patch a signed-byte IL constant and download the result.</p>
+      </header>
+
+      <section class="panel" aria-labelledby="upload-title">
+        <h2 id="upload-title">Choose an assembly</h2>
+        <p class="hint">DLL and EXE files up to 3 MiB are processed in memory and are not saved.</p>
+        <div class="upload-row">
+          <label class="file-picker" for="assembly-file">Assembly file</label>
+          <input id="assembly-file" type="file" accept=".dll,.exe,application/octet-stream">
+          <button id="inspect-button" type="button" disabled>Inspect assembly</button>
+        </div>
+        <p id="status" class="status" role="status" aria-live="polite">Choose a file to begin.</p>
+      </section>
+
+      <section id="results" class="results" hidden aria-labelledby="results-title">
+        <h2 id="results-title">Assembly overview</h2>
+        <div id="assembly-summary" class="summary-grid"></div>
+        <div class="data-grid">
+          <section class="panel" aria-labelledby="types-title">
+            <h3 id="types-title">Types</h3>
+            <p id="type-count" class="hint"></p>
+            <ul id="type-list" class="data-list"></ul>
+          </section>
+          <section class="panel" aria-labelledby="methods-title">
+            <h3 id="methods-title">Editable constants</h3>
+            <p class="hint">The demo can change an existing <code>ldc.i4.s</code> operand without resizing the method.</p>
+            <label for="candidate-select">Method and instruction</label>
+            <select id="candidate-select" disabled>
+              <option value="">No editable constants found</option>
+            </select>
+            <form id="edit-form" class="edit-form" hidden>
+              <label for="operand-value">New signed-byte value (-128 to 127)</label>
+              <div class="edit-row">
+                <input id="operand-value" type="number" min="-128" max="127" step="1" required>
+                <button id="download-button" type="submit">Patch and download</button>
+              </div>
+            </form>
+            <p id="method-note" class="hint"></p>
+          </section>
+        </div>
+      </section>
+
+      <footer>
+        <p>jsILNET runs on Node.js here; uploaded files are not retained.</p>
+      </footer>
+    </main>
+  </body>
+</html>

@@ -1,7 +1,7 @@
 {
   "name": "jsilnet",
   "version": "0.1.0",
-  "description": "Pure JavaScript ECMA-335 / CLI assembly reader and fixed-size patch writer",
+  "description": "Dependency-free Node.js ECMA-335 / CLI assembly reader and writer",
   "type": "module",
   "engines": {
     "node": ">=20"

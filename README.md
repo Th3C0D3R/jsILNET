@@ -1,6 +1,6 @@
 # jsILNET
 
-`jsILNET` is a dependency-free JavaScript library for inspecting and rewriting .NET assemblies. It reads PE/CLI formats directly and does not require a .NET runtime.
+`jsILNET` is a Node.js library with no third-party runtime dependencies for inspecting and rewriting .NET assemblies. It reads PE/CLI formats directly and does not require a .NET runtime.
 
 ## Requirements
 

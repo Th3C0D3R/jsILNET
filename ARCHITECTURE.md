@@ -1,8 +1,8 @@
-# Architecture: Pure JavaScript/TypeScript .NET Assembly Library
+# Architecture: Node.js .NET Assembly Library
 
 ## Purpose and constraints
 
-This document proposes a native JavaScript/TypeScript library for reading, editing, and rewriting PE files containing CLI metadata and CIL method bodies, as defined by ECMA-335. The library implements the binary formats directly: it does not depend on a .NET runtime, invoke .NET for parsing or writing, or use .NET code compiled to WebAssembly.
+jsILNET is a JavaScript library for Node.js 20 and later, using ECMAScript modules and Node.js built-ins. It reads, edits, and rewrites PE files containing CLI metadata and CIL method bodies, as defined by ECMA-335. It implements the binary formats directly and does not depend on a .NET runtime, invoke .NET for parsing or writing, or use .NET code compiled to WebAssembly. Browser/client-side use is not currently supported.
 
 The design deliberately separates binary parsing from semantic resolution. The raw PE, metadata, and IL layers should be useful before a complete object model exists. The work is staged so a useful read-and-fixed-size-patch release can ship before structural rewriting.
 
@@ -368,7 +368,6 @@ The initial implementation should document and enforce a supported-input profile
 
 ## Open questions before implementation
 
-- Which JavaScript/TypeScript baseline, module format, and runtime targets must be supported (for example, Node.js only versus browsers as well)?
 - Is byte-identical no-op serialization required for every supported input, or is it sufficient for an explicitly bounded input profile with semantic equivalence elsewhere?
 - May integration tests rely on an installed .NET SDK/compiler and runtime, or must compiler-produced fixtures be checked in so tests run without .NET installed?
 - What exact PE variants, metadata streams, and `#-` pointer-table layouts belong in the first supported-input profile?

@@ -1,0 +1,14 @@
+{
+  "name": "jsilnet-live-demo",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "jsilnet": "file:.."
+  }
+}
