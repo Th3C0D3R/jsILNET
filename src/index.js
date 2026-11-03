@@ -31,17 +31,11 @@ import {
 } from "./metadata/classic-pdb.js";
 import { parseMethodBody } from "./il/body.js";
 import { encodeInstruction, encodeOpcode, formatInstruction, getInstructionSize } from "./il/instructions.js";
-import { listOpcodes } from "./il/opcodes.js";
-import {
-  createStructuralState,
-  insertInstruction as insertStructuralInstruction,
-  layoutStructuralState,
-  removeInstruction as removeStructuralInstruction,
-  updateStructuralOperand
-} from "./il/rewrite.js";
+import { createStructuralState } from "./il/rewrite.js";
 import { resolveMethodParameters, resolveTypes } from "./resolution/module.js";
 import { applyPatches, createOperandPatches } from "./writer/patch.js";
 import { serializeStructural } from "./writer/structural.js";
+import { createInstructionEditor } from "./assembly/instruction-editing.js";
 import { appendBlobHeap, appendStringHeap, appendUserStringHeap } from "./metadata/writer.js";
 import { parseManifestResources } from "./metadata/resources.js";
 import {
@@ -1999,6 +1993,14 @@ export class Assembly {
   #strongNameSignatureSize = 0;
   #hasAuthenticodeCertificate;
   #hasDebugDirectory;
+  #instructionEditor = createInstructionEditor(this, {
+    ensureEditable: () => this.#ensureEditable(),
+    validateBranchTarget: (body, target) => this.#validateBranchTarget(body, target),
+    createStructuralState: (methodRid) => this.#createStructuralState(methodRid),
+    commitStructuralState: (methodRid, state) => this.#commitStructuralState(methodRid, state),
+    allowedTokenTables,
+    validateInstructionGenericContext
+  });
 
   constructor(input) {
     this.#bytes = input instanceof Uint8Array ? Uint8Array.from(input) : new Uint8Array(input);
@@ -8562,147 +8564,23 @@ export class Assembly {
   }
 
   setInstructionOperand(methodRid, instructionOffset, value) {
-    this.#ensureEditable();
-    const body = this.getMethodBody(methodRid);
-    if (!body) throw new FormatError("Method has no CIL body");
-    const instruction = body.instructions.find((candidate) => candidate.offset === instructionOffset);
-    if (!instruction) throw new RangeError(`No instruction begins at IL_${instructionOffset.toString(16)}`);
-    if (!instruction.operand) throw new TypeError("Instruction has no operand");
-
-    if (instruction.operand.kind === "branch") {
-      this.#validateBranchTarget(body, value);
-    } else if (instruction.operand.kind === "switch") {
-      if (!Array.isArray(value)) throw new TypeError("Switch operand must be an array of IL target offsets");
-      for (const target of value) this.#validateBranchTarget(body, target);
-    } else if (instruction.opcode.name === "ldstr") {
-      if (!Number.isInteger(value) || (value >>> 24) !== 0x70) {
-        throw new TypeError("ldstr operand must be a 0x70-prefixed user-string token");
-      }
-      this.heaps.getUserString(value);
-    } else if (instruction.operand.kind === "token") {
-      if (!Number.isInteger(value) || value < 0 || value > 0xffffffff) {
-        throw new RangeError("Metadata token must be an unsigned 32-bit integer");
-      }
-      const table = value >>> 24;
-      const rid = value & 0x00ffffff;
-      if (!allowedTokenTables(instruction.opcode.name).includes(table)) {
-        throw new FormatError(`Metadata table ${table} is not valid for ${instruction.opcode.name}`);
-      }
-      if (rid === 0 || rid > (this.tables.counts[table] ?? 0)) {
-        throw new RangeError(`${instruction.opcode.name} references missing ${metadataTableNames[table]} row ${rid}`);
-      }
-      validateInstructionGenericContext(this, methodRid, instruction, value);
-    }
-
-    if (instruction.operand.kind === "branch" && instruction.operand.targetOffset === value) return this;
-    if (instruction.operand.kind === "switch" &&
-        instruction.operand.targetOffsets.length === value.length &&
-        instruction.operand.targetOffsets.every((target, index) => target === value[index])) return this;
-    if (instruction.operand.kind !== "branch" && instruction.operand.kind !== "switch" &&
-        instruction.operand.value === value) return this;
-
-    if (this._structuralBodies.has(methodRid) || this._addedMethodBodies.has(methodRid)) {
-      const state = this.#createStructuralState(methodRid);
-      const editableInstruction = state.instructions.find((candidate) => candidate.offset === instructionOffset);
-      updateStructuralOperand(state, editableInstruction, value);
-      this.#commitStructuralState(methodRid, state);
-    } else {
-      const patches = createOperandPatches(instruction, value);
-      for (const patch of patches) this._patches.push(patch);
-      instruction.operand = instruction.operand.kind === "branch"
-        ? { kind: "branch", targetOffset: value }
-        : instruction.operand.kind === "switch"
-          ? { kind: "switch", targetOffsets: [...value] }
-          : { ...instruction.operand, value };
-    }
-    return this;
+    return this.#instructionEditor.setInstructionOperand(methodRid, instructionOffset, value);
   }
 
   setInstructionOpcode(methodRid, instructionOffset, opcodeNameOrCode) {
-    this.#ensureEditable();
-    const body = this.getMethodBody(methodRid);
-    if (!body) throw new FormatError("Method has no CIL body");
-    const instruction = body.instructions.find((candidate) => candidate.offset === instructionOffset);
-    if (!instruction) throw new RangeError(`No instruction begins at IL_${instructionOffset.toString(16)}`);
-    const opcode = listOpcodes().find((candidate) =>
-      candidate.name === opcodeNameOrCode || candidate.code === opcodeNameOrCode
-    );
-    if (!opcode) throw new RangeError(`Unknown CIL opcode ${opcodeNameOrCode}`);
-    const encoded = encodeOpcode(opcode);
-    if (encoded.length !== instruction.opcodeSize || opcode.operand !== instruction.opcode.operand) {
-      throw new FormatError("Opcode edit must preserve the opcode and operand widths");
-    }
-    if (opcode.code === instruction.opcode.code) return this;
-    if (instruction.operand?.kind === "token") {
-      if (opcode.name !== "ldstr") {
-        const table = instruction.operand.value >>> 24;
-        const rid = instruction.operand.value & 0x00ffffff;
-        if (!allowedTokenTables(opcode.name).includes(table)) {
-          throw new FormatError(`Metadata table ${table} is not valid for ${opcode.name}`);
-        }
-        if (rid === 0 || rid > (this.tables.counts[table] ?? 0)) {
-          throw new RangeError(`${opcode.name} references missing ${metadataTableNames[table]} row ${rid}`);
-        }
-        validateInstructionGenericContext(
-          this, methodRid, { ...instruction, opcode }, instruction.operand.value
-        );
-      }
-    }
-    if (this._structuralBodies.has(methodRid) || this._addedMethodBodies.has(methodRid)) {
-      const state = this.#createStructuralState(methodRid);
-      const editableInstruction = state.instructions.find((candidate) => candidate.offset === instructionOffset);
-      editableInstruction.opcode = opcode;
-      layoutStructuralState(state);
-      this.#commitStructuralState(methodRid, state);
-    } else {
-      this._patches.push({ offset: instruction.opcodeOffset, bytes: encoded });
-      instruction.opcode = opcode;
-    }
-    return this;
+    return this.#instructionEditor.setInstructionOpcode(methodRid, instructionOffset, opcodeNameOrCode);
   }
 
   insertInstruction(methodRid, beforeOffset, opcodeNameOrCode, operand) {
-    this.#ensureEditable();
-    const opcode = listOpcodes().find((candidate) =>
-      candidate.name === opcodeNameOrCode || candidate.code === opcodeNameOrCode
-    );
-    if (!opcode) throw new RangeError(`Unknown CIL opcode ${opcodeNameOrCode}`);
-    const state = this.#createStructuralState(methodRid);
-    const instruction = insertStructuralInstruction(state, beforeOffset, opcode, operand);
-    if (instruction.operand?.kind === "token" && opcode.name !== "ldstr") {
-      const token = instruction.operand.value;
-      const table = token >>> 24;
-      const rid = token & 0x00ffffff;
-      if (!allowedTokenTables(opcode.name).includes(table)) {
-        throw new FormatError(`Metadata table ${table} is not valid for ${opcode.name}`);
-      }
-      if (rid === 0 || rid > (this.tables.counts[table] ?? 0)) {
-        throw new RangeError(`${opcode.name} references missing ${metadataTableNames[table]} row ${rid}`);
-      }
-      validateInstructionGenericContext(this, methodRid, instruction, token);
-    }
-    this.#commitStructuralState(methodRid, state);
-    return instruction;
+    return this.#instructionEditor.insertInstruction(methodRid, beforeOffset, opcodeNameOrCode, operand);
   }
 
   removeInstruction(methodRid, instructionOffset) {
-    this.#ensureEditable();
-    const state = this.#createStructuralState(methodRid);
-    const instruction = removeStructuralInstruction(state, instructionOffset);
-    this.#commitStructuralState(methodRid, state);
-    return instruction;
+    return this.#instructionEditor.removeInstruction(methodRid, instructionOffset);
   }
 
   setMethodMaxStack(methodRid, maxStack) {
-    this.#ensureEditable();
-    if (!Number.isInteger(maxStack) || maxStack < 0 || maxStack > 0xffff) {
-      throw new RangeError("maxStack must be an unsigned 16-bit integer");
-    }
-    const state = this.#createStructuralState(methodRid);
-    state.maxStack = maxStack;
-    layoutStructuralState(state);
-    this.#commitStructuralState(methodRid, state);
-    return this;
+    return this.#instructionEditor.setMethodMaxStack(methodRid, maxStack);
   }
 
   addMemberRef({ parent, name, signature }) {

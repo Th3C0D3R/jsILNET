@@ -26,6 +26,7 @@
   "engines": {
     "node": ">=20"
   },
+  "types": "./src/index.d.ts",
   "files": [
     "src",
     "example",
@@ -37,6 +38,10 @@
   "scripts": {
     "test": "node --test",
     "check": "node --check src/index.js",
-    "prepublishOnly": "npm test && npm run check"
+    "check:types": "tsc --noEmit --strict --skipLibCheck --module NodeNext --moduleResolution NodeNext type-tests/core-api.ts",
+    "prepublishOnly": "npm test && npm run check && npm run check:types"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3"
   }
 }
