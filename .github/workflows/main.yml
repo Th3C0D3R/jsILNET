@@ -29,6 +29,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Install live demo dependencies
+        run: npm ci --prefix live-demo
+
       - name: Run tests
         run: npm test
 
