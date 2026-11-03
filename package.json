@@ -38,7 +38,9 @@
   "scripts": {
     "test": "node --test",
     "check": "node --check src/index.js",
-    "check:types": "tsc --noEmit --strict --skipLibCheck --module NodeNext --moduleResolution NodeNext type-tests/core-api.ts",
+    "build:types": "tsc --allowJs --checkJs false --declaration --emitDeclarationOnly --module NodeNext --moduleResolution NodeNext --target ES2022 --outDir src/types src/index.js",
+    "precheck:types": "npm run build:types",
+    "check:types": "tsc --noEmit --strict --skipLibCheck --module NodeNext --moduleResolution NodeNext type-tests/core-api.ts && node scripts/check-type-coverage.js",
     "prepublishOnly": "npm test && npm run check && npm run check:types"
   },
   "devDependencies": {

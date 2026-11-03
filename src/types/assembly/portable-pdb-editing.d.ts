@@ -1,0 +1,23 @@
+export function createPortablePdbEditor(hooks: any): {
+    addEmbeddedPortablePdbDocument(debugEntryIndex: any, name: any, options: any): any;
+    insertEmbeddedPortablePdbDocument(debugEntryIndex: any, options: any): any;
+    addEmbeddedPortablePdbTypeDefinitionDocuments(debugEntryIndex: any, typeRid: any, documentRids: any): any;
+    removeEmbeddedPortablePdbDocument(debugEntryIndex: any, documentRid: any): any;
+    replaceEmbeddedPortablePdbTypeDefinitionDocuments(debugEntryIndex: any, typeRid: any, documentRids: any): any;
+    replaceEmbeddedPortablePdbDocumentMetadata(debugEntryIndex: any, documentRid: any, options: any): any;
+    replaceEmbeddedPortablePdbDocumentName(debugEntryIndex: any, documentRid: any, name: any, separator: any): any;
+    replaceEmbeddedPortablePdbSequencePoints(debugEntryIndex: any, methodRid: any, sequencePoints: any): any;
+    replaceEmbeddedPortablePdbMethodDocument(debugEntryIndex: any, methodRid: any, documentRid: any): any;
+    replaceEmbeddedPortablePdbImportScope(debugEntryIndex: any, importScopeRid: any, options: any): any;
+    replaceEmbeddedPortablePdbLocalScope(debugEntryIndex: any, localScopeRid: any, options: any): any;
+    replaceEmbeddedPortablePdbLocalVariable(debugEntryIndex: any, localVariableRid: any, options: any): any;
+    replaceEmbeddedPortablePdbLocalConstant(debugEntryIndex: any, localConstantRid: any, options: any): any;
+    replaceEmbeddedPortablePdbCustomDebugInformation(debugEntryIndex: any, customDebugInformationRid: any, value: any): any;
+    replaceEmbeddedPortablePdbSource(debugEntryIndex: any, documentRid: any, source: any, options: any): any;
+    addEmbeddedPortablePdbSource(debugEntryIndex: any, documentRid: any, source: any, options: any): any;
+    removeEmbeddedPortablePdbSource(debugEntryIndex: any, documentRid: any): any;
+    removeEmbeddedPortablePdbCustomDebugInformation(debugEntryIndex: any, recordRid: any): any;
+    replaceEmbeddedPortablePdbSourceLink(debugEntryIndex: any, sourceLink: any): any;
+    removeEmbeddedPortablePdbSourceLink(debugEntryIndex: any): any;
+    addEmbeddedPortablePdbSourceLink(debugEntryIndex: any, sourceLink: any): any;
+};

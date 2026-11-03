@@ -119,6 +119,7 @@ export class UnsupportedFormatError extends FormatError {
 }
 
 export class Assembly {
+  constructor(input: Uint8Array | ArrayBuffer);
   static from(input: Uint8Array | ArrayBuffer): Assembly;
   readonly bytes: Uint8Array;
   readonly modified: boolean;
@@ -151,3 +152,116 @@ export class Assembly {
 }
 
 export function parseAssembly(input: Uint8Array | ArrayBuffer): Assembly;
+export function decodeInstructions(
+  input: Uint8Array | ArrayBuffer,
+  options?: { baseOffset?: number; ilOffset?: number }
+): Instruction[];
+export function encodeInstruction(instruction: Instruction): Uint8Array;
+export function encodeOpcode(opcode: Opcode): Uint8Array;
+export function formatInstruction(instruction: Instruction): string;
+export function encodeOperand(
+  instruction: Instruction,
+  value: number | bigint | number[]
+): Uint8Array;
+export function getInstructionSize(
+  opcode: Opcode,
+  operand?: { targetOffsets?: number[] } | null
+): number;
+
+import type { Assembly as InferredAssembly } from "./types/index.js";
+
+type PublicAssemblySurface = {
+  [K in keyof InferredAssembly as K extends `_${string}` ? never : K]:
+    InferredAssembly[K];
+};
+
+export interface Assembly extends Omit<
+  PublicAssemblySurface,
+  | "bytes"
+  | "modified"
+  | "module"
+  | "types"
+  | "methods"
+  | "getMethodBody"
+  | "getInstructions"
+  | "setInstructionOperand"
+  | "setInstructionOpcode"
+  | "insertInstruction"
+  | "removeInstruction"
+  | "setMethodMaxStack"
+  | "serialize"
+  | "toBuffer"
+> {}
+
+export {
+  BinaryReader,
+  readCompressedInt,
+  readCompressedUInt,
+  parseMethodBody,
+  codedIndexWidth,
+  decodeCodedIndex,
+  encodeCodedIndex,
+  metadataTableNames,
+  parseTablesStream,
+  tableIndexWidth,
+  MetadataHeaps,
+  parseMetadataRoot,
+  parseClassicPdb,
+  insertClassicPdbFileChecksum,
+  insertClassicPdbConstantSymbol,
+  insertClassicPdbDataSymbol,
+  insertClassicPdbLineBlock,
+  insertClassicPdbPublicSymbol,
+  insertClassicPdbThreadDataSymbol,
+  removeClassicPdbFileChecksum,
+  removeClassicPdbLineBlock,
+  removeClassicPdbSymbol,
+  replaceClassicPdbFileChecksum,
+  replaceClassicPdbConstantSymbol,
+  replaceClassicPdbDataSymbol,
+  replaceClassicPdbLineBlock,
+  replaceClassicPdbLineInfo,
+  replaceClassicPdbModuleNames,
+  replaceClassicPdbPublicSymbol,
+  replaceClassicPdbStringTableName,
+  replaceClassicPdbThreadDataSymbol,
+  replaceClassicPdbSymbolName,
+  encodeCustomAttribute,
+  encodePermissionSet,
+  parseCustomAttribute,
+  parsePermissionSet,
+  appendPortablePdbDocumentName,
+  decodePortablePdbDocumentName,
+  decodePortablePdbSequencePoints,
+  encodePortablePdbDocumentName,
+  encodePortablePdbSequencePoints,
+  addEmbeddedPortablePdbDocument,
+  insertEmbeddedPortablePdbDocument,
+  addEmbeddedPortablePdbTypeDefinitionDocuments,
+  removeEmbeddedPortablePdbDocument,
+  replaceEmbeddedPortablePdbDocumentMetadata,
+  replaceEmbeddedPortablePdbTypeDefinitionDocuments,
+  replaceEmbeddedPortablePdbDocumentName,
+  replaceEmbeddedPortablePdbLocalScope,
+  replaceEmbeddedPortablePdbLocalVariable,
+  replaceEmbeddedPortablePdbLocalConstant,
+  replaceEmbeddedPortablePdbCustomDebugInformation,
+  replaceEmbeddedPortablePdbMethodDocument,
+  replaceEmbeddedPortablePdbImportScope,
+  replaceEmbeddedPortablePdbSequencePoints,
+  addEmbeddedPortablePdbSource,
+  removeEmbeddedPortablePdbSource,
+  removeEmbeddedPortablePdbSourceLink,
+  removeEmbeddedPortablePdbCustomDebugInformation,
+  replaceEmbeddedPortablePdbSource,
+  addEmbeddedPortablePdbSourceLink,
+  replaceEmbeddedPortablePdbSourceLink,
+  serializeEmbeddedPortablePdb,
+  encodeSignature,
+  encodeTypeSignature,
+  parseSignature,
+  parseTypeSignature,
+  remapTypeReferences,
+  parseCliHeader,
+  parsePE
+} from "./types/index.js";

@@ -4,9 +4,12 @@ import {
   UnsupportedFormatError,
   parseAssembly
 } from "jsilnet";
+import * as api from "jsilnet";
 
 declare const input: Uint8Array;
 const assembly: Assembly = parseAssembly(input);
+const directlyCreated: Assembly = new Assembly(input);
+const fromFactory: Assembly = Assembly.from(input);
 const typeNames: string[] = assembly.types.map((type) =>
   type.namespace ? `${type.namespace}.${type.name}` : type.name
 );
@@ -28,9 +31,19 @@ const errors: Error[] = [
   new FormatError("bad input", { offset: 0, context: "test" }),
   new UnsupportedFormatError("unsupported")
 ];
+const reader: api.BinaryReader = new api.BinaryReader(input);
+const decoded: api.Instruction[] = api.decodeInstructions(input);
+const parsedTables: ReturnType<typeof api.parseTablesStream> =
+  api.parseTablesStream(new Uint8Array());
 
 void typeNames;
 void methodNames;
+void directlyCreated;
+void fromFactory;
 void output;
 void buffer;
 void errors;
+void api;
+void reader;
+void decoded;
+void parsedTables;
