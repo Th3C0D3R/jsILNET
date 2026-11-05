@@ -38,6 +38,12 @@ jobs:
       - name: Build live demo
         run: npm run build --prefix live-demo
 
+      - name: Upload GitHub Pages artifact
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && matrix.node-version == 20
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: live-demo/dist
+
       - name: Run tests
         run: npm test
 
@@ -46,3 +52,23 @@ jobs:
 
       - name: Check TypeScript declarations
         run: npm run check:types
+
+  deploy-pages:
+    name: Deploy GitHub Pages
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: test
+    runs-on: ubuntu-latest
+    concurrency:
+      group: pages
+      cancel-in-progress: true
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
