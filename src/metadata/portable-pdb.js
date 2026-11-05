@@ -1,5 +1,5 @@
-import { deflateRawSync, inflateRawSync } from "node:zlib";
-import { createHash } from "node:crypto";
+import { deflateRawSync, inflateRawSync } from "../platform/compression.js";
+import { createHash } from "../platform/crypto.js";
 import { BinaryReader, readCompressedInt, readCompressedUInt } from "../binary/reader.js";
 import { FormatError, UnsupportedFormatError } from "../binary/errors.js";
 import {

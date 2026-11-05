@@ -32,6 +32,12 @@ jobs:
       - name: Install live demo dependencies
         run: npm ci --prefix live-demo
 
+      - name: Check browser bundle
+        run: npm run check:browser
+
+      - name: Build live demo
+        run: npm run build --prefix live-demo
+
       - name: Run tests
         run: npm test
 

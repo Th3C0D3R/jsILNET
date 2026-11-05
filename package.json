@@ -1,7 +1,7 @@
 {
   "name": "jsilnet",
   "version": "0.1.0",
-  "description": "Dependency-free Node.js ECMA-335 / CLI assembly reader and writer",
+  "description": "Node.js and browser ECMA-335 / CLI assembly reader and writer",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -29,21 +29,33 @@
   "types": "./src/index.d.ts",
   "files": [
     "src",
+    "dist/browser",
     "example",
     "REFERENCE.md"
   ],
   "exports": {
-    ".": "./src/index.js"
+    ".": "./src/index.js",
+    "./browser": {
+      "types": "./src/browser/index.d.ts",
+      "default": "./dist/browser/index.js"
+    }
   },
   "scripts": {
     "test": "node --test",
     "check": "node --check src/index.js",
+    "build:browser": "node scripts/build-browser.js",
+    "check:browser": "npm run build:browser && node scripts/check-browser-bundle.js",
     "build:types": "tsc --allowJs --checkJs false --declaration --emitDeclarationOnly --module NodeNext --moduleResolution NodeNext --target ES2022 --outDir src/types src/index.js",
     "precheck:types": "npm run build:types",
-    "check:types": "tsc --noEmit --strict --skipLibCheck --module NodeNext --moduleResolution NodeNext type-tests/core-api.ts && node scripts/check-type-coverage.js",
-    "prepublishOnly": "npm test && npm run check && npm run check:types"
+    "check:types": "tsc --noEmit --strict --skipLibCheck --module NodeNext --moduleResolution NodeNext type-tests/core-api.ts type-tests/browser-api.ts && node scripts/check-type-coverage.js",
+    "prepublishOnly": "npm test && npm run check && npm run check:types && npm run check:browser"
   },
   "devDependencies": {
+    "esbuild": "^0.28.2",
     "typescript": "^5.8.3"
+  },
+  "dependencies": {
+    "fflate": "^0.8.3",
+    "node-forge": "^1.4.3"
   }
 }

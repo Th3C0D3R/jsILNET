@@ -1,4 +1,5 @@
-import { createHash } from "node:crypto";
+import { createHash } from "./platform/crypto.js";
+import { equalBytes } from "./platform/bytes.js";
 import { FormatError, UnsupportedFormatError } from "./binary/errors.js";
 import {
   parseEmbeddedPortablePdbData,
@@ -13180,9 +13181,9 @@ export class Assembly {
     if (signature.rva === 0 && (this.cli.flags & 0x08) !== 0) {
       throw new FormatError("Strong-name-signed CLI header has no signature directory");
     }
-    const expectedSize = Math.ceil(privateKey.asymmetricKeyDetails.modulusLength / 8);
+    const expectedSize = Math.ceil(privateKey.n.bitLength() / 8);
     const currentPublicKey = this.heaps.getBlob(assemblyRow.PublicKey);
-    const keyChanged = !Buffer.from(currentPublicKey).equals(publicKey);
+    const keyChanged = !equalBytes(currentPublicKey, publicKey);
     const identityChanged = keyChanged ||
       assemblyRow.HashAlgId !== selectedHashAlgorithm ||
       (assemblyRow.Flags & 0x01) === 0;
@@ -13225,11 +13226,11 @@ export class Assembly {
     getStrongNameHashName(hashAlgorithm);
     const expectedPublicKey = encodeStrongNamePublicKey(privateKey, hashAlgorithm);
     const currentPublicKey = this.heaps.getBlob(assemblyRow.PublicKey);
-    if (!Buffer.from(currentPublicKey).equals(expectedPublicKey)) {
+    if (!equalBytes(currentPublicKey, expectedPublicKey)) {
       throw new FormatError("Strong-name private key does not match the Assembly public key");
     }
     const signature = this.cli.strongNameSignature;
-    const expectedSize = Math.ceil(privateKey.asymmetricKeyDetails.modulusLength / 8);
+    const expectedSize = Math.ceil(privateKey.n.bitLength() / 8);
     if ((signature.rva === 0) !== (signature.size === 0)) {
       throw new FormatError("Strong-name signature directory has only one of RVA and size set");
     }
@@ -13296,7 +13297,8 @@ export class Assembly {
   }
 
   toBuffer() {
-    return Buffer.from(this.serialize());
+    const bytes = this.serialize();
+    return typeof Buffer === "undefined" ? bytes : Buffer.from(bytes);
   }
 }
 

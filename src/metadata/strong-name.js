@@ -1,10 +1,6 @@
-import {
-  createPrivateKey,
-  createPublicKey,
-  createSign,
-  createVerify
-} from "node:crypto";
+import forge from "node-forge";
 import { FormatError, UnsupportedFormatError } from "../binary/errors.js";
+import { binaryStringToBytes, bytesToBinaryString } from "../platform/bytes.js";
 
 const rsaSignAlgorithm = 0x00002400;
 const sha1Algorithm = 0x00008004;
@@ -26,74 +22,76 @@ export function getStrongNameHashName(algorithm) {
   return name;
 }
 
+function binaryIntegerBytes(value, length) {
+  let hex = value.toString(16);
+  if ((hex.length & 1) !== 0) hex = `0${hex}`;
+  const encoded = binaryStringToBytes(forge.util.hexToBytes(hex));
+  if (encoded.length > length) throw new FormatError("RSA integer exceeds its declared size");
+  const output = new Uint8Array(length);
+  output.set(encoded, length - encoded.length);
+  return output;
+}
+
+function getRsaModulusBits(key) {
+  return key.n.bitLength();
+}
+
 export function importStrongNamePrivateKey(input) {
-  const key = input && typeof input === "object" && input.type === "private"
-    ? input
-    : createPrivateKey(input);
-  if (key.asymmetricKeyType !== "rsa") {
-    throw new UnsupportedFormatError("Strong-name signing requires an RSA private key");
+  if (input && typeof input === "object" && input.n && input.e && input.d) return input;
+  let pem = input;
+  if (input && typeof input === "object" && input.type === "private" &&
+      typeof input.export === "function") {
+    if (input.asymmetricKeyType !== "rsa") {
+      throw new UnsupportedFormatError("Strong-name signing requires an RSA private key");
+    }
+    pem = input.export({ format: "pem", type: "pkcs8" });
+  } else if (input instanceof Uint8Array) {
+    pem = new TextDecoder("ascii", { fatal: true }).decode(input);
   }
-  if (!key.asymmetricKeyDetails?.modulusLength) {
-    throw new UnsupportedFormatError("Strong-name RSA key does not expose its modulus length");
+  if (typeof pem !== "string") {
+    throw new UnsupportedFormatError("Strong-name signing requires an RSA PEM or private key");
+  }
+  const key = forge.pki.privateKeyFromPem(pem);
+  if (!key.n || !key.e || !key.d) {
+    throw new UnsupportedFormatError("Strong-name signing requires an RSA private key");
   }
   return key;
 }
 
-function getRsaJwk(key) {
-  const jwk = createPublicKey(key).export({ format: "jwk" });
-  if (!jwk.n || !jwk.e || jwk.kty !== "RSA") {
-    throw new UnsupportedFormatError("Strong-name key is not a usable RSA key");
-  }
-  return jwk;
-}
-
-function getRsaModulus(key, jwk) {
-  const modulusLength = Math.ceil(key.asymmetricKeyDetails.modulusLength / 8);
-  const encoded = Buffer.from(jwk.n, "base64url");
-  if (encoded.length > modulusLength) {
-    throw new FormatError("RSA modulus exceeds its declared bit length");
-  }
-  const modulus = Buffer.alloc(modulusLength);
-  encoded.copy(modulus, modulusLength - encoded.length);
-  return modulus;
-}
-
-function getRsaExponent(jwk) {
-  const bytes = Buffer.from(jwk.e, "base64url");
-  if (bytes.length === 0 || bytes.length > 4) {
-    throw new UnsupportedFormatError("Strong-name RSA public exponent exceeds the CAPI format");
-  }
-  let exponent = 0;
-  for (const byte of bytes) exponent = exponent * 256 + byte;
-  return exponent;
-}
-
-export function encodeStrongNamePublicKey(key, hashAlgorithm) {
+export function encodeStrongNamePublicKey(keyInput, hashAlgorithm) {
   const hashName = getStrongNameHashName(hashAlgorithm);
-  const jwk = getRsaJwk(key);
-  const modulus = getRsaModulus(key, jwk);
-  const exponent = getRsaExponent(jwk);
-  const modulusBits = key.asymmetricKeyDetails.modulusLength;
+  const key = importStrongNamePrivateKey(keyInput);
+  const modulusBits = getRsaModulusBits(key);
+  const modulusLength = Math.ceil(modulusBits / 8);
+  const modulus = binaryIntegerBytes(key.n, modulusLength);
+  const exponent = Number(key.e.toString(10));
   if (modulusBits % 8 !== 0) {
     throw new UnsupportedFormatError("Strong-name RSA modulus length must be byte-aligned");
   }
+  if (exponent < 3 || exponent % 2 === 0) {
+    throw new UnsupportedFormatError("Strong-name RSA public exponent is invalid");
+  }
 
-  const capiKey = Buffer.alloc(20 + modulus.length);
+  const capiKey = new Uint8Array(20 + modulus.length);
+  const capiView = new DataView(capiKey.buffer);
   capiKey[0] = 0x06;
   capiKey[1] = 0x02;
-  capiKey.writeUInt32LE(rsaSignAlgorithm, 4);
-  capiKey.writeUInt32LE(0x31415352, 8);
-  capiKey.writeUInt32LE(modulusBits, 12);
-  capiKey.writeUInt32LE(exponent, 16);
-  Buffer.from(modulus).reverse().copy(capiKey, 20);
+  capiView.setUint32(4, rsaSignAlgorithm, true);
+  capiView.setUint32(8, 0x31415352, true);
+  capiView.setUint32(12, modulusBits, true);
+  capiView.setUint32(16, exponent, true);
+  for (let index = 0; index < modulus.length; index++) {
+    capiKey[20 + index] = modulus[modulus.length - 1 - index];
+  }
 
   const hashAlgorithmId = [...hashNames].find(([, name]) => name === hashName)?.[0];
-  const publicKey = Buffer.alloc(12 + capiKey.length);
-  publicKey.writeUInt32LE(rsaSignAlgorithm, 0);
-  publicKey.writeUInt32LE(hashAlgorithmId, 4);
-  publicKey.writeUInt32LE(capiKey.length, 8);
-  capiKey.copy(publicKey, 12);
-  return publicKey;
+  const publicKey = new Uint8Array(12 + capiKey.length);
+  const publicKeyView = new DataView(publicKey.buffer);
+  publicKeyView.setUint32(0, rsaSignAlgorithm, true);
+  publicKeyView.setUint32(4, hashAlgorithmId, true);
+  publicKeyView.setUint32(8, capiKey.length, true);
+  publicKey.set(capiKey, 12);
+  return typeof Buffer === "undefined" ? publicKey : Buffer.from(publicKey);
 }
 
 export function decodeStrongNamePublicKey(bytes) {
@@ -120,20 +118,15 @@ export function decodeStrongNamePublicKey(bytes) {
       publicKeySize !== 20 + modulusBits / 8 || exponent < 3 || exponent % 2 === 0) {
     throw new FormatError("Strong-name CAPI RSA key has inconsistent dimensions");
   }
-  const modulus = Buffer.from(bytes.subarray(32)).reverse();
+  const modulus = Uint8Array.from(bytes.subarray(32)).reverse();
   if ((modulus[0] & 0x80) === 0) {
     throw new FormatError("Strong-name RSA modulus does not match its declared bit length");
   }
-  const exponentBytes = Buffer.alloc(4);
-  exponentBytes.writeUInt32BE(exponent);
-  let exponentStart = 0;
-  while (exponentStart < exponentBytes.length - 1 && exponentBytes[exponentStart] === 0) exponentStart++;
-  const jwk = {
-    kty: "RSA",
-    n: modulus.toString("base64url"),
-    e: exponentBytes.subarray(exponentStart).toString("base64url")
-  };
-  const publicKey = createPublicKey({ key: jwk, format: "jwk" });
+  const modulusHex = forge.util.bytesToHex(bytesToBinaryString(modulus));
+  const publicKey = forge.pki.rsa.setPublicKey(
+    new forge.jsbn.BigInteger(modulusHex, 16),
+    new forge.jsbn.BigInteger(String(exponent), 10)
+  );
   return {
     publicKey,
     hashAlgorithm,
@@ -171,29 +164,30 @@ function getStrongNameRanges(bytes, pe, cli) {
 }
 
 function updateStrongNameData(signer, bytes, pe, ranges) {
-  signer.update(bytes.subarray(0, pe.peOffset));
-  signer.update(bytes.subarray(pe.peOffset, pe.peOffset + 24));
+  const update = (part) => signer.update(bytesToBinaryString(part));
+  update(bytes.subarray(0, pe.peOffset));
+  update(bytes.subarray(pe.peOffset, pe.peOffset + 24));
 
-  const optionalHeader = Buffer.from(bytes.subarray(
+  const optionalHeader = Uint8Array.from(bytes.subarray(
     pe.optionalHeaderOffset,
     pe.optionalHeaderOffset + ranges.fixedOptionalHeaderSize
   ));
   optionalHeader.fill(0, 64, 68);
-  signer.update(optionalHeader);
+  update(optionalHeader);
 
   const directoriesOffset = pe.optionalHeaderOffset + ranges.fixedOptionalHeaderSize;
-  const directories = Buffer.from(bytes.subarray(directoriesOffset, directoriesOffset + 16 * 8));
+  const directories = Uint8Array.from(bytes.subarray(directoriesOffset, directoriesOffset + 16 * 8));
   directories.fill(0, 4 * 8, 5 * 8);
-  signer.update(directories);
-  signer.update(bytes.subarray(pe.sectionOffset, pe.sectionOffset + pe.sectionCount * 40));
+  update(directories);
+  update(bytes.subarray(pe.sectionOffset, pe.sectionOffset + pe.sectionCount * 40));
 
   for (const section of pe.sections) {
     const start = section.rawPointer;
     const end = start + section.rawSize;
     const beforeEnd = Math.min(end, ranges.signatureOffset);
-    if (start < beforeEnd) signer.update(bytes.subarray(start, beforeEnd));
+    if (start < beforeEnd) update(bytes.subarray(start, beforeEnd));
     const afterStart = Math.max(start, ranges.signatureEnd);
-    if (afterStart < end) signer.update(bytes.subarray(afterStart, end));
+    if (afterStart < end) update(bytes.subarray(afterStart, end));
   }
 }
 
@@ -204,9 +198,9 @@ export function signStrongNameImage(bytes, pe, cli, privateKey, hashAlgorithm) {
   const view = new DataView(output.buffer, output.byteOffset, output.byteLength);
   view.setUint32(cli.strongNameFlagOffset, cli.flags | 0x08, true);
 
-  const signer = createSign(hashName);
+  const signer = forge.md[hashName].create();
   updateStrongNameData(signer, output, pe, ranges);
-  const signature = Buffer.from(signer.sign(privateKey)).reverse();
+  const signature = binaryStringToBytes(privateKey.sign(signer)).reverse();
   if (signature.length !== cli.strongNameSignature.size) {
     throw new FormatError(
       `Strong-name signature size ${signature.length} does not match reserved slot ${cli.strongNameSignature.size}`
@@ -222,8 +216,15 @@ export function verifyStrongNameImage(bytes, pe, cli, publicKeyBytes, hashAlgori
   const hashName = getStrongNameHashName(hashAlgorithm || key.hashAlgorithm);
   if (cli.strongNameSignature.size !== key.signatureSize) return false;
   const ranges = getStrongNameRanges(bytes, pe, cli);
-  const signature = Buffer.from(bytes.subarray(ranges.signatureOffset, ranges.signatureEnd)).reverse();
-  const verifier = createVerify(hashName);
+  const signature = bytesToBinaryString(
+    Uint8Array.from(bytes.subarray(ranges.signatureOffset, ranges.signatureEnd)).reverse()
+  );
+  const verifier = forge.md[hashName].create();
   updateStrongNameData(verifier, bytes, pe, ranges);
-  return verifier.verify(key.publicKey, signature);
+  try {
+    return key.publicKey.verify(verifier.digest().getBytes(), signature);
+  } catch (error) {
+    if (error instanceof Error && error.message === "Encryption block is invalid.") return false;
+    throw error;
+  }
 }

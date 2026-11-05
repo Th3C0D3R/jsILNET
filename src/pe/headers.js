@@ -1,4 +1,4 @@
-import { inflateRawSync } from "node:zlib";
+import { inflateRawSync } from "../platform/compression.js";
 import { BinaryReader } from "../binary/reader.js";
 import { FormatError, UnsupportedFormatError } from "../binary/errors.js";
 import { MetadataHeaps, parseMetadataRoot } from "../metadata/streams.js";

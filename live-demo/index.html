@@ -3,22 +3,23 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="description" content="Inspect and safely patch a .NET assembly with jsILNET.">
+    <meta name="description" content="Inspect and patch a .NET assembly locally in your browser with jsILNET.">
     <title>jsILNET Live Demo</title>
-    <link rel="stylesheet" href="/styles.css">
-    <script type="module" src="/app.js"></script>
+    <link rel="icon" href="data:,">
+    <link rel="stylesheet" href="./styles.css">
+    <script type="module" src="./app.js"></script>
   </head>
   <body>
     <main class="shell">
       <header class="hero">
-        <p class="eyebrow">Node.js assembly tooling</p>
+        <p class="eyebrow">Browser-only assembly tooling</p>
         <h1>jsILNET Live Demo</h1>
-        <p>Inspect a .NET assembly, then patch a signed-byte IL constant and download the result.</p>
+        <p>Inspect a .NET assembly, then patch a signed-byte IL constant and download the result. Processing runs asynchronously in a browser worker.</p>
       </header>
 
       <section class="panel" aria-labelledby="upload-title">
         <h2 id="upload-title">Choose an assembly</h2>
-        <p class="hint">DLL and EXE files up to 3 MiB are processed in memory and are not saved.</p>
+        <p class="hint">DLL and EXE files up to 3 MiB are processed locally in your browser and are never uploaded.</p>
         <div class="upload-row">
           <label class="file-picker" for="assembly-file">Assembly file</label>
           <input id="assembly-file" type="file" accept=".dll,.exe,application/octet-stream">
@@ -33,7 +34,6 @@
         <div class="data-grid">
           <section class="panel" aria-labelledby="types-title">
             <h3 id="types-title">Types</h3>
-            <p id="type-count" class="hint"></p>
             <ul id="type-list" class="data-list"></ul>
           </section>
           <section class="panel" aria-labelledby="methods-title">
@@ -56,7 +56,7 @@
       </section>
 
       <footer>
-        <p>jsILNET runs on Node.js here; uploaded files are not retained.</p>
+        <p>All assembly processing stays in your browser; files are not uploaded or retained.</p>
       </footer>
     </main>
   </body>

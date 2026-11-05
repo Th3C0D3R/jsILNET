@@ -1,6 +1,6 @@
 export function getStrongNameHashName(algorithm: any): string;
 export function importStrongNamePrivateKey(input: any): any;
-export function encodeStrongNamePublicKey(key: any, hashAlgorithm: any): any;
+export function encodeStrongNamePublicKey(keyInput: any, hashAlgorithm: any): any;
 export function decodeStrongNamePublicKey(bytes: any): {
     publicKey: any;
     hashAlgorithm: number;
