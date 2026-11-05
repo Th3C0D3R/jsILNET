@@ -1,6 +1,6 @@
 {
   "name": "jsilnet",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Node.js and browser ECMA-335 / CLI assembly reader and writer",
   "license": "MIT",
   "repository": {
